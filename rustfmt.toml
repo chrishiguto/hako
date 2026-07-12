@@ -1,0 +1,2 @@
+# Default rustfmt style; add options here only when we deliberately diverge.
+newline_style = "Unix"

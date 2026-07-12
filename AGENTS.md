@@ -2,6 +2,19 @@
 
 hako is a model-agnostic agent-loop runner: loop patterns ("kernels") are Rust code that owns control flow; small TOML flow files parameterize them; iterations run in ephemeral microVMs. The canonical design record is the v1 spec in the issue tracker.
 
+## Development
+
+A Rust workspace, toolchain pinned in `rust-toolchain.toml`. `just` is the single command surface — CI runs the same recipes, so never duplicate a recipe's command line in `.github/workflows/`. The one split is tool provisioning: CI installs prebuilt binaries via install-action; keep its tool list in sync with `just setup`.
+
+- `just fmt` — format everything
+- `just check` — fmt-check, typos, cargo-deny, dependency rules, clippy (warnings denied)
+- `just test` — the workspace test suite
+- `just setup` — one-time install of cargo-deny and typos (rustup + just assumed)
+
+Automation that outgrows a shell one-liner lives in the `xtask` crate, invoked as `cargo xtask <task>` (today: `deps`, the workspace dependency-rule check). xtask is a dev tool, not a product crate — exempt from the dependency rules it enforces.
+
+Product crates live in `crates/`: `hako-engine`, `hako-sandbox`, `hako-api`, `hako-server` (binary `hakod`), `hako-cli` (binary `hako`). Two hard rules (ADR 0006, enforced by `cargo xtask deps` in `just check`): `hako-engine` never depends on `hako-server` or `hako-api`; `hako-cli` depends on `hako-api` only among workspace crates.
+
 ## Agent skills
 
 ### Issue tracker

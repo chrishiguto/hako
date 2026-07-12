@@ -1,0 +1,37 @@
+# Every check goes through the justfile, so CI can never drift from what
+# developers run locally. The one deliberate split is tool provisioning:
+# install-action fetches prebuilt binaries (its tool list mirrors `just
+# setup`, which compiles from source).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Resolves rust-toolchain.toml explicitly rather than leaning on
+      # rustup's auto-install-on-first-use, which rustup 1.28.0 briefly
+      # removed and still flags as subject to change.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-deny's RustSec advisory clone, outside the default cache set
+          cache-directories: ~/.cargo/advisory-dbs
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,typos
+      - run: just check
+      - run: just test

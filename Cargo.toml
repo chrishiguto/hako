@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+hako-api = { path = "crates/hako-api" }
+hako-engine = { path = "crates/hako-engine" }
+hako-sandbox = { path = "crates/hako-sandbox" }
