@@ -9,7 +9,11 @@
 //! Reachability is computed over the full resolved graph, by package ID:
 //! identity by ID means an external crate that happens to share a member's
 //! name is never mistaken for it, and walking non-member nodes means a
-//! forbidden edge can't hide behind an out-of-workspace path or git dep.
+//! forbidden edge can't hide behind an out-of-workspace path dep. The
+//! same identity choice puts git and registry copies of a member out of
+//! scope — a different package ID, so never flagged here. Depending on a
+//! foreign copy is a supply-chain problem, deny.toml's territory (its
+//! source denials reject git deps outright).
 //! Dev and build edges count only on the first hop — cargo does not
 //! propagate them into dependents' builds. Declared manifest edges between
 //! members (matched by path, not name) are overlaid on top, because the
