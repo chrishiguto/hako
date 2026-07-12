@@ -97,19 +97,22 @@ pub fn run() -> anyhow::Result<()> {
 /// Maps each workspace member to the members it reaches in the resolved
 /// graph, walking through non-member packages.
 fn workspace_graph() -> anyhow::Result<Graph> {
+    // A check must never mutate: unlocked `cargo metadata` silently
+    // rewrites a stale Cargo.lock instead of failing on it.
     let metadata = MetadataCommand::new()
         .features(CargoOpt::AllFeatures)
+        .other_options(vec!["--locked".to_string()])
         .exec()
         .context("failed to run `cargo metadata`")?;
     let resolve = metadata
         .resolve
         .as_ref()
         .context("cargo metadata returned no resolve graph")?;
+    let members = metadata.workspace_packages();
     let nodes: BTreeMap<&PackageId, &cargo_metadata::Node> =
         resolve.nodes.iter().map(|node| (&node.id, node)).collect();
-    let member_names: BTreeMap<&PackageId, String> = metadata
-        .workspace_packages()
-        .into_iter()
+    let member_names: BTreeMap<&PackageId, String> = members
+        .iter()
         .map(|package| (&package.id, package.name.to_string()))
         .collect();
 
@@ -123,9 +126,7 @@ fn workspace_graph() -> anyhow::Result<Graph> {
                 .get(id)
                 .with_context(|| format!("package `{id}` missing from resolve graph"))?;
             for dep in &node.deps {
-                // Empty dep_kinds means a plain normal dep (older metadata).
                 let propagates = first_hop
-                    || dep.dep_kinds.is_empty()
                     || dep
                         .dep_kinds
                         .iter()
@@ -141,15 +142,14 @@ fn workspace_graph() -> anyhow::Result<Graph> {
         graph.insert(name.clone(), reached);
     }
 
-    let member_dirs: BTreeMap<_, _> = metadata
-        .workspace_packages()
-        .into_iter()
+    let member_dirs: BTreeMap<_, _> = members
+        .iter()
         .filter_map(|package| {
             let dir = package.manifest_path.parent()?;
             Some((dir.to_path_buf(), package.name.to_string()))
         })
         .collect();
-    for package in metadata.workspace_packages() {
+    for package in &members {
         for dep in &package.dependencies {
             let Some(target) = dep.path.as_ref().and_then(|p| member_dirs.get(p)) else {
                 continue;
