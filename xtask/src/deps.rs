@@ -196,6 +196,22 @@ mod tests {
         assert_eq!(violations(&graph), Vec::<String>::new());
     }
 
+    /// Pins the check's sensitivity, not just its pass-case: a regression
+    /// that silently dropped edges from the graph would keep `violations`
+    /// green in CI while making the check blind. Fails only when a
+    /// member-to-member edge changes — exactly when a human should look.
+    #[test]
+    fn real_workspace_matches_intended_shape() {
+        let mut expected = graph(&[
+            ("hako-sandbox", &["hako-engine"]),
+            ("hako-server", &["hako-api", "hako-engine", "hako-sandbox"]),
+            ("hako-cli", &["hako-api"]),
+        ]);
+        expected.insert("xtask".to_string(), BTreeSet::new());
+        let actual = workspace_graph().expect("cargo metadata on the real workspace");
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn engine_depending_on_api_is_flagged() {
         let found = violations(&graph(&[("hako-engine", &["hako-api"])]));
