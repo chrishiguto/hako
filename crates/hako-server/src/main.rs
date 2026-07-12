@@ -1,8 +1,9 @@
-//! `hakod` — the hako daemon. Runs execute only in here (see ADR 0002);
-//! it hosts the engine and serves the wire contract. Stub: reports a
-//! version, nothing more.
+//! `hakod` — the hako daemon. Runs execute only in here; it hosts the
+//! engine and serves the wire contract. Stub: reports a version, nothing
+//! more.
 
-// Declared edges from ADR 0006; unused until the daemon lands.
+// The crate's workspace edges, declared ahead of the daemon code that
+// will use them.
 use hako_api as _;
 use hako_engine as _;
 use hako_sandbox as _;

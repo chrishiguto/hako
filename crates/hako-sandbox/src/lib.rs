@@ -1,5 +1,6 @@
-//! The smolvm-backed implementation of the engine's `Sandbox` seam
-//! (see ADR 0004): ephemeral microVMs, one per iteration.
+//! The smolvm-backed implementation of the engine's `Sandbox` seam:
+//! ephemeral microVMs, one per iteration.
 
-// Declared edge from ADR 0006; unused until the Sandbox trait lands.
+// The crate's workspace edge, declared ahead of the `Sandbox` trait
+// implementation that will use it.
 use hako_engine as _;

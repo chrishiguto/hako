@@ -1,4 +1,4 @@
-//! The workspace dependency-rule check (ADR 0006).
+//! The workspace dependency-rule check.
 //!
 //! Two hard rules, enforced on transitive reachability between workspace
 //! crates:
