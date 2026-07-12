@@ -1,0 +1,96 @@
+# hako Glossary
+
+hako runs unattended ("AFK") coding-agent loops: loop patterns are enforced by code rather than prompting, iterations execute in isolated microVMs, and humans are pulled in only when a loop pauses for them.
+
+## Execution
+
+**Engine**:
+The library that executes kernels. Hosted by the daemon in production; embeddable directly in tests and tools.
+
+**Kernel**:
+A named loop pattern implemented inside the engine, owning all control flow (iterate, verify, retry, stop). v1 ships one: Ralph.
+_Avoid_: workflow engine, orchestrator
+
+**Ralph**:
+The v1 kernel: a single-agent goal loop — fresh context every iteration, one work item at a time, memory only through the workspace.
+
+**Flow**:
+A TOML file that parameterizes a kernel: goal, agent, budgets, verify checks, workspace, secret names. Contains no logic.
+_Avoid_: workflow, pipeline, script
+
+**Run**:
+One execution of a flow by the daemon, from submission to a terminal state (done, failed, cancelled), possibly pausing along the way.
+_Avoid_: job, session
+
+**Iteration**:
+The unit of work within a run: one fresh sandbox, one fresh-context agent invocation, verification, a checkpoint, and a progress report.
+_Avoid_: step, turn, cycle
+
+## Isolation & state
+
+**Sandbox**:
+The hardware-isolated microVM an iteration executes in, created and destroyed with the iteration.
+_Avoid_: container
+
+**Workspace**:
+The persistent directory a run works on — a run-owned git clone on a run branch by default, an explicitly mounted checkout otherwise. The only state that survives across iterations.
+_Avoid_: checkout, working copy
+
+**Event Log**:
+The append-only record of everything a run did; the source of truth for clients, resumption, and audit.
+_Avoid_: run history, logs
+
+## Agent interface
+
+**Agent**:
+The coding-agent CLI invoked headless inside the sandbox (claude, codex, or any command).
+_Avoid_: model, bot
+
+**Agent Adapter**:
+The engine's knowledge of how to drive one agent: headless invocation, token-usage reporting, required secrets.
+
+**Domain Prompt**:
+The user-authored, agent-editable prompt file living in the workspace; carries domain rules, never loop mechanics.
+_Avoid_: system prompt
+
+**Preamble**:
+The engine-composed frame wrapped around the domain prompt each iteration: goal, iteration count, last progress, feedback, human answers, and the progress-report contract.
+
+**Progress Report**:
+The schema-validated declaration the agent must write to end an iteration: continue, done, blocked, or needs_input.
+_Avoid_: outputs, output extraction
+
+**Skeptic Iteration**:
+A fresh iteration prompted to refute a done claim (see Verified Done).
+_Avoid_: review pass
+
+**Verified Done**:
+Completion as the engine defines it: the agent claims done, verify checks pass, and a skeptic iteration cannot refute the claim.
+
+## Control
+
+**Verify Checks**:
+The commands (build, test, lint) that must pass for an iteration to count as progress; failures retry, then pause the run.
+_Avoid_: gates, validations
+
+**Budget**:
+A soft cap on a run — iterations, wall-clock, or tokens. Exhaustion finishes the current iteration and pauses; it never fails the run.
+_Avoid_: limit, quota
+
+**Pause**:
+A resumable run state carrying a reason: blocked, verify_failed, drift, budget, or awaiting_human. Every pause notifies the user.
+_Avoid_: stop, halt
+
+**Drift**:
+Consecutive iterations producing no commits and an unchanged remaining list — the loop is spinning without progress, so it pauses.
+_Avoid_: stuck, stall
+
+## Topology
+
+**Daemon**:
+`hakod` — the always-on host of the engine and the only network and auth surface. Runs anywhere: laptop or server.
+_Avoid_: pool manager, orchestrator
+
+**Client**:
+Anything that speaks the API contract: the CLI today, a web control plane later. Clients hold no run state.
+_Avoid_: frontend
