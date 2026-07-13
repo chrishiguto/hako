@@ -1,0 +1,5 @@
+# --locked: xtask exists to run checks, and a check must never rewrite
+# Cargo.lock — the outer `cargo run` would otherwise silently update a
+# stale lock before the task even starts.
+[alias]
+xtask = "run --quiet --locked --package xtask --"
