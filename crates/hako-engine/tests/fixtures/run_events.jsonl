@@ -1,0 +1,31 @@
+{"type":"run_started","goal":"implement all open issues","kernel":"ralph","agent":"claude"}
+{"type":"state_changed","state":"running"}
+{"type":"state_changed","state":"paused","reason":"blocked"}
+{"type":"state_changed","state":"paused","reason":"verify_failed"}
+{"type":"state_changed","state":"paused","reason":"drift"}
+{"type":"state_changed","state":"paused","reason":"budget"}
+{"type":"state_changed","state":"paused","reason":"awaiting_human"}
+{"type":"state_changed","state":"done"}
+{"type":"state_changed","state":"failed"}
+{"type":"state_changed","state":"cancelled"}
+{"type":"iteration_started","iteration":1}
+{"type":"iteration_finished","iteration":1,"outcome":"completed"}
+{"type":"iteration_finished","iteration":2,"outcome":"failed"}
+{"type":"iteration_finished","iteration":3,"outcome":"timed_out"}
+{"type":"agent_output","iteration":1,"stream":"stdout","chunk":"working on it\n"}
+{"type":"agent_output","iteration":1,"stream":"stderr","chunk":"warning: unused import\n"}
+{"type":"verify_check_finished","iteration":1,"command":"cargo test","passed":true}
+{"type":"workspace_checkpointed","iteration":1,"commit":"a1b2c3d"}
+{"type":"progress_reported","iteration":1,"report":{"status":"continue","summary":"ported the parser","remaining":["port the printer"],"blockers":[],"questions":[]}}
+{"type":"progress_reported","iteration":2,"report":{"status":"done","summary":"all acceptance criteria met","remaining":[],"blockers":[],"questions":[]}}
+{"type":"progress_reported","iteration":3,"report":{"status":"blocked","summary":"cannot reach the registry","remaining":["publish the crate"],"blockers":["registry timeout"],"questions":[]}}
+{"type":"progress_reported","iteration":4,"report":{"status":"needs_input","summary":"need a storage decision","remaining":["wire the store"],"blockers":[],"questions":[{"id":"q1","text":"sqlite or plain files?","options":["sqlite","plain files"]}]}}
+{"type":"progress_rejected","iteration":5,"errors":["missing required field `summary`"]}
+{"type":"skeptic_verdict","iteration":6,"refuted":true,"findings":["tests reference a module that does not exist"]}
+{"type":"tokens_used","iteration":6,"usage":{"input":1200,"output":340}}
+{"type":"budget_exhausted","budget":"iterations"}
+{"type":"budget_exhausted","budget":"wall_clock"}
+{"type":"budget_exhausted","budget":"tokens"}
+{"type":"question_answered","question_id":"q1","answer":"plain files"}
+{"type":"run_resumed","note":"skip the flaky suite"}
+{"type":"run_resumed","note":null}

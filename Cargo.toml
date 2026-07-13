@@ -12,3 +12,12 @@ publish = false
 hako-api = { path = "crates/hako-api" }
 hako-engine = { path = "crates/hako-engine" }
 hako-sandbox = { path = "crates/hako-sandbox" }
+
+async-trait = "0.1.89"
+futures-core = "0.3.32"
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = "1.52.3"
+utoipa = "5.5.0"
