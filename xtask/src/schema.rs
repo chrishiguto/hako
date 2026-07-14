@@ -25,11 +25,11 @@ pub fn run(check: bool) -> anyhow::Result<()> {
             .with_context(|| format!("cannot read {SCHEMA_PATH} — run `cargo xtask schema`"))?;
         if committed != generated {
             bail!(
-                "{SCHEMA_PATH} has drifted from the engine's flow types — \
+                "{SCHEMA_PATH} has drifted from proto's flow types — \
                  run `cargo xtask schema` and commit the result"
             );
         }
-        println!("{SCHEMA_PATH} matches the engine's flow types");
+        println!("{SCHEMA_PATH} matches proto's flow types");
     } else {
         fs::write(&path, generated).with_context(|| format!("cannot write {SCHEMA_PATH}"))?;
         println!("wrote {SCHEMA_PATH}");

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FlowConfig",
-  "description": "A parsed flow: what to achieve, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel\n(ADR 0001).",
+  "description": "A parsed flow: what to achieve, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel.",
   "type": "object",
   "properties": {
     "agent": {
@@ -113,7 +113,7 @@
       "pattern": "^[1-9][0-9]{0,8}(ms|s|m|h)$"
     },
     "KernelName": {
-      "description": "The loop patterns the engine ships. A closed set by design: a new\nloop shape is a new kernel in Rust, never logic in the flow file\n(ADR 0001) — which is what lets the schema reject a misspelled\nkernel outright.",
+      "description": "The loop patterns the engine ships. A closed set by design: a new\nloop shape is a new kernel in Rust, never logic in the flow file —\nwhich is what lets the schema reject a misspelled kernel outright.",
       "type": "string",
       "enum": [
         "ralph"
