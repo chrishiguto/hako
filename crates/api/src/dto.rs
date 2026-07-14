@@ -105,9 +105,18 @@ pub struct ApiError {
 #[cfg(test)]
 mod tests {
     use proto::run::PauseReason;
+    use serde::de::DeserializeOwned;
     use serde_json::json;
 
     use super::*;
+
+    fn round_trips<T>(value: &T)
+    where
+        T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        let wire = serde_json::to_string(value).unwrap();
+        assert_eq!(&serde_json::from_str::<T>(&wire).unwrap(), value);
+    }
 
     #[test]
     fn a_paused_summary_reads_flat() {
@@ -156,21 +165,9 @@ mod tests {
                 max_tokens: None,
             }),
         };
-        assert_eq!(
-            serde_json::from_str::<SubmitRunRequest>(&serde_json::to_string(&submit).unwrap())
-                .unwrap(),
-            submit
-        );
-        assert_eq!(
-            serde_json::from_str::<AnswerRequest>(&serde_json::to_string(&answer).unwrap())
-                .unwrap(),
-            answer
-        );
-        assert_eq!(
-            serde_json::from_str::<ResumeRequest>(&serde_json::to_string(&resume).unwrap())
-                .unwrap(),
-            resume
-        );
+        round_trips(&submit);
+        round_trips(&answer);
+        round_trips(&resume);
     }
 
     /// The nested `RunSummary` must be invisible on the wire — a
@@ -206,10 +203,6 @@ mod tests {
                 "pending_questions": []
             })
         );
-        let wire = serde_json::to_string(&status).unwrap();
-        assert_eq!(
-            serde_json::from_str::<RunStatusResponse>(&wire).unwrap(),
-            status
-        );
+        round_trips(&status);
     }
 }

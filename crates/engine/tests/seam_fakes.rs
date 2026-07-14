@@ -320,16 +320,15 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
     assert_eq!(outcome, RunOutcome::Paused(PauseReason::AwaitingHuman));
 
     let events = sink.events.lock().unwrap();
-    let kinds: Vec<&'static str> = events
+    // Kinds come off the wire tag, so they cannot drift from the serde
+    // mapping `proto` owns.
+    let kinds: Vec<String> = events
         .iter()
-        .map(|e| match e {
-            RunEvent::RunStarted { .. } => "run_started",
-            RunEvent::IterationStarted { .. } => "iteration_started",
-            RunEvent::AgentOutput { .. } => "agent_output",
-            RunEvent::TokensUsed { .. } => "tokens_used",
-            RunEvent::ProgressReported { .. } => "progress_reported",
-            RunEvent::StateChanged { .. } => "state_changed",
-            _ => "unexpected",
+        .map(|e| {
+            serde_json::to_value(e).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
         })
         .collect();
     assert_eq!(

@@ -10,27 +10,27 @@ use proto::RunEvent;
 
 const FIXTURE: &str = include_str!("fixtures/run_events.jsonl");
 
-/// Growing `RunEvent` breaks this match at compile time; add the new
-/// arm together with a fixture line and an entry in the coverage
-/// test's `all` list. The coverage test catches a missing fixture
-/// line or a missing list entry, but not both omitted at once — the
-/// compile error here is the only prompt.
-fn variant(event: &RunEvent) -> &'static str {
+/// Growing `RunEvent` breaks this match at compile time; extend it
+/// together with a fixture line and an entry in the coverage test's
+/// `all` list. The coverage test catches a missing fixture line or a
+/// missing list entry, but not both omitted at once — the compile
+/// error here is the only prompt.
+fn variant_tripwire(event: &RunEvent) {
     match event {
-        RunEvent::RunStarted { .. } => "run_started",
-        RunEvent::StateChanged { .. } => "state_changed",
-        RunEvent::IterationStarted { .. } => "iteration_started",
-        RunEvent::IterationFinished { .. } => "iteration_finished",
-        RunEvent::AgentOutput { .. } => "agent_output",
-        RunEvent::VerifyCheckFinished { .. } => "verify_check_finished",
-        RunEvent::WorkspaceCheckpointed { .. } => "workspace_checkpointed",
-        RunEvent::ProgressReported { .. } => "progress_reported",
-        RunEvent::ProgressRejected { .. } => "progress_rejected",
-        RunEvent::SkepticVerdict { .. } => "skeptic_verdict",
-        RunEvent::TokensUsed { .. } => "tokens_used",
-        RunEvent::BudgetExhausted { .. } => "budget_exhausted",
-        RunEvent::QuestionAnswered { .. } => "question_answered",
-        RunEvent::RunResumed { .. } => "run_resumed",
+        RunEvent::RunStarted { .. }
+        | RunEvent::StateChanged { .. }
+        | RunEvent::IterationStarted { .. }
+        | RunEvent::IterationFinished { .. }
+        | RunEvent::AgentOutput { .. }
+        | RunEvent::VerifyCheckFinished { .. }
+        | RunEvent::WorkspaceCheckpointed { .. }
+        | RunEvent::ProgressReported { .. }
+        | RunEvent::ProgressRejected { .. }
+        | RunEvent::SkepticVerdict { .. }
+        | RunEvent::TokensUsed { .. }
+        | RunEvent::BudgetExhausted { .. }
+        | RunEvent::QuestionAnswered { .. }
+        | RunEvent::RunResumed { .. } => {}
     }
 }
 
@@ -60,9 +60,13 @@ fn every_fixture_line_reserializes_identically() {
 
 #[test]
 fn the_fixture_covers_every_event_variant() {
-    let covered: BTreeSet<&str> = fixture_events()
+    let events = fixture_events();
+    let covered: BTreeSet<&str> = events
         .iter()
-        .map(|(_, event)| variant(event))
+        .map(|(wire, event)| {
+            variant_tripwire(event);
+            wire["type"].as_str().expect("events are tagged by `type`")
+        })
         .collect();
     let all: BTreeSet<&str> = [
         "run_started",

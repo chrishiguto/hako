@@ -193,16 +193,21 @@ mod tests {
         graph
     }
 
-    #[test]
-    fn intended_workspace_shape_passes() {
-        let graph = graph(&[
+    /// The intended shape as direct edges — the one place a legitimate
+    /// new edge gets added; the closure test derives from it.
+    fn intended_shape() -> Graph {
+        graph(&[
             ("engine", &["proto"]),
             ("api", &["proto"]),
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
             ("cli", &["api"]),
-        ]);
-        assert_eq!(violations(&graph), Vec::<String>::new());
+        ])
+    }
+
+    #[test]
+    fn intended_workspace_shape_passes() {
+        assert_eq!(violations(&intended_shape()), Vec::<String>::new());
     }
 
     /// Pins the check's sensitivity, not just its pass-case: a regression
@@ -211,13 +216,11 @@ mod tests {
     /// member-to-member edge changes — exactly when a human should look.
     #[test]
     fn real_workspace_matches_intended_shape() {
-        let mut expected = graph(&[
-            ("engine", &["proto"]),
-            ("api", &["proto"]),
-            ("sandbox", &["engine", "proto"]),
-            ("server", &["api", "engine", "proto", "sandbox"]),
-            ("cli", &["api", "proto"]),
-        ]);
+        let direct = intended_shape();
+        let mut expected: Graph = direct
+            .keys()
+            .map(|name| (name.clone(), reachable(&direct, name)))
+            .collect();
         expected.insert("xtask".to_string(), BTreeSet::new());
         let actual = workspace_graph().expect("cargo metadata on the real workspace");
         assert_eq!(actual, expected);

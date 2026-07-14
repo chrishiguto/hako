@@ -16,6 +16,9 @@ pub use dto::{
 };
 pub use event::EventEnvelope;
 pub use openapi::document;
+/// The full published language, so a `proto` type missing from the
+/// flat re-exports below stays nameable without a direct `proto` dep.
+pub use proto;
 pub use proto::{
     BudgetKind, IterationOutcome, OutputStream, PauseReason, ProgressReport, ProgressStatus,
     Question, RunEvent, RunState, TokenUsage,
