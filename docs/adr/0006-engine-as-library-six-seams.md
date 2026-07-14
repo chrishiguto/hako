@@ -1,6 +1,6 @@
 # The engine is a library with exactly six trait seams
 
-`hako-engine` never depends on `hako-server` or `hako-api`; the daemon is merely the engine's first host. `hako-cli` depends on `hako-api` only — clients (CLI, future web app) are peers consuming one wire contract. All engine I/O flows through exactly six traits — Kernel, Sandbox, AgentAdapter, EventSink, Notifier, SecretsProvider — handed to kernels via a context struct, never reached globally. The payoff: the entire Ralph kernel (verify gates, skeptic pass, budgets, pauses, HITL) is testable in-process with fakes — no VMs, no LLMs, no network.
+`engine` never depends on `server` or `api`; the daemon is merely the engine's first host. `cli` depends on `api` only — clients (CLI, future web app) are peers consuming one wire contract. All engine I/O flows through exactly six traits — Kernel, Sandbox, AgentAdapter, EventSink, Notifier, SecretsProvider — handed to kernels via a context struct, never reached globally. The payoff: the entire Ralph kernel (verify gates, skeptic pass, budgets, pauses, HITL) is testable in-process with fakes — no VMs, no LLMs, no network.
 
 ## Consequences
 

@@ -1,15 +1,13 @@
 [package]
-name = "hako-server"
+name = "cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "hakod"
+name = "hako"
 path = "src/main.rs"
 
 [dependencies]
-hako-api.workspace = true
-hako-engine.workspace = true
-hako-sandbox.workspace = true
+api.workspace = true

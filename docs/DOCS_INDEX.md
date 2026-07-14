@@ -15,6 +15,7 @@ Check here first to find the right document, then open that file directly. `/dom
 - `docs/adr/0005-rest-sse-over-event-log.md` — ADR (Accepted) — Append-only event log as source of truth; SSE down, REST up; WebSocket deferred. Topics: protocol, SSE, event log, replay, API.
 - `docs/adr/0006-engine-as-library-six-seams.md` — ADR (Accepted) — Engine never depends on server/api; six trait seams; kernel testable with fakes. Topics: crates, dependencies, seams, testing.
 - `docs/adr/0007-progress-report-verified-done.md` — ADR (Accepted) — Schema-validated progress report is the agent→engine channel; done requires a skeptic pass. Topics: progress, verified done, skeptic, schema.
+- `docs/adr/0008-shared-proto-crate.md` — ADR (Accepted) — Wire types defined once in leaf crate `proto`, shared by engine and api; replaces mirrored types + golden fixture; amends 0006's client rule. Topics: proto, wire contract, published language, crates, dependencies.
 
 ## Domain
 
