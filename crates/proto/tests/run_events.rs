@@ -10,9 +10,11 @@ use proto::RunEvent;
 
 const FIXTURE: &str = include_str!("fixtures/run_events.jsonl");
 
-/// Growing `RunEvent` breaks this match at compile time, and the
-/// coverage test below then demands a fixture line for the new
-/// variant — the two together keep the fixture exhaustive.
+/// Growing `RunEvent` breaks this match at compile time; add the new
+/// arm together with a fixture line and an entry in the coverage
+/// test's `all` list. The coverage test catches a missing fixture
+/// line or a missing list entry, but not both omitted at once — the
+/// compile error here is the only prompt.
 fn variant(event: &RunEvent) -> &'static str {
     match event {
         RunEvent::RunStarted { .. } => "run_started",
