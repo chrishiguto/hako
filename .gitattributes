@@ -1,0 +1,4 @@
+# The committed flow schema is byte-compared against its generator
+# (`cargo xtask schema --check`), which always emits LF — a CRLF
+# checkout would fail the drift check spuriously.
+schemas/*.json text eol=lf

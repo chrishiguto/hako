@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 /// A name a flow may reference — never a value, so flow files stay
 /// safe to commit and safe for LLMs to read and write.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct SecretName(String);
 

@@ -15,13 +15,18 @@ setup:
 fmt:
     cargo fmt --all
 
-# fmt-check, typos, cargo-deny, dependency rules, clippy (warnings denied) — cheapest first, --locked so the committed Cargo.lock stays authoritative
+# fmt-check, typos, cargo-deny, dependency rules, schema drift, clippy (warnings denied) — cheapest first, --locked so the committed Cargo.lock stays authoritative
 check:
     cargo fmt --all --check
     typos
     cargo deny --locked check
     cargo --locked xtask deps
+    cargo --locked xtask schema --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
+
+# regenerate schemas/flow.schema.json from the engine's flow types
+schema:
+    cargo --locked xtask schema
 
 # the test suite
 test:

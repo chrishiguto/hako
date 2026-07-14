@@ -1,0 +1,14 @@
+# TOML allows `inf`; a token budget doesn't.
+
+[loop]
+kernel = "ralph"
+goal = "Implement all open GitHub issues"
+
+[agent]
+engine = "claude"
+
+[budget]
+max_tokens = inf
+
+[workspace]
+repo = "."

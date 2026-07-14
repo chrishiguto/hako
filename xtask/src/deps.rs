@@ -202,6 +202,9 @@ mod tests {
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
             ("cli", &["api"]),
+            // Exempt from the rules but present in the graph: xtask
+            // links the engine to generate the flow schema.
+            ("xtask", &["engine"]),
         ])
     }
 
@@ -217,11 +220,10 @@ mod tests {
     #[test]
     fn real_workspace_matches_intended_shape() {
         let direct = intended_shape();
-        let mut expected: Graph = direct
+        let expected: Graph = direct
             .keys()
             .map(|name| (name.clone(), reachable(&direct, name)))
             .collect();
-        expected.insert("xtask".to_string(), BTreeSet::new());
         let actual = workspace_graph().expect("cargo metadata on the real workspace");
         assert_eq!(actual, expected);
     }

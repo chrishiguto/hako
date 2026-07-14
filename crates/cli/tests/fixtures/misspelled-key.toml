@@ -1,0 +1,14 @@
+# `max_iteration` is missing its final `s`.
+
+[loop]
+kernel = "ralph"
+goal = "Implement all open GitHub issues"
+
+[agent]
+engine = "claude"
+
+[budget]
+max_iteration = 20
+
+[workspace]
+repo = "."

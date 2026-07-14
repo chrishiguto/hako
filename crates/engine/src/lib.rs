@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod budget;
 pub mod event;
+pub mod flow;
 pub mod kernel;
 pub mod notify;
 pub mod progress;
@@ -20,6 +21,10 @@ pub mod secrets;
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent};
+pub use flow::{
+    AgentConfig, BudgetConfig, FailAction, FlowConfig, FlowDuration, FlowError, KernelName,
+    LoopConfig, NotifyConfig, OnFail, SecretsConfig, VerifyConfig, WorkspaceConfig,
+};
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};

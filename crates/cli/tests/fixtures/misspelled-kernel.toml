@@ -1,0 +1,11 @@
+# No kernel named `ralf` ships with the engine.
+
+[loop]
+kernel = "ralf"
+goal = "Implement all open GitHub issues"
+
+[agent]
+engine = "claude"
+
+[workspace]
+repo = "."

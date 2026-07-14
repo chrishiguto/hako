@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FlowConfig",
+  "description": "A parsed flow: what to achieve, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel\n(ADR 0001).",
+  "type": "object",
+  "properties": {
+    "agent": {
+      "$ref": "#/$defs/AgentConfig"
+    },
+    "budget": {
+      "$ref": "#/$defs/BudgetConfig"
+    },
+    "loop": {
+      "$ref": "#/$defs/LoopConfig"
+    },
+    "notify": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NotifyConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "secrets": {
+      "$ref": "#/$defs/SecretsConfig"
+    },
+    "verify": {
+      "$ref": "#/$defs/VerifyConfig"
+    },
+    "workspace": {
+      "$ref": "#/$defs/WorkspaceConfig"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "loop",
+    "agent",
+    "workspace"
+  ],
+  "$defs": {
+    "AgentConfig": {
+      "description": "Which agent drives the iterations.",
+      "type": "object",
+      "properties": {
+        "engine": {
+          "description": "An agent adapter name, e.g. `claude`. An open set — adapters\nare registered at runtime — so unlike `kernel` it is not an\nenum.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "engine"
+      ]
+    },
+    "BudgetConfig": {
+      "description": "The caps a flow puts on one run. Everything left unset keeps the\nengine default ([`Budgets::default`]).",
+      "type": "object",
+      "properties": {
+        "iteration_timeout": {
+          "description": "Cap on one iteration, e.g. `\"30m\"`. The one hard budget: on\nexpiry the sandbox is destroyed and the iteration counts as\nfailed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowDuration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_hours": {
+          "description": "Wall-clock cap on the whole run, in whole hours.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0
+        },
+        "max_iterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "FailAction": {
+      "description": "Where the run goes when retries are spent. Pausing is the default:\na run that stops making verified progress should wait for a human,\nnot burn budget or die.",
+      "type": "string",
+      "enum": [
+        "pause",
+        "fail"
+      ]
+    },
+    "FlowDuration": {
+      "description": "A duration: a whole number (1–9 digits, no leading zero) with unit `ms`, `s`, `m`, or `h`, like \"30m\".",
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,8}(ms|s|m|h)$"
+    },
+    "KernelName": {
+      "description": "The loop patterns the engine ships. A closed set by design: a new\nloop shape is a new kernel in Rust, never logic in the flow file\n(ADR 0001) — which is what lets the schema reject a misspelled\nkernel outright.",
+      "type": "string",
+      "enum": [
+        "ralph"
+      ]
+    },
+    "LoopConfig": {
+      "description": "Which kernel runs the loop and what it is trying to achieve.",
+      "type": "object",
+      "properties": {
+        "goal": {
+          "description": "What the loop is trying to achieve, passed verbatim to the\nkernel.",
+          "type": "string"
+        },
+        "kernel": {
+          "$ref": "#/$defs/KernelName"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kernel",
+        "goal"
+      ]
+    },
+    "NotifyConfig": {
+      "description": "Where the daemon pushes run lifecycle notifications.",
+      "type": "object",
+      "properties": {
+        "webhook": {
+          "description": "URL POSTed to when the run pauses, finishes, or fails.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "webhook"
+      ]
+    },
+    "OnFail": {
+      "description": "What the kernel does once an iteration's checks fail.",
+      "type": "object",
+      "properties": {
+        "retries": {
+          "description": "Extra attempts the agent gets at the failing iteration before\n`then` applies.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "maximum": 4294967295,
+          "minimum": 0
+        },
+        "then": {
+          "$ref": "#/$defs/FailAction"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SecretName": {
+      "description": "A name a flow may reference — never a value, so flow files stay\nsafe to commit and safe for LLMs to read and write.",
+      "type": "string"
+    },
+    "SecretsConfig": {
+      "description": "Secret *names* only — values live in the daemon's store, so flow\nfiles stay safe to commit and to hand to an LLM.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Secrets injected into the sandbox as environment variables, by\nname.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretName"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "VerifyConfig": {
+      "description": "The verify checks an iteration must pass to count as progress. No\nchecks means every iteration counts.",
+      "type": "object",
+      "properties": {
+        "checks": {
+          "description": "Commands run in the sandbox after the agent's invocation; each\nmust exit zero.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "on_fail": {
+          "$ref": "#/$defs/OnFail"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceConfig": {
+      "description": "The one thing that survives iterations — the repo the loop works\non.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Path to the repository the workspace is seeded from.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repo"
+      ]
+    }
+  }
+}

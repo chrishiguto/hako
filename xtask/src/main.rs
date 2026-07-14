@@ -6,16 +6,20 @@ use std::env;
 use std::process;
 
 mod deps;
+mod schema;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [task] if task == "deps" => deps::run(),
+        [task] if task == "schema" => schema::run(false),
+        [task, flag] if task == "schema" && flag == "--check" => schema::run(true),
         _ => {
             eprintln!("usage: cargo xtask <task>");
             eprintln!();
             eprintln!("tasks:");
-            eprintln!("  deps    check the workspace dependency rules (ADR 0006)");
+            eprintln!("  deps              check the workspace dependency rules (ADR 0006)");
+            eprintln!("  schema [--check]  regenerate schemas/flow.schema.json (or fail on drift)");
             process::exit(2);
         }
     }

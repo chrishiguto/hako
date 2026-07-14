@@ -1,0 +1,11 @@
+# An unquoted date — TOML parses it as a datetime, not a string.
+
+[loop]
+kernel = "ralph"
+goal = 2026-01-01
+
+[agent]
+engine = "claude"
+
+[workspace]
+repo = "."
