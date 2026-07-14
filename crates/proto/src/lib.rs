@@ -4,9 +4,9 @@
 //! the crate name's lineage.
 //!
 //! One definition serves every side. The engine emits these types, the
-//! daemon records and streams them verbatim (ADR 0005), and clients
-//! deserialize the same shapes — so a change here is a wire-contract
-//! change by construction, never by accident. Shapes only the daemon
+//! daemon records and streams them verbatim, and clients deserialize
+//! the same shapes — so a change here is a wire-contract change by
+//! construction, never by accident. Shapes only the daemon
 //! and clients speak live in `api`: the envelope each logged event is
 //! wrapped in (sequence, timestamp) and the REST bodies. The `openapi`
 //! feature adds `utoipa` schema derives so `api` can generate the

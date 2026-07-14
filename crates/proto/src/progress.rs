@@ -6,7 +6,7 @@
 //! daemons; the agent-facing ingest is
 //! [`ProgressReport::from_agent_json`], which rejects unknown fields
 //! so a malformed report fails loudly and feeds the one repair
-//! re-prompt (ADR 0007) instead of being half-understood.
+//! re-prompt instead of being half-understood.
 
 use serde::{Deserialize, Serialize};
 
@@ -126,8 +126,8 @@ mod tests {
 
     use super::*;
 
-    /// The exact shape locked in the v1 design session — if this test
-    /// breaks, the agent-facing contract broke.
+    /// The exact shape the v1 contract locked — if this test breaks,
+    /// the agent-facing contract broke.
     #[test]
     fn the_locked_shape_parses_at_the_agent_boundary() {
         let report = ProgressReport::from_agent_json(

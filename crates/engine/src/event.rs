@@ -1,7 +1,6 @@
 //! The sink seam events flow through. The event vocabulary itself is
 //! `proto`'s — the engine emits wire types directly, so the log a sink
-//! writes is already the published format (ADR 0005 streams it
-//! verbatim).
+//! writes is already the published format the daemon streams verbatim.
 
 use async_trait::async_trait;
 
