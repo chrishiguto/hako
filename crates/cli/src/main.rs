@@ -1,20 +1,23 @@
 //! `hako` — a pure client of the daemon; among workspace crates it may
-//! depend on `api` only (ADR 0006). Flow validation is offline by
-//! design: the committed flow schema is embedded at build time, so
-//! `hako validate` needs neither a daemon nor an engine link.
+//! depend on `api` and `proto` only (ADR 0006). Flow validation is
+//! offline by design and runs the daemon's own parser — the shared
+//! `proto::flow` types (ADR 0009) — so a flow the CLI blesses is a
+//! flow the daemon accepts, and the errors match down to the line.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use proto::flow::FlowConfig;
 
-// The crate's one allowed workspace edge, declared ahead of the client
-// code that will use it.
+// The crate's other allowed workspace edge, declared ahead of the
+// client code that will use it.
 use api as _;
 
-/// Generated from the engine's flow types by `cargo xtask schema`;
-/// `just check` fails if it drifts from them.
+/// Generated from proto's flow types by `cargo xtask schema`;
+/// `just check` fails if it drifts from them. Embedded only to be
+/// printed — validation goes through the types themselves.
 const FLOW_SCHEMA: &str = include_str!("../../../schemas/flow.schema.json");
 
 #[derive(Parser)]
@@ -30,7 +33,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Validate a flow file against the flow schema — offline, no
+    /// Validate a flow file with the daemon's parser — offline, no
     /// daemon needed.
     Validate {
         /// Path to a flow TOML file.
@@ -48,10 +51,8 @@ fn main() -> ExitCode {
                 println!("{}: valid flow", flow.display());
                 ExitCode::SUCCESS
             }
-            Err(errors) => {
-                for error in errors {
-                    eprintln!("{error}");
-                }
+            Err(error) => {
+                eprintln!("{error}");
                 ExitCode::FAILURE
             }
         },
@@ -62,78 +63,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// Every schema violation at once, so an author fixes a flow in one
-/// round instead of one error per run.
-fn validate(path: &Path) -> Result<(), Vec<String>> {
+/// Strict parse with the shared flow types: the daemon's verdict and
+/// the daemon's error text — offending line, caret, and suggestion.
+/// Fails at the first error, exactly as the daemon would at submit.
+fn validate(path: &Path) -> Result<(), String> {
     let display = path.display();
-    let source = fs::read_to_string(path).map_err(|error| vec![format!("{display}: {error}")])?;
-    let flow: toml::Value =
-        toml::from_str(&source).map_err(|error| vec![format!("{display}: {error}")])?;
-    let flow = to_json(flow, "").map_err(|error| vec![format!("{display}: {error}")])?;
-    let errors: Vec<String> = flow_validator()
-        .iter_errors(&flow)
-        .map(|error| {
-            let pointer = error.instance_path().to_string();
-            format!("{display}: {}: {error}", location(&pointer))
-        })
-        .collect();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
-/// The JSON image of a flow's TOML. Hand-rolled for the two values the
-/// default conversion mangles into misleading schema errors: a
-/// non-finite float would turn into JSON `null` and slip through
-/// `Option` fields, and a datetime would leak the toml crate's private
-/// serde marker. Both fail here instead, naming the offending key.
-fn to_json(value: toml::Value, path: &str) -> Result<serde_json::Value, String> {
-    Ok(match value {
-        toml::Value::String(text) => serde_json::Value::String(text),
-        toml::Value::Integer(number) => number.into(),
-        toml::Value::Float(number) => serde_json::Number::from_f64(number)
-            .ok_or_else(|| format!("{}: `{number}` is not a finite number", location(path)))?
-            .into(),
-        toml::Value::Boolean(flag) => serde_json::Value::Bool(flag),
-        toml::Value::Datetime(datetime) => {
-            return Err(format!(
-                "{}: dates and times like `{datetime}` are not flow values",
-                location(path)
-            ));
-        }
-        toml::Value::Array(items) => serde_json::Value::Array(
-            items
-                .into_iter()
-                .enumerate()
-                .map(|(index, item)| to_json(item, &format!("{path}/{index}")))
-                .collect::<Result<_, _>>()?,
-        ),
-        toml::Value::Table(entries) => serde_json::Value::Object(
-            entries
-                .into_iter()
-                .map(|(key, entry)| {
-                    let entry = to_json(entry, &format!("{path}/{key}"))?;
-                    Ok((key, entry))
-                })
-                .collect::<Result<_, String>>()?,
-        ),
-    })
-}
-
-fn flow_validator() -> jsonschema::Validator {
-    let schema = serde_json::from_str(FLOW_SCHEMA).expect("committed flow schema is JSON");
-    jsonschema::validator_for(&schema).expect("committed flow schema is a valid JSON Schema")
-}
-
-/// Where in the flow a violation sits as a JSON pointer, e.g.
-/// `/budget` — the schema analogue of the engine's line-and-key TOML
-/// errors.
-fn location(pointer: &str) -> &str {
-    if pointer.is_empty() {
-        "(root)"
-    } else {
-        pointer
-    }
+    let source = fs::read_to_string(path).map_err(|error| format!("{display}: {error}"))?;
+    FlowConfig::from_toml(&source).map_err(|error| format!("{display}: {error}"))?;
+    Ok(())
 }

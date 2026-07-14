@@ -1,6 +1,8 @@
 //! `hako validate` / `hako schema`, driven at the binary boundary —
 //! the CLI's highest seam. What matters is the contract flow authors
-//! feel: exit codes, and errors that name the offending key.
+//! feel: exit codes, and errors that carry the offending line and the
+//! fix. Validation runs the daemon's own parser (ADR 0009), so these
+//! tests also pin the error text a rejected submit would produce.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -38,12 +40,13 @@ fn the_committed_example_flow_validates() {
 }
 
 #[test]
-fn a_misspelled_key_fails_naming_it_and_its_section() {
+fn a_misspelled_key_fails_naming_it_the_line_and_the_fix() {
     let output = hako(&["validate", &fixture("misspelled-key.toml")]);
     assert!(!output.status.success());
     let stderr = stderr(&output);
     assert!(stderr.contains("max_iteration"), "{stderr}");
-    assert!(stderr.contains("/budget"), "{stderr}");
+    assert!(stderr.contains("max_iterations"), "{stderr}");
+    assert!(stderr.contains("line"), "{stderr}");
 }
 
 #[test]
@@ -56,30 +59,40 @@ fn a_misspelled_kernel_fails_naming_the_real_one() {
 }
 
 #[test]
-fn an_out_of_range_integer_fails_naming_the_maximum() {
+fn an_out_of_range_integer_fails_naming_the_expected_type() {
     let output = hako(&["validate", &fixture("out-of-range.toml")]);
     assert!(!output.status.success());
     let stderr = stderr(&output);
-    assert!(stderr.contains("/budget/max_iterations"), "{stderr}");
-    assert!(stderr.contains("maximum"), "{stderr}");
+    assert!(stderr.contains("max_iterations"), "{stderr}");
+    assert!(stderr.contains("u32"), "{stderr}");
 }
 
 #[test]
-fn a_non_finite_number_fails_naming_its_key() {
+fn a_non_finite_number_fails_showing_its_line() {
     let output = hako(&["validate", &fixture("nonfinite.toml")]);
     assert!(!output.status.success());
     let stderr = stderr(&output);
-    assert!(stderr.contains("/budget/max_tokens"), "{stderr}");
-    assert!(stderr.contains("finite"), "{stderr}");
+    assert!(stderr.contains("max_tokens"), "{stderr}");
+    assert!(stderr.contains("inf"), "{stderr}");
 }
 
 #[test]
-fn a_datetime_fails_naming_its_key() {
+fn a_datetime_fails_showing_its_line() {
     let output = hako(&["validate", &fixture("datetime.toml")]);
     assert!(!output.status.success());
     let stderr = stderr(&output);
-    assert!(stderr.contains("/loop/goal"), "{stderr}");
-    assert!(stderr.contains("dates"), "{stderr}");
+    assert!(stderr.contains("goal"), "{stderr}");
+    assert!(stderr.contains("string"), "{stderr}");
+}
+
+#[test]
+fn a_bad_duration_fails_spelling_out_the_grammar() {
+    let output = hako(&["validate", &fixture("bad-duration.toml")]);
+    assert!(!output.status.success());
+    let stderr = stderr(&output);
+    assert!(stderr.contains("invalid duration"), "{stderr}");
+    assert!(stderr.contains("030m"), "{stderr}");
+    assert!(stderr.contains("\"30m\""), "{stderr}");
 }
 
 #[test]

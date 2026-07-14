@@ -238,9 +238,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "clap",
- "jsonschema",
- "serde_json",
- "toml",
+ "proto",
 ]
 
 [[package]]
@@ -288,14 +286,11 @@ dependencies = [
  "async-trait",
  "futures-core",
  "futures-util",
- "jsonschema",
  "proto",
- "schemars",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
- "toml",
 ]
 
 [[package]]
@@ -762,8 +757,11 @@ dependencies = [
 name = "proto"
 version = "0.1.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
+ "thiserror",
+ "toml",
  "utoipa",
 ]
 
@@ -1281,8 +1279,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
- "engine",
+ "jsonschema",
+ "proto",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

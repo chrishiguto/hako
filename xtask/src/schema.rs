@@ -1,8 +1,9 @@
-//! The flow-schema sync task. The engine's flow types are the source
-//! of truth; `schemas/flow.schema.json` is a committed artifact of
-//! them, embedded by the CLI at build time (which is why the CLI never
-//! links the engine, ADR 0006). Write mode regenerates the file;
-//! `--check` fails CI when it drifts from the types.
+//! The flow-schema sync task. Proto's flow types are the source of
+//! truth (ADR 0009); `schemas/flow.schema.json` is a committed
+//! artifact of them for consumers that cannot link Rust — editors and
+//! LLMs — and for `hako schema` to print. Write mode regenerates the
+//! file; `--check` fails CI when it drifts from the types. The tests
+//! in `tests/` pin the artifact's agreement with strict serde.
 
 use std::fs;
 
@@ -12,7 +13,7 @@ use cargo_metadata::MetadataCommand;
 const SCHEMA_PATH: &str = "schemas/flow.schema.json";
 
 pub fn run(check: bool) -> anyhow::Result<()> {
-    let generated = serde_json::to_string_pretty(&engine::flow::json_schema())
+    let generated = serde_json::to_string_pretty(&proto::flow::json_schema())
         .context("flow schema did not serialize")?
         + "\n";
     // Resolved at run time — a compile-time CARGO_MANIFEST_DIR would go

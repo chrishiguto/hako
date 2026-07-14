@@ -201,10 +201,10 @@ mod tests {
             ("api", &["proto"]),
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
-            ("cli", &["api"]),
+            ("cli", &["api", "proto"]),
             // Exempt from the rules but present in the graph: xtask
-            // links the engine to generate the flow schema.
-            ("xtask", &["engine"]),
+            // links proto to generate the flow schema.
+            ("xtask", &["proto"]),
         ])
     }
 

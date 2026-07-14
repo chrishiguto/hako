@@ -1,28 +1,29 @@
-//! Flow config — the ~20-line TOML that parameterizes a kernel.
+//! Flow config — the ~20-line TOML that parameterizes a kernel, and
+//! the most published surface hako has: authored by users and LLMs,
+//! validated by editors, parsed by the daemon. Its types live here
+//! (ADR 0009) so every Rust consumer shares one strict parser —
+//! `hako validate` runs [`FlowConfig::from_toml`] too, making its
+//! verdict and errors exactly the daemon's.
 //!
 //! Deserialization is strict: every table rejects unknown keys, so a
 //! typo fails at validation time pointing at the offending key, not at
-//! iteration 4. The committed `schemas/flow.schema.json` is generated
-//! from these same types ([`json_schema`] via `cargo xtask schema`),
-//! which is how editors and the schema-embedding CLI validate flows
-//! without linking the engine.
+//! iteration 4. Consumers that cannot link Rust — editors, LLMs — get
+//! the committed `schemas/flow.schema.json`, generated from these same
+//! types (`json_schema` via `cargo xtask schema`, behind the `schema`
+//! feature) and drift-checked in CI.
 
-use std::borrow::Cow;
 use std::str::FromStr;
 use std::time::Duration;
 
-use schemars::generate::SchemaSettings;
-use schemars::transform::{Transform, transform_subschemas};
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
 
-use crate::budget::Budgets;
 use crate::secrets::SecretName;
 
 /// A parsed flow: what to achieve, with which agent, under which
 /// limits. Contains no logic — control flow belongs to the kernel
 /// (ADR 0001).
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FlowConfig {
     pub r#loop: LoopConfig,
@@ -52,7 +53,8 @@ impl FlowConfig {
 pub struct FlowError(#[from] toml::de::Error);
 
 /// Which kernel runs the loop and what it is trying to achieve.
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LoopConfig {
     pub kernel: KernelName,
@@ -65,14 +67,16 @@ pub struct LoopConfig {
 /// loop shape is a new kernel in Rust, never logic in the flow file
 /// (ADR 0001) — which is what lets the schema reject a misspelled
 /// kernel outright.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum KernelName {
     Ralph,
 }
 
 /// Which agent drives the iterations.
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// An agent adapter name, e.g. `claude`. An open set — adapters
@@ -82,8 +86,9 @@ pub struct AgentConfig {
 }
 
 /// The caps a flow puts on one run. Everything left unset keeps the
-/// engine default ([`Budgets::default`]).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+/// engine's default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BudgetConfig {
     pub max_iterations: Option<u32>,
@@ -96,26 +101,10 @@ pub struct BudgetConfig {
     pub iteration_timeout: Option<FlowDuration>,
 }
 
-impl BudgetConfig {
-    /// Lowers the authored caps onto the engine's [`Budgets`].
-    pub fn budgets(&self) -> Budgets {
-        Budgets {
-            max_iterations: self.max_iterations,
-            max_wall_clock: self
-                .max_hours
-                .map(|hours| Duration::from_secs(u64::from(hours) * 3600)),
-            max_tokens: self.max_tokens,
-            iteration_timeout: self.iteration_timeout.map_or(
-                Budgets::default().iteration_timeout,
-                FlowDuration::as_duration,
-            ),
-        }
-    }
-}
-
 /// The verify checks an iteration must pass to count as progress. No
 /// checks means every iteration counts.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct VerifyConfig {
     /// Commands run in the sandbox after the agent's invocation; each
@@ -127,7 +116,8 @@ pub struct VerifyConfig {
 }
 
 /// What the kernel does once an iteration's checks fail.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct OnFail {
     /// Extra attempts the agent gets at the failing iteration before
@@ -141,7 +131,8 @@ pub struct OnFail {
 /// Where the run goes when retries are spent. Pausing is the default:
 /// a run that stops making verified progress should wait for a human,
 /// not burn budget or die.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum FailAction {
     #[default]
@@ -151,7 +142,8 @@ pub enum FailAction {
 
 /// The one thing that survives iterations — the repo the loop works
 /// on.
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     /// Path to the repository the workspace is seeded from.
@@ -160,7 +152,8 @@ pub struct WorkspaceConfig {
 
 /// Secret *names* only — values live in the daemon's store, so flow
 /// files stay safe to commit and to hand to an LLM.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     /// Secrets injected into the sandbox as environment variables, by
@@ -170,7 +163,8 @@ pub struct SecretsConfig {
 }
 
 /// Where the daemon pushes run lifecycle notifications.
-#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NotifyConfig {
     /// URL POSTed to when the run pauses, finishes, or fails.
@@ -181,12 +175,6 @@ pub struct NotifyConfig {
 /// unit — `"500ms"`, `"90s"`, `"30m"`, `"6h"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlowDuration(Duration);
-
-/// Must accept exactly what [`FlowDuration::from_str`] accepts — the
-/// schema is the CLI's only knowledge of the format. The agreement is
-/// pinned by `tests/flow_schema_agreement.rs`. Nine digits bounds the
-/// count so no unit conversion can overflow.
-const DURATION_PATTERN: &str = "^[1-9][0-9]{0,8}(ms|s|m|h)$";
 
 impl FlowDuration {
     pub fn as_duration(self) -> Duration {
@@ -203,8 +191,9 @@ impl FromStr for FlowDuration {
             .find(|c: char| !c.is_ascii_digit())
             .ok_or_else(error)?;
         let (number, unit) = source.split_at(unit_start);
-        // Mirrors DURATION_PATTERN exactly: 1–9 digits, no leading
-        // zero — small enough that no unit conversion can overflow.
+        // Mirrors the schema's DURATION_PATTERN exactly: 1–9 digits,
+        // no leading zero — small enough that no unit conversion can
+        // overflow.
         if number.is_empty() || number.len() > 9 || number.starts_with('0') {
             return Err(error());
         }
@@ -238,54 +227,77 @@ impl<'de> Deserialize<'de> for FlowDuration {
     }
 }
 
-impl JsonSchema for FlowDuration {
-    fn schema_name() -> Cow<'static, str> {
-        "FlowDuration".into()
+#[cfg(feature = "schema")]
+pub use schema::json_schema;
+
+/// Schema generation, behind the `schema` feature so product crates
+/// never carry schemars — mirroring the `openapi` feature (ADR 0008).
+#[cfg(feature = "schema")]
+mod schema {
+    use std::borrow::Cow;
+
+    use schemars::generate::SchemaSettings;
+    use schemars::transform::{Transform, transform_subschemas};
+    use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+
+    use super::{FlowConfig, FlowDuration};
+
+    /// Must accept exactly what [`FlowDuration::from_str`] accepts —
+    /// the schema is a non-Rust consumer's only knowledge of the
+    /// format. The agreement is pinned by the schema tests in
+    /// `xtask/tests/`. Nine digits bounds the count so no unit
+    /// conversion can overflow.
+    const DURATION_PATTERN: &str = "^[1-9][0-9]{0,8}(ms|s|m|h)$";
+
+    /// The flow schema, generated from these types so it can never
+    /// disagree with them. Committed at `schemas/flow.schema.json`,
+    /// drift-checked in CI, and embedded by the CLI for `hako schema`.
+    pub fn json_schema() -> Schema {
+        SchemaSettings::default()
+            .with_transform(BoundIntegerFormats)
+            .into_generator()
+            .into_root_schema_for::<FlowConfig>()
     }
 
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "pattern": DURATION_PATTERN,
-            "description": "A duration: a whole number (1\u{2013}9 digits, no leading zero) with unit `ms`, `s`, `m`, or `h`, like \"30m\".",
-        })
-    }
-}
+    /// Stamps explicit bounds onto every sub-64-bit integer in the
+    /// schema. schemars emits only `minimum: 0` for them, and JSON
+    /// Schema treats `format` as an annotation — without real bounds
+    /// the schema would bless out-of-range values strict serde
+    /// rejects. The 64-bit formats need no bounds: TOML integers are
+    /// i64, so theirs are unreachable from a flow file. A format this
+    /// table misses fails the schema tests in `xtask/tests/`.
+    #[derive(Debug, Clone)]
+    struct BoundIntegerFormats;
 
-/// The flow schema, generated from these types so it can never
-/// disagree with them. Committed at `schemas/flow.schema.json` and
-/// embedded by the CLI at build time.
-pub fn json_schema() -> Schema {
-    SchemaSettings::default()
-        .with_transform(BoundIntegerFormats)
-        .into_generator()
-        .into_root_schema_for::<FlowConfig>()
-}
-
-/// Stamps explicit bounds onto every sub-64-bit integer in the schema.
-/// schemars emits only `minimum: 0` for them, and JSON Schema treats
-/// `format` as an annotation — without real bounds the schema would
-/// bless out-of-range values strict serde rejects. The 64-bit formats
-/// need no bounds: TOML integers are i64, so theirs are unreachable
-/// from a flow file. A format this table misses fails the
-/// `every_integer_format_in_the_schema_carries_bounds` test.
-#[derive(Debug, Clone)]
-struct BoundIntegerFormats;
-
-impl Transform for BoundIntegerFormats {
-    fn transform(&mut self, schema: &mut Schema) {
-        if let Some(format) = schema.get("format").and_then(serde_json::Value::as_str) {
-            let bounds = match format {
-                "uint32" => Some((serde_json::json!(0), serde_json::json!(u32::MAX))),
-                "int32" => Some((serde_json::json!(i32::MIN), serde_json::json!(i32::MAX))),
-                _ => None,
-            };
-            if let Some((minimum, maximum)) = bounds {
-                schema.insert("minimum".into(), minimum);
-                schema.insert("maximum".into(), maximum);
+    impl Transform for BoundIntegerFormats {
+        fn transform(&mut self, schema: &mut Schema) {
+            if let Some(format) = schema.get("format").and_then(serde_json::Value::as_str) {
+                let bounds = match format {
+                    "uint32" => Some((serde_json::json!(0), serde_json::json!(u32::MAX))),
+                    "int32" => Some((serde_json::json!(i32::MIN), serde_json::json!(i32::MAX))),
+                    _ => None,
+                };
+                if let Some((minimum, maximum)) = bounds {
+                    schema.insert("minimum".into(), minimum);
+                    schema.insert("maximum".into(), maximum);
+                }
             }
+            transform_subschemas(self, schema);
         }
-        transform_subschemas(self, schema);
+    }
+
+    impl JsonSchema for FlowDuration {
+        fn schema_name() -> Cow<'static, str> {
+            "FlowDuration".into()
+        }
+
+        fn json_schema(_: &mut SchemaGenerator) -> Schema {
+            json_schema!({
+                "type": "string",
+                "pattern": DURATION_PATTERN,
+                "description": "A duration: a whole number (1\u{2013}9 digits, no leading zero) with unit `ms`, `s`, `m`, or `h`, like \"30m\".",
+            })
+        }
     }
 }
 
@@ -316,6 +328,15 @@ repo = "."
         assert_eq!(flow.r#loop.kernel, KernelName::Ralph);
         assert_eq!(flow.r#loop.goal, "Implement all open GitHub issues");
         assert_eq!(flow.agent.engine, "claude");
+        assert_eq!(
+            flow.budget,
+            BudgetConfig {
+                max_iterations: Some(20),
+                max_hours: Some(6),
+                max_tokens: None,
+                iteration_timeout: Some("30m".parse().unwrap()),
+            }
+        );
         assert_eq!(flow.verify.checks, ["cargo build", "cargo test"]);
         assert_eq!(
             flow.verify.on_fail,
@@ -330,19 +351,9 @@ repo = "."
     }
 
     #[test]
-    fn authored_budgets_lower_onto_engine_budgets() {
-        let flow = FlowConfig::from_toml(REPRESENTATIVE_FLOW).unwrap();
-        let budgets = flow.budget.budgets();
-        assert_eq!(budgets.max_iterations, Some(20));
-        assert_eq!(budgets.max_wall_clock, Some(Duration::from_secs(6 * 3600)));
-        assert_eq!(budgets.max_tokens, None);
-        assert_eq!(budgets.iteration_timeout, Duration::from_secs(30 * 60));
-    }
-
-    #[test]
-    fn minimal_flow_gets_engine_defaults() {
+    fn minimal_flow_leaves_optional_sections_default() {
         let flow = FlowConfig::from_toml(MINIMAL_FLOW).unwrap();
-        assert_eq!(flow.budget.budgets(), Budgets::default());
+        assert_eq!(flow.budget, BudgetConfig::default());
         assert_eq!(flow.verify, VerifyConfig::default());
         assert_eq!(flow.verify.on_fail.then, FailAction::Pause);
         assert!(flow.secrets.env.is_empty());
@@ -409,84 +420,6 @@ repo = "."
             "5d",
         ] {
             assert!(text.parse::<FlowDuration>().is_err(), "{text}");
-        }
-    }
-
-    /// The schema must carry the same strictness as the serde types:
-    /// every object in it rejects unknown keys, or the CLI would bless
-    /// flows the daemon rejects.
-    #[test]
-    fn every_object_in_the_schema_rejects_unknown_keys() {
-        let schema = serde_json::to_value(json_schema()).unwrap();
-        let root = schema.as_object().unwrap();
-        assert_eq!(root["additionalProperties"], serde_json::json!(false));
-        for (name, definition) in root["$defs"].as_object().unwrap() {
-            if definition["type"] == serde_json::json!("object") {
-                assert_eq!(
-                    definition["additionalProperties"],
-                    serde_json::json!(false),
-                    "{name}"
-                );
-            }
-        }
-    }
-
-    /// Every sub-64-bit integer anywhere in the schema must carry the
-    /// explicit bounds [`BoundIntegerFormats`] stamps — a config field
-    /// with an integer type the transform doesn't know fails here
-    /// instead of becoming a hole the schema-validating CLI would
-    /// bless. The 64-bit formats are exempt: TOML integers are i64,
-    /// so their bounds are unreachable from a flow file.
-    #[test]
-    fn every_integer_format_in_the_schema_carries_bounds() {
-        fn walk(node: &serde_json::Value, path: &str, found: &mut u32) {
-            match node {
-                serde_json::Value::Object(entries) => {
-                    let sub_64_bit =
-                        |f: &&str| f.contains("int") && *f != "uint64" && *f != "int64";
-                    let format = entries.get("format").and_then(serde_json::Value::as_str);
-                    if let Some(format) = format.filter(sub_64_bit) {
-                        *found += 1;
-                        for bound in ["minimum", "maximum"] {
-                            assert!(
-                                entries.contains_key(bound),
-                                "{path}: format `{format}` lacks `{bound}` — \
-                                 teach BoundIntegerFormats this format or use a bounded type"
-                            );
-                        }
-                    }
-                    for (key, entry) in entries {
-                        walk(entry, &format!("{path}/{key}"), found);
-                    }
-                }
-                serde_json::Value::Array(items) => {
-                    for (index, item) in items.iter().enumerate() {
-                        walk(item, &format!("{path}/{index}"), found);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let schema = serde_json::to_value(json_schema()).unwrap();
-        let mut found = 0;
-        walk(&schema, "", &mut found);
-        assert!(found > 0, "the walk matched no integer formats");
-    }
-
-    #[test]
-    fn the_schema_names_every_flow_section() {
-        let schema = serde_json::to_value(json_schema()).unwrap();
-        let properties = schema["properties"].as_object().unwrap();
-        for section in [
-            "loop",
-            "agent",
-            "budget",
-            "verify",
-            "workspace",
-            "secrets",
-            "notify",
-        ] {
-            assert!(properties.contains_key(section), "{section}");
         }
     }
 }

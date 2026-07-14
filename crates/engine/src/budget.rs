@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use proto::flow::{BudgetConfig, FlowDuration};
+
 pub use proto::budget::{BudgetKind, TokenUsage};
 
 /// The caps a flow sets on one run. `None` means uncapped.
@@ -30,6 +32,24 @@ impl Default for Budgets {
     }
 }
 
+/// Lowers a flow's authored caps onto the engine's budgets — the
+/// conversion at the proto/engine edge (ADR 0008). Everything left
+/// unset keeps the default.
+impl From<&BudgetConfig> for Budgets {
+    fn from(config: &BudgetConfig) -> Self {
+        Self {
+            max_iterations: config.max_iterations,
+            max_wall_clock: config
+                .max_hours
+                .map(|hours| Duration::from_secs(u64::from(hours) * 3600)),
+            max_tokens: config.max_tokens,
+            iteration_timeout: config
+                .iteration_timeout
+                .map_or(Self::default().iteration_timeout, FlowDuration::as_duration),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +61,21 @@ mod tests {
         assert_eq!(budgets.max_wall_clock, None);
         assert_eq!(budgets.max_tokens, None);
         assert_eq!(budgets.iteration_timeout, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn authored_budgets_lower_onto_engine_budgets() {
+        let flow = proto::flow::FlowConfig::from_toml(include_str!("../../../examples/ralph.toml"))
+            .unwrap();
+        let budgets = Budgets::from(&flow.budget);
+        assert_eq!(budgets.max_iterations, Some(20));
+        assert_eq!(budgets.max_wall_clock, Some(Duration::from_secs(6 * 3600)));
+        assert_eq!(budgets.max_tokens, None);
+        assert_eq!(budgets.iteration_timeout, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn an_unset_budget_section_lowers_to_the_defaults() {
+        assert_eq!(Budgets::from(&BudgetConfig::default()), Budgets::default());
     }
 }

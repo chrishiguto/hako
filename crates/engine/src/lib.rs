@@ -10,7 +10,6 @@
 pub mod agent;
 pub mod budget;
 pub mod event;
-pub mod flow;
 pub mod kernel;
 pub mod notify;
 pub mod progress;
@@ -18,16 +17,21 @@ pub mod run;
 pub mod sandbox;
 pub mod secrets;
 
+// The flow language lives in proto (ADR 0009); re-exported so a flow
+// remains part of the engine's own vocabulary — it is what a kernel
+// runs.
+pub use proto::flow;
+
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent};
-pub use flow::{
-    AgentConfig, BudgetConfig, FailAction, FlowConfig, FlowDuration, FlowError, KernelName,
-    LoopConfig, NotifyConfig, OnFail, SecretsConfig, VerifyConfig, WorkspaceConfig,
-};
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
+pub use proto::flow::{
+    AgentConfig, BudgetConfig, FailAction, FlowConfig, FlowDuration, FlowError, KernelName,
+    LoopConfig, NotifyConfig, OnFail, SecretsConfig, VerifyConfig, WorkspaceConfig,
+};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,

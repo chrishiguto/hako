@@ -55,7 +55,7 @@
       ]
     },
     "BudgetConfig": {
-      "description": "The caps a flow puts on one run. Everything left unset keeps the\nengine default ([`Budgets::default`]).",
+      "description": "The caps a flow puts on one run. Everything left unset keeps the\nengine's default.",
       "type": "object",
       "properties": {
         "iteration_timeout": {
