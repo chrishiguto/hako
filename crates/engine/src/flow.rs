@@ -11,6 +11,8 @@ use std::borrow::Cow;
 use std::str::FromStr;
 use std::time::Duration;
 
+use schemars::generate::SchemaSettings;
+use schemars::transform::{Transform, transform_subschemas};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
 
@@ -84,14 +86,8 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetConfig {
-    // The explicit maxima repeat what the Rust types already say, but
-    // schemars does not emit them on its own and the jsonschema crate
-    // treats `format: uint32` as annotation-only — without them the
-    // CLI would bless out-of-range values strict serde rejects.
-    #[schemars(range(max = 4_294_967_295u32))]
     pub max_iterations: Option<u32>,
     /// Wall-clock cap on the whole run, in whole hours.
-    #[schemars(range(max = 4_294_967_295u32))]
     pub max_hours: Option<u32>,
     pub max_tokens: Option<u64>,
     /// Cap on one iteration, e.g. `"30m"`. The one hard budget: on
@@ -137,7 +133,6 @@ pub struct OnFail {
     /// Extra attempts the agent gets at the failing iteration before
     /// `then` applies.
     #[serde(default)]
-    #[schemars(range(max = 4_294_967_295u32))]
     pub retries: u32,
     #[serde(default)]
     pub then: FailAction,
@@ -261,7 +256,37 @@ impl JsonSchema for FlowDuration {
 /// disagree with them. Committed at `schemas/flow.schema.json` and
 /// embedded by the CLI at build time.
 pub fn json_schema() -> Schema {
-    schemars::schema_for!(FlowConfig)
+    SchemaSettings::default()
+        .with_transform(BoundIntegerFormats)
+        .into_generator()
+        .into_root_schema_for::<FlowConfig>()
+}
+
+/// Stamps explicit bounds onto every sub-64-bit integer in the schema.
+/// schemars emits only `minimum: 0` for them, and JSON Schema treats
+/// `format` as an annotation — without real bounds the schema would
+/// bless out-of-range values strict serde rejects. The 64-bit formats
+/// need no bounds: TOML integers are i64, so theirs are unreachable
+/// from a flow file. A format this table misses fails the
+/// `every_integer_format_in_the_schema_carries_bounds` test.
+#[derive(Debug, Clone)]
+struct BoundIntegerFormats;
+
+impl Transform for BoundIntegerFormats {
+    fn transform(&mut self, schema: &mut Schema) {
+        if let Some(format) = schema.get("format").and_then(serde_json::Value::as_str) {
+            let bounds = match format {
+                "uint32" => Some((serde_json::json!(0), serde_json::json!(u32::MAX))),
+                "int32" => Some((serde_json::json!(i32::MIN), serde_json::json!(i32::MAX))),
+                _ => None,
+            };
+            if let Some((minimum, maximum)) = bounds {
+                schema.insert("minimum".into(), minimum);
+                schema.insert("maximum".into(), maximum);
+            }
+        }
+        transform_subschemas(self, schema);
+    }
 }
 
 #[cfg(test)]
@@ -404,6 +429,48 @@ repo = "."
                 );
             }
         }
+    }
+
+    /// Every sub-64-bit integer anywhere in the schema must carry the
+    /// explicit bounds [`BoundIntegerFormats`] stamps — a config field
+    /// with an integer type the transform doesn't know fails here
+    /// instead of becoming a hole the schema-validating CLI would
+    /// bless. The 64-bit formats are exempt: TOML integers are i64,
+    /// so their bounds are unreachable from a flow file.
+    #[test]
+    fn every_integer_format_in_the_schema_carries_bounds() {
+        fn walk(node: &serde_json::Value, path: &str, found: &mut u32) {
+            match node {
+                serde_json::Value::Object(entries) => {
+                    let sub_64_bit =
+                        |f: &&str| f.contains("int") && *f != "uint64" && *f != "int64";
+                    let format = entries.get("format").and_then(serde_json::Value::as_str);
+                    if let Some(format) = format.filter(sub_64_bit) {
+                        *found += 1;
+                        for bound in ["minimum", "maximum"] {
+                            assert!(
+                                entries.contains_key(bound),
+                                "{path}: format `{format}` lacks `{bound}` — \
+                                 teach BoundIntegerFormats this format or use a bounded type"
+                            );
+                        }
+                    }
+                    for (key, entry) in entries {
+                        walk(entry, &format!("{path}/{key}"), found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        walk(item, &format!("{path}/{index}"), found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let schema = serde_json::to_value(json_schema()).unwrap();
+        let mut found = 0;
+        walk(&schema, "", &mut found);
+        assert!(found > 0, "the walk matched no integer formats");
     }
 
     #[test]
