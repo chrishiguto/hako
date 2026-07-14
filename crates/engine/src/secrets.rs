@@ -2,29 +2,11 @@
 //! the daemon runs.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
-/// A name a flow may reference — never a value, so flow files stay
-/// safe to commit and safe for LLMs to read and write.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretName(String);
-
-impl SecretName {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for SecretName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+// The name type is published language — it appears in flow files — so
+// it lives in proto. Values and their resolution stay here,
+// engine-side.
+pub use proto::secrets::SecretName;
 
 /// A resolved secret value. Deliberately not serializable and
 /// debug-printed redacted, so a value cannot slip into an event log or

@@ -10,6 +10,13 @@ allow = [
     "Apache-2.0",
     "Unicode-3.0",
 ]
+# Scoped to single transitive deps of jsonschema (both permissive,
+# OSI-approved) rather than allowed globally, so a new crate under
+# these licenses still gets flagged for review.
+exceptions = [
+    { crate = "foldhash", allow = ["Zlib"] },
+    { crate = "borrow-or-share", allow = ["MIT-0"] },
+]
 # Workspace crates are publish = false and carry no license field yet;
 # the repo license is a decision of its own.
 private = { ignore = true }

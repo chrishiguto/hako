@@ -1,0 +1,28 @@
+# The representative ralph flow from the v1 spec. Both the engine's
+# flow tests and the CLI's validate tests parse this exact file, so the
+# one canonical example can never drift from what the code accepts.
+
+[loop]
+kernel = "ralph"
+goal = "Implement all open GitHub issues"
+
+[agent]
+engine = "claude"
+
+[budget]
+max_iterations = 20
+max_hours = 6
+iteration_timeout = "30m"
+
+[verify]
+checks = ["cargo build", "cargo test"]
+on_fail = { retries = 1, then = "pause" }
+
+[workspace]
+repo = "."
+
+[secrets]
+env = ["GH_TOKEN"]
+
+[notify]
+webhook = "https://ntfy.sh/hako"

@@ -17,6 +17,10 @@ pub mod run;
 pub mod sandbox;
 pub mod secrets;
 
+// The flow language lives in proto; re-exported so a flow remains
+// part of the engine's own vocabulary — it is what a kernel runs.
+pub use proto::flow;
+
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent};

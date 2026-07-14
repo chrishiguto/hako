@@ -108,13 +108,8 @@ pub fn run() -> anyhow::Result<()> {
 /// Maps each workspace member to the members it reaches in the resolved
 /// graph, walking through non-member packages.
 fn workspace_graph() -> anyhow::Result<Graph> {
-    // A check must never mutate: unlocked `cargo metadata` silently
-    // rewrites a stale Cargo.lock instead of failing on it.
-    let metadata = MetadataCommand::new()
-        .features(CargoOpt::AllFeatures)
-        .other_options(vec!["--locked".to_string()])
-        .exec()
-        .context("failed to run `cargo metadata`")?;
+    let metadata =
+        crate::metadata::exec_locked(MetadataCommand::new().features(CargoOpt::AllFeatures))?;
     let resolve = metadata
         .resolve
         .as_ref()
@@ -201,7 +196,10 @@ mod tests {
             ("api", &["proto"]),
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
-            ("cli", &["api"]),
+            ("cli", &["api", "proto"]),
+            // Exempt from the rules but present in the graph: xtask
+            // links proto to generate the flow schema.
+            ("xtask", &["proto"]),
         ])
     }
 
@@ -217,11 +215,10 @@ mod tests {
     #[test]
     fn real_workspace_matches_intended_shape() {
         let direct = intended_shape();
-        let mut expected: Graph = direct
+        let expected: Graph = direct
             .keys()
             .map(|name| (name.clone(), reachable(&direct, name)))
             .collect();
-        expected.insert("xtask".to_string(), BTreeSet::new());
         let actual = workspace_graph().expect("cargo metadata on the real workspace");
         assert_eq!(actual, expected);
     }

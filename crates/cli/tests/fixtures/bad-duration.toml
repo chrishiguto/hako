@@ -1,0 +1,14 @@
+# A leading zero — the duration grammar wants `30m`.
+
+[loop]
+kernel = "ralph"
+goal = "Implement all open GitHub issues"
+
+[agent]
+engine = "claude"
+
+[budget]
+iteration_timeout = "030m"
+
+[workspace]
+repo = "."

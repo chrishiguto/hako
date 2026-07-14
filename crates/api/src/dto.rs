@@ -10,8 +10,9 @@ use proto::run::RunState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SubmitRunRequest {
     /// The flow file, verbatim TOML. Sent as text so the daemon is the
-    /// single validator; clients may pre-validate against the
-    /// published JSON Schema but never re-encode.
+    /// single validator; clients may pre-validate — Rust clients with
+    /// the shared `proto::flow` parser, others against the published
+    /// JSON Schema — but never re-encode.
     pub flow: String,
 }
 
