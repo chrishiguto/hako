@@ -1,9 +1,9 @@
 //! The flow-schema sync task. Proto's flow types are the source of
-//! truth (ADR 0009); `schemas/flow.schema.json` is a committed
-//! artifact of them for consumers that cannot link Rust — editors and
-//! LLMs — and for `hako schema` to print. Write mode regenerates the
-//! file; `--check` fails CI when it drifts from the types. The tests
-//! in `tests/` pin the artifact's agreement with strict serde.
+//! truth; `schemas/flow.schema.json` is a committed artifact of them
+//! for consumers that cannot link Rust — editors and LLMs — and for
+//! `hako schema` to print. Write mode regenerates the file; `--check`
+//! fails CI when it drifts from the types. The tests in `tests/` pin
+//! the artifact's agreement with strict serde.
 
 use std::fs;
 

@@ -1,6 +1,6 @@
 //! Pins the generated flow schema — the artifact editors and LLMs
 //! validate against — to the strict serde parser every Rust consumer
-//! shares (ADR 0009). Any flow one accepts and the other rejects is a
+//! shares. Any flow one accepts and the other rejects is a
 //! published-contract break. These tests live with the generator:
 //! xtask is the one crate that always enables proto's `schema`
 //! feature, so they run on every `cargo test --workspace`.
@@ -11,8 +11,8 @@
 //! such a flow loudly at submit, before a run starts.
 //!
 //! The corpus's TOML→JSON step is the toml crate's default
-//! serialization — since ADR 0009 the only such conversion in the
-//! tree, and test-only: no product code converts a flow to JSON.
+//! serialization — the only such conversion in the tree, and
+//! test-only: no product code converts a flow to JSON.
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;

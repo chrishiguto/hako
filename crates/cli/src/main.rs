@@ -1,8 +1,8 @@
 //! `hako` — a pure client of the daemon; among workspace crates it may
-//! depend on `api` and `proto` only (ADR 0006). Flow validation is
-//! offline by design and runs the daemon's own parser — the shared
-//! `proto::flow` types (ADR 0009) — so a flow the CLI blesses is a
-//! flow the daemon accepts, and the errors match down to the line.
+//! depend on `api` and `proto` only. Flow validation is offline by
+//! design and runs the daemon's own parser — the shared `proto::flow`
+//! types — so a flow the CLI blesses is a flow the daemon accepts, and
+//! the errors match down to the line.
 
 use std::fs;
 use std::path::{Path, PathBuf};

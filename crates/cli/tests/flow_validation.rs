@@ -1,8 +1,8 @@
 //! `hako validate` / `hako schema`, driven at the binary boundary —
 //! the CLI's highest seam. What matters is the contract flow authors
 //! feel: exit codes, and errors that carry the offending line and the
-//! fix. Validation runs the daemon's own parser (ADR 0009), so these
-//! tests also pin the error text a rejected submit would produce.
+//! fix. Validation runs the daemon's own parser, so these tests also
+//! pin the error text a rejected submit would produce.
 
 use std::path::Path;
 use std::process::{Command, Output};

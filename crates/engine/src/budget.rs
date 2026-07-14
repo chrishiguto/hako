@@ -36,8 +36,8 @@ impl Default for Budgets {
 }
 
 /// Lowers a flow's authored caps onto the engine's budgets — the
-/// conversion at the proto/engine edge (ADR 0008). Everything left
-/// unset keeps the default.
+/// conversion at the proto/engine edge. Everything left unset keeps
+/// the default.
 impl From<&BudgetConfig> for Budgets {
     fn from(config: &BudgetConfig) -> Self {
         Self {

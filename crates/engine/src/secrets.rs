@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 
 // The name type is published language — it appears in flow files — so
-// it lives in proto (ADR 0009). Values and their resolution stay here,
+// it lives in proto. Values and their resolution stay here,
 // engine-side.
 pub use proto::secrets::SecretName;
 

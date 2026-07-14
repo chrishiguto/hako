@@ -1,9 +1,9 @@
 //! Flow config — the ~20-line TOML that parameterizes a kernel, and
 //! the most published surface hako has: authored by users and LLMs,
 //! validated by editors, parsed by the daemon. Its types live here
-//! (ADR 0009) so every Rust consumer shares one strict parser —
-//! `hako validate` runs [`FlowConfig::from_toml`] too, making its
-//! verdict and errors exactly the daemon's.
+//! so every Rust consumer shares one strict parser — `hako validate`
+//! runs [`FlowConfig::from_toml`] too, making its verdict and errors
+//! exactly the daemon's.
 //!
 //! Deserialization is strict: every table rejects unknown keys, so a
 //! typo fails at validation time pointing at the offending key, not at
@@ -20,8 +20,7 @@ use serde::Deserialize;
 use crate::secrets::SecretName;
 
 /// A parsed flow: what to achieve, with which agent, under which
-/// limits. Contains no logic — control flow belongs to the kernel
-/// (ADR 0001).
+/// limits. Contains no logic — control flow belongs to the kernel.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -64,9 +63,8 @@ pub struct LoopConfig {
 }
 
 /// The loop patterns the engine ships. A closed set by design: a new
-/// loop shape is a new kernel in Rust, never logic in the flow file
-/// (ADR 0001) — which is what lets the schema reject a misspelled
-/// kernel outright.
+/// loop shape is a new kernel in Rust, never logic in the flow file —
+/// which is what lets the schema reject a misspelled kernel outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
@@ -185,8 +183,7 @@ impl FlowDuration {
 /// The duration grammar: each unit with its length in milliseconds.
 /// The parser, the error message, and the generated schema's pattern
 /// all derive from this table and [`DURATION_MAX_DIGITS`], so they
-/// cannot disagree — the schema tests in `xtask/tests/` pin the
-/// agreement.
+/// cannot disagree.
 const DURATION_UNITS: [(&str, u64); 4] = [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)];
 
 /// Bounds the digit count so no unit conversion can overflow.
@@ -251,7 +248,7 @@ impl<'de> Deserialize<'de> for FlowDuration {
 pub use schema::json_schema;
 
 /// Schema generation, behind the `schema` feature so product crates
-/// never carry schemars — mirroring the `openapi` feature (ADR 0008).
+/// never carry schemars — mirroring the `openapi` feature.
 #[cfg(feature = "schema")]
 mod schema {
     use std::borrow::Cow;
@@ -265,8 +262,7 @@ mod schema {
     /// Must accept exactly what [`FlowDuration::from_str`] accepts —
     /// the schema is a non-Rust consumer's only knowledge of the
     /// format — so it derives from the same grammar consts the parser
-    /// reads. The agreement is pinned by the schema tests in
-    /// `xtask/tests/`.
+    /// reads.
     fn duration_pattern() -> String {
         let units = DURATION_UNITS.map(|(unit, _)| unit).join("|");
         format!("^[1-9][0-9]{{0,{}}}({units})$", DURATION_MAX_DIGITS - 1)
