@@ -13,7 +13,7 @@ A Rust workspace, toolchain pinned in `rust-toolchain.toml`. `just` is the singl
 
 Automation that outgrows a shell one-liner lives in the `xtask` crate, invoked as `cargo xtask <task>` (today: `deps`, the workspace dependency-rule check). xtask is a dev tool, not a product crate — exempt from the dependency rules it enforces.
 
-Product crates live in `crates/`: `engine`, `sandbox`, `api`, `server` (binary `hakod`), `cli` (binary `hako`). Two hard rules (ADR 0006, enforced by `cargo xtask deps` in `just check`): `engine` never depends on `server` or `api`; `cli` depends on `api` only among workspace crates.
+Product crates live in `crates/`: `proto` (the published language — wire types both sides speak), `engine`, `sandbox`, `api`, `server` (binary `hakod`), `cli` (binary `hako`). Three hard rules (ADRs 0006 and 0008, enforced by `cargo xtask deps` in `just check`): `engine` never depends on `server` or `api`; `cli` depends on `api` (and transitively `proto`) only; `proto` depends on no workspace crate.
 
 ## Agent skills
 

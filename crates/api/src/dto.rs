@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::progress::Question;
-use crate::run::RunState;
+use proto::progress::Question;
+use proto::run::RunState;
 
 /// Submit a flow for execution as a new run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -104,10 +104,10 @@ pub struct ApiError {
 
 #[cfg(test)]
 mod tests {
+    use proto::run::PauseReason;
     use serde_json::json;
 
     use super::*;
-    use crate::run::PauseReason;
 
     #[test]
     fn a_paused_summary_reads_flat() {

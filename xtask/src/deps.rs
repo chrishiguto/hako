@@ -1,10 +1,11 @@
 //! The workspace dependency-rule check.
 //!
-//! Two hard rules, enforced on transitive reachability between workspace
-//! crates:
+//! Three hard rules, enforced on transitive reachability between
+//! workspace crates:
 //!
 //! - `engine` never reaches `server` or `api`
-//! - `cli` reaches `api` only
+//! - `cli` reaches `api` and `proto` only
+//! - `proto`, the published language, reaches no workspace crate
 //!
 //! Reachability is computed over the full resolved graph, by package ID:
 //! identity by ID means an external crate that happens to share a member's
@@ -34,13 +35,14 @@ pub type Graph = BTreeMap<String, BTreeSet<String>>;
 
 const ENGINE: &str = "engine";
 const API: &str = "api";
+const PROTO: &str = "proto";
 const SANDBOX: &str = "sandbox";
 const SERVER: &str = "server";
 const CLI: &str = "cli";
 
 // Also the vocabulary of the rules below — a rename that updates this
 // list updates the rules with it.
-const PRODUCT_CRATES: [&str; 5] = [API, CLI, ENGINE, SANDBOX, SERVER];
+const PRODUCT_CRATES: [&str; 6] = [API, CLI, ENGINE, PROTO, SANDBOX, SERVER];
 
 /// Checks the rules against a graph of workspace-internal edges. Returns
 /// one human-readable violation per broken rule; empty means they hold.
@@ -60,11 +62,16 @@ pub fn violations(graph: &Graph) -> Vec<String> {
         }
     }
     for reached in reachable(graph, CLI) {
-        if reached != API {
+        if reached != API && reached != PROTO {
             found.push(format!(
-                "`{CLI}` may depend on `{API}` only, but reaches `{reached}`"
+                "`{CLI}` may depend on `{API}` and `{PROTO}` only, but reaches `{reached}`"
             ));
         }
+    }
+    for reached in reachable(graph, PROTO) {
+        found.push(format!(
+            "`{PROTO}` must stay a leaf, but depends on `{reached}`"
+        ));
     }
     found
 }
@@ -171,7 +178,7 @@ fn workspace_graph() -> anyhow::Result<Graph> {
 mod tests {
     use super::*;
 
-    /// The five product crates with no edges, then `overrides` applied.
+    /// Every product crate with no edges, then `overrides` applied.
     fn graph(overrides: &[(&str, &[&str])]) -> Graph {
         let mut graph: Graph = PRODUCT_CRATES
             .iter()
@@ -189,6 +196,8 @@ mod tests {
     #[test]
     fn intended_workspace_shape_passes() {
         let graph = graph(&[
+            ("engine", &["proto"]),
+            ("api", &["proto"]),
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
             ("cli", &["api"]),
@@ -203,9 +212,11 @@ mod tests {
     #[test]
     fn real_workspace_matches_intended_shape() {
         let mut expected = graph(&[
-            ("sandbox", &["engine"]),
-            ("server", &["api", "engine", "sandbox"]),
-            ("cli", &["api"]),
+            ("engine", &["proto"]),
+            ("api", &["proto"]),
+            ("sandbox", &["engine", "proto"]),
+            ("server", &["api", "engine", "proto", "sandbox"]),
+            ("cli", &["api", "proto"]),
         ]);
         expected.insert("xtask".to_string(), BTreeSet::new());
         let actual = workspace_graph().expect("cargo metadata on the real workspace");
@@ -245,6 +256,13 @@ mod tests {
         let found = violations(&graph(&[("cli", &["api"]), ("api", &["engine"])]));
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("cli") && found[0].contains("engine"));
+    }
+
+    #[test]
+    fn proto_depending_on_a_product_crate_is_flagged() {
+        let found = violations(&graph(&[("proto", &["engine"])]));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("proto") && found[0].contains("engine"));
     }
 
     #[test]

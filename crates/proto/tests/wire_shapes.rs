@@ -1,13 +1,12 @@
-//! Locks every event wire shape against the shared golden fixture.
+//! Locks every event wire shape against the golden fixture.
 //!
-//! `api` mirrors these types without linking this crate, so the
-//! fixture file is the one truth both crates serialize: the same test
-//! runs there against the mirrored types, and a shape change in either
-//! crate fails here instead of silently forking the wire.
+//! The fixture is regression armor for the published language: a serde
+//! attribute edit or a variant rename that would break deployed
+//! clients and recorded event logs fails here before it ships.
 
 use std::collections::BTreeSet;
 
-use engine::RunEvent;
+use proto::RunEvent;
 
 const FIXTURE: &str = include_str!("fixtures/run_events.jsonl");
 

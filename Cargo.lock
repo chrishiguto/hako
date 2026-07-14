@@ -12,6 +12,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "api"
 version = "0.1.0"
 dependencies = [
+ "proto",
  "serde",
  "serde_json",
  "utoipa",
@@ -75,6 +76,7 @@ dependencies = [
  "async-trait",
  "futures-core",
  "futures-util",
+ "proto",
  "serde",
  "serde_json",
  "thiserror",
@@ -154,6 +156,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "utoipa",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+# The wire contract is one shared leaf crate, not mirrored types
+
+The types that cross a process boundary — run states, the event vocabulary, the progress report — are defined once in `proto`, a leaf crate with no workspace dependencies that both `engine` and `api` depend on. This supersedes the original contracts slice, which mirrored these types by hand in both crates and held them byte-identical with a shared golden fixture. Hand-maintained mirrors synced by fixtures are the mechanism for repo boundaries where code cannot be shared (cargo ↔ `cargo_metadata`, which is itself migrating to a shared `cargo-util-schemas` crate); inside one workspace the compiler is the better sync, and the intra-repo precedents (Zed's `proto`, TiKV's `kvproto`, IOx's `generated_types`) all define the contract once and let domain crates convert at the edges. Amends ADR 0006: `cli` now reaches `api` and, transitively, `proto` — still never the engine.
+
+## Considered Options
+
+- Keep the mirror + golden fixture — rejected: it paid duplication's cost (two definitions, every wire change a two-crate edit) while the byte-identity assertion forbade the divergence that justifies duplication in the first place.
+- Conversion at the boundary (rust-analyzer / Kubernetes style: serde-free engine types, `server` converts in its `EventSink`) — rejected for now: the event vocabulary was designed for the wire and the engine's serialization *is* the on-disk log ADR 0005 streams verbatim, so the conversion layer would buy freedom nobody currently needs. If the engine's internal events ever genuinely diverge from the published contract (API versioning, field redaction), introduce that layer at the server then — it is additive.
+
+## Consequences
+
+The engine's event vocabulary is explicitly a published language: a change in `proto` is a wire-contract change by construction, and the golden fixture survives in `proto/tests/` as regression armor against accidental serde-attribute breakage rather than as the thing holding two copies together. OpenAPI derives sit behind `proto`'s `openapi` feature so the engine never carries `utoipa`. One shape can still carry two parse postures where the domain demands it: the progress report deserializes leniently for clients (older clients survive newer daemons) but strictly at the agent boundary via `ProgressReport::from_agent_json` (ADR 0007's fail-loud repair loop) — both postures live in `proto`, keeping the single-definition rule intact.

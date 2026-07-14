@@ -1,21 +1,22 @@
-//! The wire contract between the daemon and its clients: request/response
-//! types and the SSE event vocabulary. Shared by `server` and every
-//! client, starting with `cli`.
+//! The wire contract between the daemon and its clients: request and
+//! response bodies, the SSE envelope, and the OpenAPI document. Shared
+//! by `server` and every client, starting with `cli`.
 //!
-//! This crate mirrors engine concepts without depending on the engine:
-//! clients must be able to consume the contract without linking it.
+//! The vocabulary the engine also speaks — run states, events, the
+//! progress report — is defined once in `proto` and re-exported here,
+//! so clients depend on this crate alone and never link the engine.
 
 pub mod dto;
 pub mod event;
 pub mod openapi;
-pub mod progress;
-pub mod run;
 
 pub use dto::{
     Answer, AnswerRequest, ApiError, BudgetExtension, ListRunsResponse, ResumeRequest,
     RunStatusResponse, RunSummary, SubmitRunRequest, SubmitRunResponse,
 };
-pub use event::{BudgetKind, EventEnvelope, IterationOutcome, OutputStream, RunEvent, TokenUsage};
+pub use event::EventEnvelope;
 pub use openapi::document;
-pub use progress::{ProgressReport, ProgressStatus, Question};
-pub use run::{PauseReason, RunState};
+pub use proto::{
+    BudgetKind, IterationOutcome, OutputStream, PauseReason, ProgressReport, ProgressStatus,
+    Question, RunEvent, RunState, TokenUsage,
+};

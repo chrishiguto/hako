@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 api = { path = "crates/api" }
 engine = { path = "crates/engine" }
+proto = { path = "crates/proto" }
 sandbox = { path = "crates/sandbox" }
 
 async-trait = "0.1.89"
