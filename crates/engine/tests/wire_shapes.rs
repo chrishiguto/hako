@@ -1,13 +1,13 @@
 //! Locks every event wire shape against the shared golden fixture.
 //!
-//! `hako-api` mirrors these types without linking this crate, so the
+//! `api` mirrors these types without linking this crate, so the
 //! fixture file is the one truth both crates serialize: the same test
 //! runs there against the mirrored types, and a shape change in either
 //! crate fails here instead of silently forking the wire.
 
 use std::collections::BTreeSet;
 
-use hako_engine::RunEvent;
+use engine::RunEvent;
 
 const FIXTURE: &str = include_str!("fixtures/run_events.jsonl");
 

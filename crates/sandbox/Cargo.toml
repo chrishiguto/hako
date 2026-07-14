@@ -1,13 +1,9 @@
 [package]
-name = "hako-api"
+name = "sandbox"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-serde.workspace = true
-utoipa.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
+engine.workspace = true

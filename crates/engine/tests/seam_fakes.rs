@@ -9,14 +9,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use futures_util::{StreamExt, stream};
-use hako_engine::{
+use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
     PauseReason, ProgressReport, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
     SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
     SecretsProvider, TokenUsage, WorkspaceMount,
 };
+use futures_util::{StreamExt, stream};
 
 /// Boots nothing: hands out handles, remembers files put into it, and
 /// replays a scripted agent transcript on exec.

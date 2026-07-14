@@ -9,9 +9,9 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
-hako-api = { path = "crates/hako-api" }
-hako-engine = { path = "crates/hako-engine" }
-hako-sandbox = { path = "crates/hako-sandbox" }
+api = { path = "crates/api" }
+engine = { path = "crates/engine" }
+sandbox = { path = "crates/sandbox" }
 
 async-trait = "0.1.89"
 futures-core = "0.3.32"

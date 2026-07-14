@@ -1,5 +1,5 @@
 [package]
-name = "hako-server"
+name = "server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,6 @@ name = "hakod"
 path = "src/main.rs"
 
 [dependencies]
-hako-api.workspace = true
-hako-engine.workspace = true
-hako-sandbox.workspace = true
+api.workspace = true
+engine.workspace = true
+sandbox.workspace = true

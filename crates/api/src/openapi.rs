@@ -51,7 +51,7 @@ impl utoipa::Modify for BearerAuth {
 
 /// Contract declarations, not handlers: the `#[utoipa::path]`
 /// expansion is what the document consumes, so the function bodies
-/// stay empty and unused until `hako-server` implements them.
+/// stay empty and unused until `server` implements them.
 mod paths {
     #![allow(dead_code)]
 

@@ -3,8 +3,8 @@
 //! Two hard rules, enforced on transitive reachability between workspace
 //! crates:
 //!
-//! - `hako-engine` never reaches `hako-server` or `hako-api`
-//! - `hako-cli` reaches `hako-api` only
+//! - `engine` never reaches `server` or `api`
+//! - `cli` reaches `api` only
 //!
 //! Reachability is computed over the full resolved graph, by package ID:
 //! identity by ID means an external crate that happens to share a member's
@@ -32,11 +32,11 @@ use cargo_metadata::{CargoOpt, DependencyKind, MetadataCommand, PackageId};
 /// edges or a pre-closed set both work; `violations` takes the closure.
 pub type Graph = BTreeMap<String, BTreeSet<String>>;
 
-const ENGINE: &str = "hako-engine";
-const API: &str = "hako-api";
-const SANDBOX: &str = "hako-sandbox";
-const SERVER: &str = "hako-server";
-const CLI: &str = "hako-cli";
+const ENGINE: &str = "engine";
+const API: &str = "api";
+const SANDBOX: &str = "sandbox";
+const SERVER: &str = "server";
+const CLI: &str = "cli";
 
 // Also the vocabulary of the rules below — a rename that updates this
 // list updates the rules with it.
@@ -189,9 +189,9 @@ mod tests {
     #[test]
     fn intended_workspace_shape_passes() {
         let graph = graph(&[
-            ("hako-sandbox", &["hako-engine"]),
-            ("hako-server", &["hako-engine", "hako-api", "hako-sandbox"]),
-            ("hako-cli", &["hako-api"]),
+            ("sandbox", &["engine"]),
+            ("server", &["engine", "api", "sandbox"]),
+            ("cli", &["api"]),
         ]);
         assert_eq!(violations(&graph), Vec::<String>::new());
     }
@@ -203,9 +203,9 @@ mod tests {
     #[test]
     fn real_workspace_matches_intended_shape() {
         let mut expected = graph(&[
-            ("hako-sandbox", &["hako-engine"]),
-            ("hako-server", &["hako-api", "hako-engine", "hako-sandbox"]),
-            ("hako-cli", &["hako-api"]),
+            ("sandbox", &["engine"]),
+            ("server", &["api", "engine", "sandbox"]),
+            ("cli", &["api"]),
         ]);
         expected.insert("xtask".to_string(), BTreeSet::new());
         let actual = workspace_graph().expect("cargo metadata on the real workspace");
@@ -214,57 +214,51 @@ mod tests {
 
     #[test]
     fn engine_depending_on_api_is_flagged() {
-        let found = violations(&graph(&[("hako-engine", &["hako-api"])]));
+        let found = violations(&graph(&[("engine", &["api"])]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-engine") && found[0].contains("hako-api"));
+        assert!(found[0].contains("engine") && found[0].contains("api"));
     }
 
     #[test]
     fn engine_depending_on_server_is_flagged() {
-        let found = violations(&graph(&[("hako-engine", &["hako-server"])]));
+        let found = violations(&graph(&[("engine", &["server"])]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-engine") && found[0].contains("hako-server"));
+        assert!(found[0].contains("engine") && found[0].contains("server"));
     }
 
     #[test]
     fn engine_reaching_api_transitively_is_flagged() {
-        let found = violations(&graph(&[
-            ("hako-engine", &["hako-sandbox"]),
-            ("hako-sandbox", &["hako-api"]),
-        ]));
+        let found = violations(&graph(&[("engine", &["sandbox"]), ("sandbox", &["api"])]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-engine") && found[0].contains("hako-api"));
+        assert!(found[0].contains("engine") && found[0].contains("api"));
     }
 
     #[test]
     fn cli_depending_on_engine_is_flagged() {
-        let found = violations(&graph(&[("hako-cli", &["hako-api", "hako-engine"])]));
+        let found = violations(&graph(&[("cli", &["api", "engine"])]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-cli") && found[0].contains("hako-engine"));
+        assert!(found[0].contains("cli") && found[0].contains("engine"));
     }
 
     #[test]
     fn cli_reaching_engine_through_api_is_flagged() {
-        let found = violations(&graph(&[
-            ("hako-cli", &["hako-api"]),
-            ("hako-api", &["hako-engine"]),
-        ]));
+        let found = violations(&graph(&[("cli", &["api"]), ("api", &["engine"])]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-cli") && found[0].contains("hako-engine"));
+        assert!(found[0].contains("cli") && found[0].contains("engine"));
     }
 
     #[test]
     fn xtask_is_exempt() {
-        let graph = graph(&[("xtask", &["hako-engine", "hako-api", "hako-server"])]);
+        let graph = graph(&[("xtask", &["engine", "api", "server"])]);
         assert_eq!(violations(&graph), Vec::<String>::new());
     }
 
     #[test]
     fn missing_product_crate_is_flagged() {
         let mut graph = graph(&[]);
-        graph.remove("hako-cli");
+        graph.remove("cli");
         let found = violations(&graph);
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("hako-cli") && found[0].contains("missing"));
+        assert!(found[0].contains("cli") && found[0].contains("missing"));
     }
 }

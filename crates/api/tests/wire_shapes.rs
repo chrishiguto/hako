@@ -1,6 +1,6 @@
 //! Locks the mirrored event types to the engine's golden fixture.
 //!
-//! This crate must not link `hako-engine`, so the fixture file —
+//! This crate must not link `engine`, so the fixture file —
 //! reached across the workspace on purpose — is the shared truth: the
 //! engine asserts the same lines against its own types, and a shape
 //! change on either side fails one of the two suites instead of
@@ -8,9 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use hako_api::RunEvent;
+use api::RunEvent;
 
-const FIXTURE: &str = include_str!("../../hako-engine/tests/fixtures/run_events.jsonl");
+const FIXTURE: &str = include_str!("../../engine/tests/fixtures/run_events.jsonl");
 
 /// Growing `RunEvent` breaks this match at compile time, and the
 /// coverage test below then demands a fixture line for the new
