@@ -11,6 +11,7 @@ use crate::notify::{Notifier, NotifierError};
 use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretsError, SecretsProvider};
+use crate::workspace::{Workspace, WorkspaceError};
 
 /// A loop pattern. Kernels own all control flow — iterate, verify,
 /// retry, stop — leaving flow files nothing to program.
@@ -34,6 +35,9 @@ pub struct KernelContext {
     /// What the loop is trying to achieve, verbatim from the flow.
     pub goal: String,
     pub budgets: Budgets,
+    /// Prepared before the kernel starts; the kernel mounts it,
+    /// checkpoints it, and reads the domain prompt from it.
+    pub workspace: Workspace,
     pub sandbox: Arc<dyn Sandbox>,
     pub agent: Arc<dyn AgentAdapter>,
     pub events: Arc<dyn EventSink>,
@@ -55,6 +59,6 @@ pub enum KernelError {
     Secrets(#[from] SecretsError),
     /// Host-side workspace work (clone, branch, checkpoint) is kernel
     /// logic rather than a seam; its failures land here.
-    #[error("workspace failure: {0}")]
-    Workspace(String),
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
 }

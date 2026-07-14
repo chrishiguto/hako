@@ -12,10 +12,13 @@ pub mod budget;
 pub mod event;
 pub mod kernel;
 pub mod notify;
+mod preamble;
 pub mod progress;
+pub mod ralph;
 pub mod run;
 pub mod sandbox;
 pub mod secrets;
+pub mod workspace;
 
 // The flow language lives in proto; re-exported so a flow remains
 // part of the engine's own vocabulary — it is what a kernel runs.
@@ -27,9 +30,11 @@ pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEv
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
+pub use ralph::RalphKernel;
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
     WorkspaceMount,
 };
 pub use secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
+pub use workspace::{Workspace, WorkspaceError};

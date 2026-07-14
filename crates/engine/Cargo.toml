@@ -8,11 +8,13 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
 proto.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
-futures-util.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
