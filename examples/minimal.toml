@@ -1,0 +1,14 @@
+# The smallest valid flow: only the required sections, every optional
+# one left to its default. Proto's flow tests and the schema agreement
+# tests parse this exact file, so the suites cannot drift on what
+# "minimal" means.
+
+[loop]
+kernel = "ralph"
+goal = "Fix the flaky test"
+
+[agent]
+engine = "claude"
+
+[workspace]
+repo = "."

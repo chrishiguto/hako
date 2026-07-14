@@ -52,7 +52,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("{error}");
+                eprintln!("{}: {error}", flow.display());
                 ExitCode::FAILURE
             }
         },
@@ -66,9 +66,7 @@ fn main() -> ExitCode {
 /// Strict parse with the shared flow types: the daemon's verdict and
 /// the daemon's error text — offending line, caret, and suggestion.
 /// Fails at the first error, exactly as the daemon would at submit.
-fn validate(path: &Path) -> Result<(), String> {
-    let display = path.display();
-    let source = fs::read_to_string(path).map_err(|error| format!("{display}: {error}"))?;
-    FlowConfig::from_toml(&source).map_err(|error| format!("{display}: {error}"))?;
+fn validate(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    FlowConfig::from_toml(&fs::read_to_string(path)?)?;
     Ok(())
 }

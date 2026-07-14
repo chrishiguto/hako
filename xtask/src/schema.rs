@@ -18,11 +18,7 @@ pub fn run(check: bool) -> anyhow::Result<()> {
         + "\n";
     // Resolved at run time — a compile-time CARGO_MANIFEST_DIR would go
     // stale when a built xtask binary outlives a moved checkout.
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .other_options(vec!["--locked".to_string()])
-        .exec()
-        .context("failed to run `cargo metadata`")?;
+    let metadata = crate::metadata::exec_locked(MetadataCommand::new().no_deps())?;
     let path = metadata.workspace_root.join(SCHEMA_PATH);
     if check {
         let committed = fs::read_to_string(&path)

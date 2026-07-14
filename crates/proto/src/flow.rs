@@ -182,6 +182,30 @@ impl FlowDuration {
     }
 }
 
+/// The duration grammar: each unit with its length in milliseconds.
+/// The parser, the error message, and the generated schema's pattern
+/// all derive from this table and [`DURATION_MAX_DIGITS`], so they
+/// cannot disagree — the schema tests in `xtask/tests/` pin the
+/// agreement.
+const DURATION_UNITS: [(&str, u64); 4] = [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)];
+
+/// Bounds the digit count so no unit conversion can overflow.
+const DURATION_MAX_DIGITS: usize = 9;
+
+/// The grammar spelled for humans — embedded in [`DurationError`]'s
+/// message and the schema's `FlowDuration` description.
+fn duration_grammar() -> String {
+    let units: Vec<String> = DURATION_UNITS
+        .iter()
+        .map(|(unit, _)| format!("`{unit}`"))
+        .collect();
+    let (last, rest) = units.split_last().expect("at least one unit");
+    format!(
+        "a whole number (1\u{2013}{DURATION_MAX_DIGITS} digits, no leading zero) with unit {}, or {last}, like \"30m\"",
+        rest.join(", ")
+    )
+}
+
 impl FromStr for FlowDuration {
     type Err = DurationError;
 
@@ -191,29 +215,25 @@ impl FromStr for FlowDuration {
             .find(|c: char| !c.is_ascii_digit())
             .ok_or_else(error)?;
         let (number, unit) = source.split_at(unit_start);
-        // Mirrors the schema's DURATION_PATTERN exactly: 1–9 digits,
-        // no leading zero — small enough that no unit conversion can
-        // overflow.
-        if number.is_empty() || number.len() > 9 || number.starts_with('0') {
+        // Hand-mirrors the `[1-9][0-9]*` prefix of the schema's
+        // pattern — the one grammar rule the shared consts don't
+        // carry, so the two must change together.
+        if number.is_empty() || number.len() > DURATION_MAX_DIGITS || number.starts_with('0') {
             return Err(error());
         }
         let count: u64 = number.parse().map_err(|_| error())?;
-        let duration = match unit {
-            "ms" => Duration::from_millis(count),
-            "s" => Duration::from_secs(count),
-            "m" => Duration::from_secs(count * 60),
-            "h" => Duration::from_secs(count * 3600),
-            _ => return Err(error()),
-        };
-        Ok(Self(duration))
+        let millis = DURATION_UNITS
+            .iter()
+            .find(|(name, _)| *name == unit)
+            .map(|(_, unit_millis)| count * unit_millis)
+            .ok_or_else(error)?;
+        Ok(Self(Duration::from_millis(millis)))
     }
 }
 
 /// A duration string the flow grammar doesn't accept.
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "invalid duration `{0}`: expected a whole number (1\u{2013}9 digits, no leading zero) with unit `ms`, `s`, `m`, or `h`, like \"30m\""
-)]
+#[error("invalid duration `{0}`: expected {grammar}", grammar = duration_grammar())]
 pub struct DurationError(String);
 
 impl<'de> Deserialize<'de> for FlowDuration {
@@ -240,14 +260,17 @@ mod schema {
     use schemars::transform::{Transform, transform_subschemas};
     use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-    use super::{FlowConfig, FlowDuration};
+    use super::{DURATION_MAX_DIGITS, DURATION_UNITS, FlowConfig, FlowDuration, duration_grammar};
 
     /// Must accept exactly what [`FlowDuration::from_str`] accepts —
     /// the schema is a non-Rust consumer's only knowledge of the
-    /// format. The agreement is pinned by the schema tests in
-    /// `xtask/tests/`. Nine digits bounds the count so no unit
-    /// conversion can overflow.
-    const DURATION_PATTERN: &str = "^[1-9][0-9]{0,8}(ms|s|m|h)$";
+    /// format — so it derives from the same grammar consts the parser
+    /// reads. The agreement is pinned by the schema tests in
+    /// `xtask/tests/`.
+    fn duration_pattern() -> String {
+        let units = DURATION_UNITS.map(|(unit, _)| unit).join("|");
+        format!("^[1-9][0-9]{{0,{}}}({units})$", DURATION_MAX_DIGITS - 1)
+    }
 
     /// The flow schema, generated from these types so it can never
     /// disagree with them. Committed at `schemas/flow.schema.json`,
@@ -263,27 +286,43 @@ mod schema {
     /// schema. schemars emits only `minimum: 0` for them, and JSON
     /// Schema treats `format` as an annotation — without real bounds
     /// the schema would bless out-of-range values strict serde
-    /// rejects. The 64-bit formats need no bounds: TOML integers are
-    /// i64, so theirs are unreachable from a flow file. A format this
-    /// table misses fails the schema tests in `xtask/tests/`.
+    /// rejects.
     #[derive(Debug, Clone)]
     struct BoundIntegerFormats;
 
     impl Transform for BoundIntegerFormats {
         fn transform(&mut self, schema: &mut Schema) {
-            if let Some(format) = schema.get("format").and_then(serde_json::Value::as_str) {
-                let bounds = match format {
-                    "uint32" => Some((serde_json::json!(0), serde_json::json!(u32::MAX))),
-                    "int32" => Some((serde_json::json!(i32::MIN), serde_json::json!(i32::MAX))),
-                    _ => None,
-                };
-                if let Some((minimum, maximum)) = bounds {
-                    schema.insert("minimum".into(), minimum);
-                    schema.insert("maximum".into(), maximum);
-                }
+            let format = schema.get("format").and_then(serde_json::Value::as_str);
+            if let Some((minimum, maximum)) = format.and_then(integer_bounds) {
+                schema.insert("minimum".into(), minimum);
+                schema.insert("maximum".into(), maximum);
             }
             transform_subschemas(self, schema);
         }
+    }
+
+    /// `uint{N}`/`int{N}` → that type's bounds, derived from the bit
+    /// width so any integer a config field adopts is covered. Formats
+    /// of 64 bits and up get none: TOML integers are i64, so their
+    /// bounds are unreachable from a flow file.
+    fn integer_bounds(format: &str) -> Option<(serde_json::Value, serde_json::Value)> {
+        let (signed, bits) = match format.strip_prefix("uint") {
+            Some(bits) => (false, bits),
+            None => (true, format.strip_prefix("int")?),
+        };
+        let bits: u32 = bits.parse().ok()?;
+        if !(1..64).contains(&bits) {
+            return None;
+        }
+        Some(if signed {
+            let magnitude = 1i64 << (bits - 1);
+            (
+                serde_json::json!(-magnitude),
+                serde_json::json!(magnitude - 1),
+            )
+        } else {
+            (serde_json::json!(0), serde_json::json!((1u64 << bits) - 1))
+        })
     }
 
     impl JsonSchema for FlowDuration {
@@ -294,8 +333,8 @@ mod schema {
         fn json_schema(_: &mut SchemaGenerator) -> Schema {
             json_schema!({
                 "type": "string",
-                "pattern": DURATION_PATTERN,
-                "description": "A duration: a whole number (1\u{2013}9 digits, no leading zero) with unit `ms`, `s`, `m`, or `h`, like \"30m\".",
+                "pattern": duration_pattern(),
+                "description": format!("A duration: {}.", duration_grammar()),
             })
         }
     }
@@ -310,17 +349,10 @@ mod tests {
     /// cannot drift apart on what a canonical flow looks like.
     const REPRESENTATIVE_FLOW: &str = include_str!("../../../examples/ralph.toml");
 
-    const MINIMAL_FLOW: &str = r#"
-[loop]
-kernel = "ralph"
-goal = "Fix the flaky test"
-
-[agent]
-engine = "claude"
-
-[workspace]
-repo = "."
-"#;
+    /// The committed smallest-valid flow — the schema agreement tests
+    /// in `xtask/tests/` drive the same file, so the two suites cannot
+    /// drift on what "minimal" means.
+    const MINIMAL_FLOW: &str = include_str!("../../../examples/minimal.toml");
 
     #[test]
     fn representative_flow_parses() {

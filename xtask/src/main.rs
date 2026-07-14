@@ -6,6 +6,7 @@ use std::env;
 use std::process;
 
 mod deps;
+mod metadata;
 mod schema;
 
 fn main() -> anyhow::Result<()> {

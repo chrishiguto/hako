@@ -108,13 +108,8 @@ pub fn run() -> anyhow::Result<()> {
 /// Maps each workspace member to the members it reaches in the resolved
 /// graph, walking through non-member packages.
 fn workspace_graph() -> anyhow::Result<Graph> {
-    // A check must never mutate: unlocked `cargo metadata` silently
-    // rewrites a stale Cargo.lock instead of failing on it.
-    let metadata = MetadataCommand::new()
-        .features(CargoOpt::AllFeatures)
-        .other_options(vec!["--locked".to_string()])
-        .exec()
-        .context("failed to run `cargo metadata`")?;
+    let metadata =
+        crate::metadata::exec_locked(MetadataCommand::new().features(CargoOpt::AllFeatures))?;
     let resolve = metadata
         .resolve
         .as_ref()

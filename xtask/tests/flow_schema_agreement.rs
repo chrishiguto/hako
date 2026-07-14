@@ -14,33 +14,58 @@
 //! serialization — since ADR 0009 the only such conversion in the
 //! tree, and test-only: no product code converts a flow to JSON.
 
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
+
 use proto::flow::{self, FlowConfig};
 
 /// The representative flow the corpus mutates; also driven verbatim by
 /// the CLI's validate tests.
 const RALPH_EXAMPLE: &str = include_str!("../../examples/ralph.toml");
 
-const MINIMAL_FLOW: &str = r#"
-[loop]
-kernel = "ralph"
-goal = "Fix the flaky test"
+/// The committed smallest-valid flow; proto's flow tests drive the
+/// same file.
+const MINIMAL_FLOW: &str = include_str!("../../examples/minimal.toml");
 
-[agent]
-engine = "claude"
+/// Generated once for the whole binary: every test reads the same
+/// schema, and compiling its validator is the expensive step.
+static SCHEMA: LazyLock<serde_json::Value> =
+    LazyLock::new(|| serde_json::to_value(flow::json_schema()).expect("schema serializes"));
 
-[workspace]
-repo = "."
-"#;
+static VALIDATOR: LazyLock<jsonschema::Validator> =
+    LazyLock::new(|| jsonschema::validator_for(&SCHEMA).expect("schema compiles"));
 
 fn schema_accepts(flow_toml: &str) -> bool {
     let value: toml::Value = toml::from_str(flow_toml).expect("corpus entries are valid TOML");
     let flow = serde_json::to_value(value).expect("TOML values are JSON-representable");
-    let schema = serde_json::to_value(flow::json_schema()).expect("schema serializes");
-    jsonschema::is_valid(&schema, &flow)
+    VALIDATOR.is_valid(&flow)
 }
 
 fn serde_accepts(flow_toml: &str) -> bool {
     FlowConfig::from_toml(flow_toml).is_ok()
+}
+
+/// Depth-first visit of every object node in the schema, with its
+/// path — the one walker the structural guards below share.
+fn walk_objects(
+    node: &serde_json::Value,
+    path: &str,
+    visit: &mut impl FnMut(&serde_json::Map<String, serde_json::Value>, &str),
+) {
+    match node {
+        serde_json::Value::Object(entries) => {
+            visit(entries, path);
+            for (key, entry) in entries {
+                walk_objects(entry, &format!("{path}/{key}"), visit);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                walk_objects(item, &format!("{path}/{index}"), visit);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]
@@ -107,22 +132,26 @@ fn zero_fraction_floats_are_the_one_known_divergence() {
 }
 
 /// The schema must carry the same strictness as the serde types:
-/// every object in it rejects unknown keys, or an editor would bless
-/// flows the daemon rejects.
+/// every object schema anywhere in it rejects unknown keys, or an
+/// editor would bless flows the daemon rejects. Walking every node —
+/// not just the top-level `$defs` — keeps future inline subschemas
+/// covered too.
 #[test]
 fn every_object_in_the_schema_rejects_unknown_keys() {
-    let schema = serde_json::to_value(flow::json_schema()).unwrap();
-    let root = schema.as_object().unwrap();
-    assert_eq!(root["additionalProperties"], serde_json::json!(false));
-    for (name, definition) in root["$defs"].as_object().unwrap() {
-        if definition["type"] == serde_json::json!("object") {
+    let mut found = 0;
+    walk_objects(&SCHEMA, "", &mut |entries, path| {
+        let is_object_schema = entries.contains_key("properties")
+            || entries.get("type") == Some(&serde_json::json!("object"));
+        if is_object_schema {
+            found += 1;
             assert_eq!(
-                definition["additionalProperties"],
-                serde_json::json!(false),
-                "{name}"
+                entries.get("additionalProperties"),
+                Some(&serde_json::json!(false)),
+                "{path}: object schema does not reject unknown keys"
             );
         }
-    }
+    });
+    assert!(found > 0, "the walk matched no object schemas");
 }
 
 /// Every sub-64-bit integer anywhere in the schema must carry the
@@ -133,52 +162,43 @@ fn every_object_in_the_schema_rejects_unknown_keys() {
 /// from a flow file.
 #[test]
 fn every_integer_format_in_the_schema_carries_bounds() {
-    fn walk(node: &serde_json::Value, path: &str, found: &mut u32) {
-        match node {
-            serde_json::Value::Object(entries) => {
-                let sub_64_bit = |f: &&str| f.contains("int") && *f != "uint64" && *f != "int64";
-                let format = entries.get("format").and_then(serde_json::Value::as_str);
-                if let Some(format) = format.filter(sub_64_bit) {
-                    *found += 1;
-                    for bound in ["minimum", "maximum"] {
-                        assert!(
-                            entries.contains_key(bound),
-                            "{path}: format `{format}` lacks `{bound}` — teach the \
-                             generator's bounds transform this format or use a bounded type"
-                        );
-                    }
-                }
-                for (key, entry) in entries {
-                    walk(entry, &format!("{path}/{key}"), found);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for (index, item) in items.iter().enumerate() {
-                    walk(item, &format!("{path}/{index}"), found);
-                }
-            }
-            _ => {}
-        }
-    }
-    let schema = serde_json::to_value(flow::json_schema()).unwrap();
     let mut found = 0;
-    walk(&schema, "", &mut found);
+    walk_objects(&SCHEMA, "", &mut |entries, path| {
+        let sub_64_bit = |f: &&str| f.contains("int") && *f != "uint64" && *f != "int64";
+        let format = entries.get("format").and_then(serde_json::Value::as_str);
+        if let Some(format) = format.filter(sub_64_bit) {
+            found += 1;
+            for bound in ["minimum", "maximum"] {
+                assert!(
+                    entries.contains_key(bound),
+                    "{path}: format `{format}` lacks `{bound}` — teach the \
+                     generator's bounds transform this format or use a bounded type"
+                );
+            }
+        }
+    });
     assert!(found > 0, "the walk matched no integer formats");
 }
 
+/// The representative example documents every flow section, so the
+/// schema's top-level properties must equal its tables — a new
+/// section extends this guard the moment the example gains it, with
+/// no hand-kept list to forget.
 #[test]
 fn the_schema_names_every_flow_section() {
-    let schema = serde_json::to_value(flow::json_schema()).unwrap();
-    let properties = schema["properties"].as_object().unwrap();
-    for section in [
-        "loop",
-        "agent",
-        "budget",
-        "verify",
-        "workspace",
-        "secrets",
-        "notify",
-    ] {
-        assert!(properties.contains_key(section), "{section}");
-    }
+    let example: toml::Value = toml::from_str(RALPH_EXAMPLE).unwrap();
+    let sections: BTreeSet<&str> = example
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let schema: &serde_json::Value = &SCHEMA;
+    let properties: BTreeSet<&str> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(properties, sections);
 }

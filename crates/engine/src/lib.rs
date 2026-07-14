@@ -28,10 +28,6 @@ pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEv
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
-pub use proto::flow::{
-    AgentConfig, BudgetConfig, FailAction, FlowConfig, FlowDuration, FlowError, KernelName,
-    LoopConfig, NotifyConfig, OnFail, SecretsConfig, VerifyConfig, WorkspaceConfig,
-};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,

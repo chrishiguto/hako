@@ -7,6 +7,9 @@ use proto::flow::{BudgetConfig, FlowDuration};
 
 pub use proto::budget::{BudgetKind, TokenUsage};
 
+/// The cap on one iteration when the flow leaves it unset.
+const DEFAULT_ITERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// The caps a flow sets on one run. `None` means uncapped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Budgets {
@@ -27,7 +30,7 @@ impl Default for Budgets {
             max_iterations: None,
             max_wall_clock: None,
             max_tokens: None,
-            iteration_timeout: Duration::from_secs(30 * 60),
+            iteration_timeout: DEFAULT_ITERATION_TIMEOUT,
         }
     }
 }
@@ -45,7 +48,7 @@ impl From<&BudgetConfig> for Budgets {
             max_tokens: config.max_tokens,
             iteration_timeout: config
                 .iteration_timeout
-                .map_or(Self::default().iteration_timeout, FlowDuration::as_duration),
+                .map_or(DEFAULT_ITERATION_TIMEOUT, FlowDuration::as_duration),
         }
     }
 }

@@ -14,13 +14,18 @@ fn hako(args: &[&str]) -> Output {
         .expect("hako runs")
 }
 
-fn fixture(name: &str) -> String {
+/// A path relative to this crate's directory, as the UTF-8 string
+/// `hako`'s argv needs.
+fn repo_path(relative: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
+        .join(relative)
         .into_os_string()
         .into_string()
-        .expect("fixture path is UTF-8")
+        .expect("path is UTF-8")
+}
+
+fn fixture(name: &str) -> String {
+    repo_path(&format!("tests/fixtures/{name}"))
 }
 
 fn stderr(output: &Output) -> String {
@@ -29,78 +34,38 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn the_committed_example_flow_validates() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/ralph.toml")
-        .into_os_string()
-        .into_string()
-        .expect("example path is UTF-8");
-    let output = hako(&["validate", &example]);
+    let output = hako(&["validate", &repo_path("../../examples/ralph.toml")]);
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("valid flow"));
 }
 
+/// Each rejected fixture fails naming the offending key, its line, or
+/// the fix — the error text is proto's, reaching stderr verbatim.
 #[test]
-fn a_misspelled_key_fails_naming_it_the_line_and_the_fix() {
-    let output = hako(&["validate", &fixture("misspelled-key.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("max_iteration"), "{stderr}");
-    assert!(stderr.contains("max_iterations"), "{stderr}");
-    assert!(stderr.contains("line"), "{stderr}");
-}
-
-#[test]
-fn a_misspelled_kernel_fails_naming_the_real_one() {
-    let output = hako(&["validate", &fixture("misspelled-kernel.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("ralf"), "{stderr}");
-    assert!(stderr.contains("ralph"), "{stderr}");
-}
-
-#[test]
-fn an_out_of_range_integer_fails_naming_the_expected_type() {
-    let output = hako(&["validate", &fixture("out-of-range.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("max_iterations"), "{stderr}");
-    assert!(stderr.contains("u32"), "{stderr}");
-}
-
-#[test]
-fn a_non_finite_number_fails_showing_its_line() {
-    let output = hako(&["validate", &fixture("nonfinite.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("max_tokens"), "{stderr}");
-    assert!(stderr.contains("inf"), "{stderr}");
-}
-
-#[test]
-fn a_datetime_fails_showing_its_line() {
-    let output = hako(&["validate", &fixture("datetime.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("goal"), "{stderr}");
-    assert!(stderr.contains("string"), "{stderr}");
-}
-
-#[test]
-fn a_bad_duration_fails_spelling_out_the_grammar() {
-    let output = hako(&["validate", &fixture("bad-duration.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("invalid duration"), "{stderr}");
-    assert!(stderr.contains("030m"), "{stderr}");
-    assert!(stderr.contains("\"30m\""), "{stderr}");
-}
-
-#[test]
-fn a_toml_syntax_error_fails_with_a_line_pointer() {
-    let output = hako(&["validate", &fixture("syntax-error.toml")]);
-    assert!(!output.status.success());
-    let stderr = stderr(&output);
-    assert!(stderr.contains("line"), "{stderr}");
+fn invalid_flows_fail_with_the_parsers_error_text() {
+    let corpus: &[(&str, &[&str])] = &[
+        (
+            "misspelled-key.toml",
+            &["max_iteration", "max_iterations", "line"],
+        ),
+        ("misspelled-kernel.toml", &["ralf", "ralph"]),
+        ("out-of-range.toml", &["max_iterations", "u32"]),
+        ("nonfinite.toml", &["max_tokens", "inf"]),
+        ("datetime.toml", &["goal", "string"]),
+        (
+            "bad-duration.toml",
+            &["invalid duration", "030m", "\"30m\""],
+        ),
+        ("syntax-error.toml", &["line"]),
+    ];
+    for (name, expected) in corpus {
+        let output = hako(&["validate", &fixture(name)]);
+        assert!(!output.status.success(), "{name}");
+        let stderr = stderr(&output);
+        for fragment in *expected {
+            assert!(stderr.contains(fragment), "{name}: {stderr}");
+        }
+    }
 }
 
 #[test]
@@ -114,7 +79,6 @@ fn a_missing_file_fails_naming_it() {
 fn schema_prints_the_committed_schema_verbatim() {
     let output = hako(&["schema"]);
     assert!(output.status.success(), "{output:?}");
-    let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/flow.schema.json");
-    let committed = std::fs::read_to_string(committed).expect("committed schema exists");
+    let committed = include_str!("../../../schemas/flow.schema.json");
     assert_eq!(String::from_utf8_lossy(&output.stdout), committed);
 }
