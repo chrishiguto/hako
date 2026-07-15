@@ -9,7 +9,7 @@ A Rust workspace, toolchain pinned in `rust-toolchain.toml`. `just` is the singl
 - `just fmt` — format everything
 - `just check` — fmt-check, typos, cargo-deny, dependency rules, schema drift, clippy (warnings denied)
 - `just test` — the workspace test suite
-- `just schema` — regenerate `schemas/flow.schema.json` after changing the engine's flow types
+- `just schema` — regenerate `schemas/flow.schema.json` after changing proto's flow types
 - `just setup` — one-time install of cargo-deny and typos (rustup + just assumed)
 
 Automation that outgrows a shell one-liner lives in the `xtask` crate, invoked as `cargo xtask <task>` (today: `deps`, the workspace dependency-rule check, and `schema`, the flow-schema generator and drift check). xtask is a dev tool, not a product crate — exempt from the dependency rules it enforces.

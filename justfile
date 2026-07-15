@@ -24,7 +24,7 @@ check:
     cargo --locked xtask schema --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# regenerate schemas/flow.schema.json from the engine's flow types
+# regenerate schemas/flow.schema.json from proto's flow types
 schema:
     cargo --locked xtask schema
 
