@@ -38,6 +38,19 @@ pub enum RunOutcome {
     Cancelled,
 }
 
+/// The wire state an outcome lands the run in — what a kernel's final
+/// `state_changed` event carries.
+impl From<RunOutcome> for RunState {
+    fn from(outcome: RunOutcome) -> Self {
+        match outcome {
+            RunOutcome::Done => RunState::Done,
+            RunOutcome::Failed => RunState::Failed,
+            RunOutcome::Paused(reason) => RunState::Paused { reason },
+            RunOutcome::Cancelled => RunState::Cancelled,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -48,5 +61,23 @@ mod tests {
     fn run_id_serializes_as_a_bare_string() {
         let id = RunId::new("run-7");
         assert_eq!(serde_json::to_value(&id).unwrap(), json!("run-7"));
+    }
+
+    #[test]
+    fn every_outcome_lands_in_the_matching_state() {
+        let outcomes = [
+            (RunOutcome::Done, RunState::Done),
+            (RunOutcome::Failed, RunState::Failed),
+            (
+                RunOutcome::Paused(PauseReason::Budget),
+                RunState::Paused {
+                    reason: PauseReason::Budget,
+                },
+            ),
+            (RunOutcome::Cancelled, RunState::Cancelled),
+        ];
+        for (outcome, state) in outcomes {
+            assert_eq!(RunState::from(outcome), state);
+        }
     }
 }

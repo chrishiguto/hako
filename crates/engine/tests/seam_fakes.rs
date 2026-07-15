@@ -9,12 +9,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use engine::workspace::DOMAIN_PROMPT_FILE;
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
     PauseReason, ProgressReport, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
     SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
-    SecretsProvider, TokenUsage, WorkspaceMount,
+    SecretsProvider, TokenUsage, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -178,17 +179,18 @@ impl Kernel for OneIterationKernel {
             .await?;
 
         let spec = SandboxSpec {
-            workspace: WorkspaceMount {
-                host: PathBuf::from("/var/lib/hako/runs/r1/workspace"),
-                guest: PathBuf::from("/workspace"),
-            },
+            workspace: ctx.workspace.mount(),
             env: BTreeMap::from([("GH_TOKEN".to_string(), token)]),
         };
         let vm = ctx.sandbox.create(&spec).await?;
 
         let prompt = format!("goal: {}\niteration 1", ctx.goal);
         ctx.sandbox
-            .put_file(&vm, Path::new("/workspace/PROMPT.md"), prompt.as_bytes())
+            .put_file(
+                &vm,
+                &spec.workspace.guest.join(DOMAIN_PROMPT_FILE),
+                prompt.as_bytes(),
+            )
             .await?;
 
         let mut output = ctx
@@ -239,7 +241,7 @@ impl Kernel for OneIterationKernel {
 
         let raw = ctx
             .sandbox
-            .get_file(&vm, Path::new("/workspace/.hako/progress.json"))
+            .get_file(&vm, &ctx.workspace.guest_progress_path())
             .await?;
         let report: ProgressReport =
             serde_json::from_slice(&raw).expect("the test seeds a valid progress report");
@@ -281,10 +283,11 @@ impl Kernel for OneIterationKernel {
 #[tokio::test]
 async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
     let sandbox = Arc::new(FakeSandbox::default());
+    let workspace = Workspace::at("/var/lib/hako/runs/r1/workspace");
     // The progress file the agent "wrote", seeded up front because the
     // scripted exec transcript never touches the file store.
     sandbox.files.lock().unwrap().insert(
-        PathBuf::from("/workspace/.hako/progress.json"),
+        workspace.guest_progress_path(),
         br#"{
             "status": "needs_input",
             "summary": "need a decision before the schema can land",
@@ -305,6 +308,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         run_id: RunId::new("r1"),
         goal: "prove the seams fit together".to_string(),
         budgets: Budgets::default(),
+        workspace,
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent),
         events: sink.clone(),
