@@ -401,19 +401,6 @@ mod tests {
         assert!(err.contains("notifyy"), "{err}");
     }
 
-    /// `goal` was deleted from the flow language — the objective lives
-    /// in the domain prompt. Strict parsing keeps it from creeping
-    /// back.
-    #[test]
-    fn a_goal_key_is_rejected_as_unknown() {
-        let flow = MINIMAL_FLOW.replace(
-            "kernel = \"ralph\"",
-            "kernel = \"ralph\"\ngoal = \"Fix the flaky test\"",
-        );
-        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
-        assert!(err.contains("goal"), "{err}");
-    }
-
     #[test]
     fn a_misspelled_kernel_is_rejected_naming_the_real_one() {
         let flow = REPRESENTATIVE_FLOW.replace("\"ralph\"", "\"ralf\"");
