@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FlowConfig",
-  "description": "A parsed flow: what to achieve, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel.",
+  "description": "A parsed flow: which kernel to run, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel —\nand no objective: that lives in the workspace's domain prompt.",
   "type": "object",
   "properties": {
     "agent": {
@@ -120,21 +120,16 @@
       ]
     },
     "LoopConfig": {
-      "description": "Which kernel runs the loop and what it is trying to achieve.",
+      "description": "Which kernel runs the loop.",
       "type": "object",
       "properties": {
-        "goal": {
-          "description": "What the loop is trying to achieve, passed verbatim to the\nkernel.",
-          "type": "string"
-        },
         "kernel": {
           "$ref": "#/$defs/KernelName"
         }
       },
       "additionalProperties": false,
       "required": [
-        "kernel",
-        "goal"
+        "kernel"
       ]
     },
     "NotifyConfig": {

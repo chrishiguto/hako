@@ -5,7 +5,6 @@
 
 [loop]
 kernel = "ralph"
-goal = "Fix the flaky test"
 
 [agent]
 engine = "claude"

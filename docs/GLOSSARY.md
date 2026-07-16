@@ -8,15 +8,21 @@ hako runs unattended ("AFK") coding-agent loops: loop patterns are enforced by c
 The library that executes kernels. Hosted by the daemon in production; embeddable directly in tests and tools.
 
 **Kernel**:
-A named loop pattern implemented inside the engine, owning all control flow (iterate, verify, retry, stop). v1 ships one: Ralph.
+A named loop pattern implemented inside the engine, owning all control flow (iterate, verify, retry, stop). A new loop shape is a new kernel in Rust, never logic in a flow.
 _Avoid_: workflow engine, orchestrator
 
-**Ralph**:
-The v1 kernel: a single-agent goal loop — fresh context every iteration, one work item at a time, memory only through the workspace.
+**Ralph** (v1, shipped):
+The single-prompt kernel: every iteration runs the same domain prompt in a fresh context, one work item at a time, memory only through the workspace. The objective lives entirely in the domain prompt.
+
+**Pipeline** (v1, specced):
+The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize each stage's prompt; stages communicate only through schema-validated stage reports.
+
+**Fanout** (post-v1):
+The dispatcher kernel: its plan stage decomposes ready work into independent units and spawns one child Pipeline run per unit — one child, one branch, one PR. Parallelism composes at the run level, never inside a run.
 
 **Flow**:
-A TOML file that parameterizes a kernel: goal, agent, budgets, verify checks, workspace, secret names. Contains no logic.
-_Avoid_: workflow, pipeline, script
+A TOML file that parameterizes a kernel: agent, budgets, verify checks, workspace, secret names. Contains no logic and no objective — those belong to the kernel and the domain prompt.
+_Avoid_: workflow, script
 
 **Run**:
 One execution of a flow by the daemon, from submission to a terminal state (done, failed, cancelled), possibly pausing along the way.
@@ -50,11 +56,11 @@ _Avoid_: model, bot
 The engine's knowledge of how to drive one agent: headless invocation, token-usage reporting, required secrets.
 
 **Domain Prompt**:
-The user-authored, agent-editable prompt file living in the workspace; carries domain rules, never loop mechanics.
+The user-authored, agent-editable prompt file living in the workspace; carries the objective and the domain rules, never loop mechanics.
 _Avoid_: system prompt
 
 **Preamble**:
-The engine-composed frame wrapped around the domain prompt each iteration: goal, iteration count, last progress, feedback, human answers, and the progress-report contract.
+The engine-composed frame wrapped around the domain prompt each iteration: iteration count, last progress, feedback, human answers, and the progress-report contract.
 
 **Progress Report**:
 The schema-validated declaration the agent must write to end an iteration: continue, done, blocked, or needs_input.

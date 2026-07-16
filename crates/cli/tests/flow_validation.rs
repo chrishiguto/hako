@@ -51,7 +51,7 @@ fn invalid_flows_fail_with_the_parsers_error_text() {
         ("misspelled-kernel.toml", &["ralf", "ralph"]),
         ("out-of-range.toml", &["max_iterations", "u32"]),
         ("nonfinite.toml", &["max_tokens", "inf"]),
-        ("datetime.toml", &["goal", "string"]),
+        ("datetime.toml", &["repo", "string"]),
         (
             "bad-duration.toml",
             &["invalid duration", "030m", "\"30m\""],

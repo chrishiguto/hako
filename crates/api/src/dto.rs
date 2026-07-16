@@ -35,7 +35,6 @@ pub struct RunSummary {
     /// on the summary object.
     #[serde(flatten)]
     pub state: RunState,
-    pub goal: String,
     pub kernel: String,
     pub agent: String,
     /// RFC 3339 UTC timestamp.
@@ -126,7 +125,6 @@ mod tests {
             state: RunState::Paused {
                 reason: PauseReason::Budget,
             },
-            goal: "implement all open issues".into(),
             kernel: "ralph".into(),
             agent: "claude".into(),
             created_at: "2026-07-13T08:00:00Z".into(),
@@ -138,7 +136,6 @@ mod tests {
                 "run_id": "r1",
                 "state": "paused",
                 "reason": "budget",
-                "goal": "implement all open issues",
                 "kernel": "ralph",
                 "agent": "claude",
                 "created_at": "2026-07-13T08:00:00Z",
@@ -179,7 +176,6 @@ mod tests {
             run: RunSummary {
                 run_id: "r9".into(),
                 state: RunState::Running,
-                goal: "port the parser".into(),
                 kernel: "ralph".into(),
                 agent: "codex".into(),
                 created_at: "2026-07-13T08:00:00Z".into(),
@@ -194,7 +190,6 @@ mod tests {
             json!({
                 "run_id": "r9",
                 "state": "running",
-                "goal": "port the parser",
                 "kernel": "ralph",
                 "agent": "codex",
                 "created_at": "2026-07-13T08:00:00Z",

@@ -2,7 +2,6 @@
 
 [loop]
 kernel = "ralph"
-goal = "Implement all open GitHub issues"
 
 [agent]
 engine = "claude"

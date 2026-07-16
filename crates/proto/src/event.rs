@@ -17,7 +17,6 @@ use crate::run::RunState;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunEvent {
     RunStarted {
-        goal: String,
         kernel: String,
         agent: String,
     },

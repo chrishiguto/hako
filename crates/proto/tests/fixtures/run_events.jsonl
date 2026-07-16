@@ -1,4 +1,4 @@
-{"type":"run_started","goal":"implement all open issues","kernel":"ralph","agent":"claude"}
+{"type":"run_started","kernel":"ralph","agent":"claude"}
 {"type":"state_changed","state":"running"}
 {"type":"state_changed","state":"paused","reason":"blocked"}
 {"type":"state_changed","state":"paused","reason":"verify_failed"}
