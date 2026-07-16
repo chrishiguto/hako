@@ -6,4 +6,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 engine.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "rt", "sync"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros"] }
