@@ -1,6 +1,6 @@
 # Kernels own control flow; flow files are logic-free
 
-The predecessor project (hakoflow) encoded loops, conditionals, fan-out, and output extraction in config, growing an ad-hoc expression language that made flows verbose and hard to author. hako inverts this: loop patterns (kernels, v1: Ralph) are Rust code inside the engine, and a flow file only parameterizes one — goal, agent, budgets, verify checks, workspace, secret names. The flow schema contains no iteration, branching, or expressions of any kind.
+The predecessor project (hakoflow) encoded loops, conditionals, fan-out, and output extraction in config, growing an ad-hoc expression language that made flows verbose and hard to author. hako inverts this: loop patterns (kernels, v1: Ralph) are Rust code inside the engine, and a flow file only parameterizes one — agent, budgets, verify checks, workspace, secret names. The flow schema contains no iteration, branching, or expressions of any kind.
 
 ## Considered Options
 

@@ -23,7 +23,6 @@ use proto::budget::BudgetKind;
 use proto::event::IterationOutcome;
 use serde_json::json;
 
-const GOAL: &str = "close every open issue";
 const DOMAIN_PROMPT: &str = "## Domain rules\n\nkeep the build green\n";
 
 /// What the scripted agent does inside one sandbox: edit workspace
@@ -323,7 +322,6 @@ fn context(
 ) -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
-        goal: GOAL.into(),
         budgets,
         workspace,
         sandbox,
@@ -398,7 +396,6 @@ async fn a_continue_continue_done_run_completes_and_checkpoints_each_step() {
     assert_eq!(
         events[0],
         RunEvent::RunStarted {
-            goal: GOAL.into(),
             kernel: "ralph".into(),
             agent: "scripted".into(),
         }
@@ -484,7 +481,6 @@ async fn exhausting_max_iterations_finishes_the_iteration_then_pauses_resumably(
         r#"
         [loop]
         kernel = "ralph"
-        goal = "close every open issue"
 
         [agent]
         engine = "scripted"
@@ -541,7 +537,7 @@ async fn exhausting_max_iterations_finishes_the_iteration_then_pauses_resumably(
 }
 
 #[tokio::test]
-async fn the_preamble_frames_the_domain_prompt_with_goal_position_history_and_contract() {
+async fn the_preamble_frames_the_domain_prompt_with_position_history_and_contract() {
     let budgets = Budgets {
         max_iterations: Some(5),
         ..Budgets::default()
@@ -557,7 +553,6 @@ async fn the_preamble_frames_the_domain_prompt_with_goal_position_history_and_co
     assert_eq!(outcome, RunOutcome::Done);
 
     let first = sandbox.prompt_of(0);
-    assert!(first.contains(GOAL), "{first}");
     assert!(first.contains("iteration 1 of 5"), "{first}");
     assert!(first.contains(PROGRESS_FILE), "{first}");
     assert!(!first.contains("Previous iteration"), "{first}");
@@ -566,7 +561,6 @@ async fn the_preamble_frames_the_domain_prompt_with_goal_position_history_and_co
         first.trim_end().ends_with("keep the build green"),
         "{first}"
     );
-    assert!(first.find(GOAL).unwrap() < first.find("Domain rules").unwrap());
 
     let second = sandbox.prompt_of(1);
     assert!(second.contains("iteration 2 of 5"), "{second}");

@@ -32,8 +32,6 @@ pub trait Kernel: Send + Sync {
 #[derive(Clone)]
 pub struct KernelContext {
     pub run_id: RunId,
-    /// What the loop is trying to achieve, verbatim from the flow.
-    pub goal: String,
     pub budgets: Budgets,
     /// Prepared before the kernel starts; the kernel mounts it,
     /// checkpoints it, and reads the domain prompt from it.

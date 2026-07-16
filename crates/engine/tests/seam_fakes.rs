@@ -169,7 +169,6 @@ impl Kernel for OneIterationKernel {
 
         ctx.events
             .emit(RunEvent::RunStarted {
-                goal: ctx.goal.clone(),
                 kernel: self.name().into(),
                 agent: ctx.agent.name().into(),
             })
@@ -184,7 +183,7 @@ impl Kernel for OneIterationKernel {
         };
         let vm = ctx.sandbox.create(&spec).await?;
 
-        let prompt = format!("goal: {}\niteration 1", ctx.goal);
+        let prompt = "iteration 1";
         ctx.sandbox
             .put_file(
                 &vm,
@@ -195,7 +194,7 @@ impl Kernel for OneIterationKernel {
 
         let mut output = ctx
             .sandbox
-            .exec_stream(&vm, &ctx.agent.invocation(&prompt))
+            .exec_stream(&vm, &ctx.agent.invocation(prompt))
             .await?;
         let mut stdout = String::new();
         let mut exit = None;
@@ -306,7 +305,6 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
 
     let ctx = KernelContext {
         run_id: RunId::new("r1"),
-        goal: "prove the seams fit together".to_string(),
         budgets: Budgets::default(),
         workspace,
         sandbox: sandbox.clone(),

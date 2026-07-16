@@ -113,7 +113,15 @@ fn schema_and_serde_agree_on_the_corpus() {
         ),
         (
             "datetime where a string belongs",
-            &MINIMAL_FLOW.replace("\"Fix the flaky test\"", "2026-01-01"),
+            &MINIMAL_FLOW.replace("repo = \".\"", "repo = 2026-01-01"),
+            false,
+        ),
+        (
+            "the deleted goal key",
+            &MINIMAL_FLOW.replace(
+                "kernel = \"ralph\"",
+                "kernel = \"ralph\"\ngoal = \"Fix the flaky test\"",
+            ),
             false,
         ),
     ];

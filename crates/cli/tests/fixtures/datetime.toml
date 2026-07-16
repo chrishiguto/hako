@@ -2,10 +2,9 @@
 
 [loop]
 kernel = "ralph"
-goal = 2026-01-01
 
 [agent]
 engine = "claude"
 
 [workspace]
-repo = "."
+repo = 2026-01-01

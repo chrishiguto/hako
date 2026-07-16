@@ -1,4 +1,5 @@
-//! The Ralph kernel — a single-agent goal loop. Every iteration gets a
+//! The Ralph kernel — a single-prompt loop: every iteration runs the
+//! same domain prompt, which alone carries the objective. Each gets a
 //! fresh sandbox and a fresh agent context; the workspace is the only
 //! memory. The loop trusts nothing it cannot see: the agent speaks
 //! back only through the progress report, and every step lands in the
@@ -42,7 +43,6 @@ impl Kernel for RalphKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         ctx.events
             .emit(RunEvent::RunStarted {
-                goal: ctx.goal.clone(),
                 kernel: self.name().into(),
                 agent: ctx.agent.name().into(),
             })
@@ -127,7 +127,6 @@ async fn iterate(
     // domain rules.
     let domain_prompt = ctx.workspace.domain_prompt().await?;
     let prompt = preamble::compose(
-        &ctx.goal,
         iteration,
         ctx.budgets.max_iterations,
         previous,

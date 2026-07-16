@@ -19,8 +19,9 @@ use serde::Deserialize;
 
 use crate::secrets::SecretName;
 
-/// A parsed flow: what to achieve, with which agent, under which
-/// limits. Contains no logic — control flow belongs to the kernel.
+/// A parsed flow: which kernel to run, with which agent, under which
+/// limits. Contains no logic — control flow belongs to the kernel —
+/// and no objective: that lives in the workspace's domain prompt.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -51,15 +52,12 @@ impl FlowConfig {
 #[error(transparent)]
 pub struct FlowError(#[from] toml::de::Error);
 
-/// Which kernel runs the loop and what it is trying to achieve.
+/// Which kernel runs the loop.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LoopConfig {
     pub kernel: KernelName,
-    /// What the loop is trying to achieve, passed verbatim to the
-    /// kernel.
-    pub goal: String,
 }
 
 /// The loop patterns the engine ships. A closed set by design: a new
@@ -354,7 +352,6 @@ mod tests {
     fn representative_flow_parses() {
         let flow = FlowConfig::from_toml(REPRESENTATIVE_FLOW).unwrap();
         assert_eq!(flow.r#loop.kernel, KernelName::Ralph);
-        assert_eq!(flow.r#loop.goal, "Implement all open GitHub issues");
         assert_eq!(flow.agent.engine, "claude");
         assert_eq!(
             flow.budget,
