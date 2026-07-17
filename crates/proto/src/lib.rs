@@ -6,13 +6,11 @@
 //! One definition serves every side. The engine emits these types, the
 //! daemon records and streams them verbatim, and clients deserialize
 //! the same shapes — so a change here is a wire-contract change by
-//! construction, never by accident. Shapes only the daemon
-//! and clients speak live in `api`: the envelope each logged event is
-//! wrapped in (sequence, timestamp) and the REST bodies. The `openapi`
-//! feature adds `utoipa` schema derives so `api` can generate the
-//! OpenAPI document; the `schema` feature adds `schemars` derives so
-//! xtask can generate the committed flow schema. Product crates build
-//! without either.
+//! construction, never by accident. Shapes only the daemon and clients
+//! speak live in `api`: the REST bodies. The `openapi` feature adds
+//! `utoipa` schema derives so `api` can generate the OpenAPI document;
+//! the `schema` feature adds `schemars` derives so xtask can generate
+//! the committed flow schema. Product crates build without either.
 
 pub mod budget;
 pub mod event;
@@ -22,7 +20,7 @@ pub mod run;
 pub mod secrets;
 
 pub use budget::{BudgetKind, TokenUsage};
-pub use event::{IterationOutcome, OutputStream, RunEvent};
+pub use event::{EventEnvelope, IterationOutcome, OutputStream, RunEvent};
 pub use flow::{FlowConfig, FlowError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
 pub use run::{PauseReason, RunState};
