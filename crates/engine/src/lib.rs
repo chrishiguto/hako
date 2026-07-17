@@ -31,7 +31,7 @@ pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
 pub use ralph::RalphKernel;
-pub use run::{PauseReason, RunId, RunOutcome, RunState};
+pub use run::{Answer, PauseReason, Resume, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
     WorkspaceMount,

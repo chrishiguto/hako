@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use engine::workspace::{DOMAIN_PROMPT_FILE, PROGRESS_FILE};
 use engine::{
-    AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
-    Kernel, KernelContext, Notification, Notifier, NotifierError, PauseReason, RalphKernel,
-    RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
-    SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage, Workspace, WorkspaceMount,
+    AgentAdapter, Answer, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream,
+    ExitStatus, Kernel, KernelContext, Notification, Notifier, NotifierError, PauseReason,
+    ProgressReport, Question, RalphKernel, Resume, RunEvent, RunId, RunOutcome, RunState, Sandbox,
+    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
+    SecretsProvider, TokenUsage, Workspace, WorkspaceMount,
 };
 use futures_util::{StreamExt, stream};
 use proto::budget::BudgetKind;
@@ -49,6 +50,16 @@ fn continuing(summary: &str, remaining: &[&str]) -> ScriptedIteration {
 
 fn finishing(summary: &str) -> ScriptedIteration {
     reporting(json!({"status": "done", "summary": summary}))
+}
+
+/// The agent exits non-zero without filing a report.
+fn crashing() -> ScriptedIteration {
+    ScriptedIteration {
+        files: vec![],
+        stdout: "panic!\n".into(),
+        report: None,
+        exit: ExitStatus { code: Some(1) },
+    }
 }
 
 impl ScriptedIteration {
@@ -88,6 +99,12 @@ impl FakeSandbox {
         let execs = self.execs.lock().unwrap();
         let (_, spec) = &execs[exec];
         spec.argv.last().unwrap().clone()
+    }
+
+    /// Which sandbox each agent invocation ran in, in order.
+    fn handles(&self) -> Vec<String> {
+        let execs = self.execs.lock().unwrap();
+        execs.iter().map(|(handle, _)| handle.clone()).collect()
     }
 
     fn host_path(
@@ -324,6 +341,7 @@ fn context(
         run_id: RunId::new("r1"),
         budgets,
         workspace,
+        resume: None,
         sandbox,
         agent: Arc::new(ScriptedAgent),
         events: sink,
@@ -349,11 +367,51 @@ async fn run_ralph(
     (dir, sandbox, sink, outcome)
 }
 
+/// Resumes a paused run the way a host would: a fresh `run` call over
+/// the same workspace, carrying what the human said.
+async fn resume_ralph(
+    workspace: Workspace,
+    script: Vec<ScriptedIteration>,
+    budgets: Budgets,
+    resume: Resume,
+) -> (Arc<FakeSandbox>, Arc<RecordingSink>, RunOutcome) {
+    let sandbox = FakeSandbox::scripted(script);
+    let sink = Arc::new(RecordingSink::default());
+    let mut ctx = context(workspace, sandbox.clone(), sink.clone(), budgets);
+    ctx.resume = Some(resume);
+    let outcome = RalphKernel.run(ctx).await.unwrap();
+    (sandbox, sink, outcome)
+}
+
 fn last_state(sink: &RecordingSink) -> RunState {
     match sink.events().last().unwrap() {
         RunEvent::StateChanged { state } => *state,
         other => panic!("the run must end with state_changed, not {other:?}"),
     }
+}
+
+/// The last report the run filed, exactly as the log carries it —
+/// where a host finds a paused run's summary and questions.
+fn reported_by(sink: &RecordingSink) -> ProgressReport {
+    sink.events()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            RunEvent::ProgressReported { report, .. } => Some(report.clone()),
+            _ => None,
+        })
+        .expect("no progress was reported")
+}
+
+/// Every rejection's errors, in emission order.
+fn rejections(sink: &RecordingSink) -> Vec<Vec<String>> {
+    sink.events()
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::ProgressRejected { errors, .. } => Some(errors.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -426,9 +484,7 @@ async fn a_continue_continue_done_run_completes_and_checkpoints_each_step() {
     // every sandbox was destroyed.
     assert_eq!(sandbox.created.load(Ordering::SeqCst), 3);
     assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 3);
-    let execs = sandbox.execs.lock().unwrap();
-    let handles: Vec<&str> = execs.iter().map(|(handle, _)| handle.as_str()).collect();
-    assert_eq!(handles, ["vm-0", "vm-1", "vm-2"]);
+    assert_eq!(sandbox.handles(), ["vm-0", "vm-1", "vm-2"]);
 }
 
 #[tokio::test]
@@ -471,6 +527,155 @@ async fn a_needs_input_report_pauses_the_run_for_the_human() {
             reason: PauseReason::AwaitingHuman
         }
     );
+    // The questions are retrievable through the engine boundary: the
+    // reported event carries them, structured, for a host to expose.
+    assert_eq!(
+        reported_by(&sink).questions,
+        vec![Question {
+            id: "q1".into(),
+            text: "sqlite or plain files?".into(),
+            options: vec![],
+        }]
+    );
+}
+
+#[tokio::test]
+async fn answers_ride_the_next_preamble_attributed_to_their_questions() {
+    let (dir, _sandbox, sink, outcome) = run_ralph(
+        vec![reporting(json!({
+            "status": "needs_input",
+            "summary": "two storage designs are viable",
+            "remaining": ["wire the store"],
+            "questions": [
+                {"id": "q1", "text": "sqlite or plain files?", "options": ["sqlite", "files"]},
+            ],
+        }))],
+        Budgets::default(),
+    )
+    .await;
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::AwaitingHuman));
+
+    let resume = Resume {
+        iteration: 1,
+        report: reported_by(&sink),
+        answers: vec![Answer {
+            question_id: "q1".into(),
+            answer: "sqlite".into(),
+        }],
+        note: Some("keep the schema minimal".into()),
+    };
+    let (sandbox, sink, outcome) = resume_ralph(
+        Workspace::at(dir.path()),
+        vec![finishing("stored in sqlite")],
+        Budgets::default(),
+        resume,
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_resumed",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
+    assert_eq!(
+        sink.events()[0],
+        RunEvent::RunResumed {
+            note: Some("keep the schema minimal".into()),
+        }
+    );
+
+    // The loop picks up where it paused, and the human's words are in
+    // its memory: each answer attributed to its question, the note
+    // alongside.
+    let prompt = sandbox.prompt_of(0);
+    assert!(prompt.contains("This is iteration 2."), "{prompt}");
+    assert!(
+        prompt.contains("two storage designs are viable"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- Q: sqlite or plain files?\n  A: sqlite\n"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Note: keep the schema minimal"), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_resume_note_without_questions_is_injected_the_same_way() {
+    let (dir, _sandbox, sink, outcome) = run_ralph(
+        vec![reporting(json!({
+            "status": "blocked",
+            "summary": "the API key has expired",
+            "blockers": ["no valid credentials"],
+        }))],
+        Budgets::default(),
+    )
+    .await;
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Blocked));
+
+    let resume = Resume {
+        iteration: 1,
+        report: reported_by(&sink),
+        answers: vec![],
+        note: Some("key rotated; try again".into()),
+    };
+    let (sandbox, _sink, outcome) = resume_ralph(
+        Workspace::at(dir.path()),
+        vec![
+            continuing("retried with the new key", &["docs"]),
+            finishing("all green"),
+        ],
+        Budgets::default(),
+        resume,
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    let first = sandbox.prompt_of(0);
+    assert!(first.contains("## Human input"), "{first}");
+    assert!(first.contains("Note: key rotated; try again"), "{first}");
+    // The human's words ride exactly one preamble; from then on the
+    // loop's own reports carry the memory forward.
+    let second = sandbox.prompt_of(1);
+    assert!(!second.contains("## Human input"), "{second}");
+    assert!(second.contains("retried with the new key"), "{second}");
+}
+
+/// Resuming without extending an exhausted budget re-pauses before any
+/// agent runs. The human's words are not lost — no preamble spent
+/// them, and the host still holds them for the next, extended resume.
+#[tokio::test]
+async fn a_resume_into_an_exhausted_budget_pauses_again_before_any_agent_runs() {
+    let budgets = Budgets {
+        max_iterations: Some(1),
+        ..Budgets::default()
+    };
+    let (dir, _sandbox, sink, outcome) =
+        run_ralph(vec![continuing("first step", &["more"])], budgets.clone()).await;
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Budget));
+
+    let resume = Resume {
+        iteration: 1,
+        report: reported_by(&sink),
+        answers: vec![],
+        note: Some("still thinking about the budget".into()),
+    };
+    let (sandbox, sink, outcome) =
+        resume_ralph(Workspace::at(dir.path()), vec![], budgets, resume).await;
+
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Budget));
+    assert_eq!(
+        sink.kinds(),
+        ["run_resumed", "budget_exhausted", "state_changed"]
+    );
+    assert_eq!(sandbox.created.load(Ordering::SeqCst), 0);
 }
 
 /// Budgets come from a real flow file here, covering the submit path:
@@ -570,12 +775,7 @@ async fn the_preamble_frames_the_domain_prompt_with_position_history_and_contrac
 
 #[tokio::test]
 async fn a_crashed_agent_fails_the_iteration_and_the_run() {
-    let crash = ScriptedIteration {
-        files: vec![("junk.txt".into(), "half-finished".into())],
-        stdout: "panic!\n".into(),
-        report: None,
-        exit: ExitStatus { code: Some(1) },
-    };
+    let crash = crashing().editing("junk.txt", "half-finished");
     let (dir, sandbox, sink, outcome) = run_ralph(vec![crash], Budgets::default()).await;
 
     assert_eq!(outcome, RunOutcome::Failed);
@@ -601,13 +801,81 @@ async fn a_crashed_agent_fails_the_iteration_and_the_run() {
 }
 
 #[tokio::test]
-async fn a_malformed_progress_report_is_rejected_and_fails_the_run() {
-    let garbled = reporting(json!({}));
-    let garbled = ScriptedIteration {
-        report: Some("this is not json".into()),
-        ..garbled
+async fn an_invalid_report_earns_one_repair_re_prompt_in_the_same_sandbox() {
+    let invalid = reporting(json!({"status": "continue"}));
+    let (_dir, sandbox, sink, outcome) = run_ralph(
+        vec![
+            invalid,
+            continuing("fixed the report", &["docs"]),
+            finishing("all green"),
+        ],
+        Budgets::default(),
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_started",
+            "iteration_started",
+            "agent_output",
+            "progress_rejected",
+            "agent_output",
+            "progress_reported",
+            "iteration_finished",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
+
+    // The repair re-prompt carries the validation errors and the
+    // contract — not the domain prompt: only the report is being
+    // repaired, never the iteration's work.
+    let repair = sandbox.prompt_of(1);
+    let rejected = rejections(&sink);
+    assert!(rejected[0][0].contains("summary"), "{rejected:?}");
+    assert!(repair.contains(&rejected[0][0]), "{repair}");
+    assert!(repair.contains(PROGRESS_FILE), "{repair}");
+    assert!(!repair.contains("keep the build green"), "{repair}");
+
+    // Same iteration, same sandbox — the repair boots no fresh VM —
+    // and the repaired report feeds the next preamble like any other.
+    assert_eq!(sandbox.handles(), ["vm-0", "vm-0", "vm-1"]);
+    assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 2);
+    assert!(sandbox.prompt_of(2).contains("fixed the report"));
+}
+
+#[tokio::test]
+async fn a_missing_report_earns_the_same_repair_re_prompt() {
+    let silent = ScriptedIteration {
+        files: vec![],
+        stdout: "did things, reported nothing\n".into(),
+        report: None,
+        exit: ExitStatus { code: Some(0) },
     };
-    let (_dir, sandbox, sink, outcome) = run_ralph(vec![garbled], Budgets::default()).await;
+    let (_dir, sandbox, sink, outcome) =
+        run_ralph(vec![silent, finishing("recovered")], Budgets::default()).await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    let rejected = rejections(&sink);
+    assert_eq!(rejected.len(), 1);
+    assert!(rejected[0][0].contains("missing"), "{rejected:?}");
+    assert!(sandbox.prompt_of(1).contains(&rejected[0][0]));
+}
+
+#[tokio::test]
+async fn a_second_rejected_report_fails_the_iteration() {
+    let invalid = reporting(json!({"status": "continue"}));
+    let garbled = ScriptedIteration {
+        report: Some("still not json".into()),
+        ..reporting(json!({}))
+    };
+    let (_dir, sandbox, sink, outcome) =
+        run_ralph(vec![invalid, garbled], Budgets::default()).await;
 
     assert_eq!(outcome, RunOutcome::Failed);
     assert_eq!(
@@ -617,42 +885,32 @@ async fn a_malformed_progress_report_is_rejected_and_fails_the_run() {
             "iteration_started",
             "agent_output",
             "progress_rejected",
+            "agent_output",
+            "progress_rejected",
             "iteration_finished",
             "state_changed",
         ]
     );
-    let events = sink.events();
-    let errors = events
-        .iter()
-        .find_map(|event| match event {
-            RunEvent::ProgressRejected { errors, .. } => Some(errors.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert!(!errors.is_empty());
+    assert!(sink.events().contains(&RunEvent::IterationFinished {
+        iteration: 1,
+        outcome: IterationOutcome::Failed,
+    }));
+    assert_eq!(last_state(&sink), RunState::Failed);
+    // Exactly one repair: two rejections, two invocations in the one
+    // sandbox, and that sandbox still came down.
+    assert_eq!(rejections(&sink).len(), 2);
+    assert_eq!(sandbox.handles(), ["vm-0", "vm-0"]);
     assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn a_missing_progress_report_is_rejected_and_fails_the_run() {
-    let silent = ScriptedIteration {
-        files: vec![],
-        stdout: "did things, reported nothing\n".into(),
-        report: None,
-        exit: ExitStatus { code: Some(0) },
-    };
-    let (_dir, _sandbox, sink, outcome) = run_ralph(vec![silent], Budgets::default()).await;
+async fn a_crashed_repair_attempt_fails_the_iteration() {
+    let invalid = reporting(json!({"status": "continue"}));
+    let (_dir, _sandbox, sink, outcome) =
+        run_ralph(vec![invalid, crashing()], Budgets::default()).await;
 
     assert_eq!(outcome, RunOutcome::Failed);
-    let events = sink.events();
-    let errors = events
-        .iter()
-        .find_map(|event| match event {
-            RunEvent::ProgressRejected { errors, .. } => Some(errors.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert!(errors[0].contains("missing"), "{errors:?}");
+    assert_eq!(rejections(&sink).len(), 1);
     assert_eq!(last_state(&sink), RunState::Failed);
 }
 

@@ -8,7 +8,7 @@ use crate::agent::AgentAdapter;
 use crate::budget::Budgets;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
-use crate::run::{RunId, RunOutcome};
+use crate::run::{Resume, RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretsError, SecretsProvider};
 use crate::workspace::{Workspace, WorkspaceError};
@@ -36,6 +36,10 @@ pub struct KernelContext {
     /// Prepared before the kernel starts; the kernel mounts it,
     /// checkpoints it, and reads the domain prompt from it.
     pub workspace: Workspace,
+    /// Present when this call resumes a paused run: where the loop
+    /// stood and what the human said, injected into the first
+    /// iteration's preamble. `None` starts the run from the top.
+    pub resume: Option<Resume>,
     pub sandbox: Arc<dyn Sandbox>,
     pub agent: Arc<dyn AgentAdapter>,
     pub events: Arc<dyn EventSink>,

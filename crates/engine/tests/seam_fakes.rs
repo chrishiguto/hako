@@ -307,6 +307,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         workspace,
+        resume: None,
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent),
         events: sink.clone(),

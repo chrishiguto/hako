@@ -2,8 +2,10 @@
 //! same domain prompt, which alone carries the objective. Each gets a
 //! fresh sandbox and a fresh agent context; the workspace is the only
 //! memory. The loop trusts nothing it cannot see: the agent speaks
-//! back only through the progress report, and every step lands in the
-//! event log.
+//! back only through the progress report — with one repair re-prompt
+//! when a report fails validation — and every step lands in the event
+//! log. A human speaks back through resume: answers and notes ride the
+//! next iteration's preamble.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +16,7 @@ use crate::event::{IterationOutcome, OutputStream, RunEvent};
 use crate::kernel::{Kernel, KernelContext, KernelError};
 use crate::preamble;
 use crate::progress::{ProgressReport, ProgressStatus};
-use crate::run::{PauseReason, RunOutcome};
+use crate::run::{PauseReason, Resume, RunOutcome};
 use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec};
 use proto::budget::BudgetKind;
 
@@ -23,13 +25,13 @@ use proto::budget::BudgetKind;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RalphKernel;
 
-/// What one iteration left behind, once its sandbox is gone.
-enum IterationEnd {
+/// What one agent attempt left behind.
+enum AttemptEnd {
     /// The agent exited non-zero or was killed; there is no report to
     /// trust.
     Crashed,
-    /// The report is missing or malformed; the errors are what a
-    /// repair re-prompt would carry back.
+    /// The report is missing or malformed; the errors are what the
+    /// repair re-prompt carries back.
     Rejected(Vec<String>),
     Reported(ProgressReport),
 }
@@ -40,16 +42,30 @@ impl Kernel for RalphKernel {
         "ralph"
     }
 
-    async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
-        ctx.events
-            .emit(RunEvent::RunStarted {
-                kernel: self.name().into(),
-                agent: ctx.agent.name().into(),
-            })
-            .await?;
-
-        let mut previous: Option<ProgressReport> = None;
-        let mut iteration: u32 = 1;
+    async fn run(&self, mut ctx: KernelContext) -> Result<RunOutcome, KernelError> {
+        // A resume picks the loop up where the host says it paused; the
+        // human's words ride the first preamble, then the loop is on
+        // its own again.
+        let mut human = ctx.resume.take();
+        let (mut previous, mut iteration): (Option<ProgressReport>, u32) = match &human {
+            Some(resume) => {
+                ctx.events
+                    .emit(RunEvent::RunResumed {
+                        note: resume.note.clone(),
+                    })
+                    .await?;
+                (Some(resume.report.clone()), resume.iteration + 1)
+            }
+            None => {
+                ctx.events
+                    .emit(RunEvent::RunStarted {
+                        kernel: self.name().into(),
+                        agent: ctx.agent.name().into(),
+                    })
+                    .await?;
+                (None, 1)
+            }
+        };
         loop {
             if ctx
                 .budgets
@@ -68,17 +84,10 @@ impl Kernel for RalphKernel {
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
 
-            let report = match iterate(&ctx, iteration, previous.as_ref()).await? {
-                IterationEnd::Crashed => {
-                    return fail_iteration(&ctx, iteration).await;
-                }
-                IterationEnd::Rejected(errors) => {
-                    ctx.events
-                        .emit(RunEvent::ProgressRejected { iteration, errors })
-                        .await?;
-                    return fail_iteration(&ctx, iteration).await;
-                }
-                IterationEnd::Reported(report) => report,
+            let resume = human.take();
+            let Some(report) = iterate(&ctx, iteration, previous.as_ref(), resume.as_ref()).await?
+            else {
+                return fail_iteration(&ctx, iteration).await;
             };
 
             ctx.events
@@ -115,21 +124,28 @@ impl Kernel for RalphKernel {
 }
 
 /// One full iteration: fresh sandbox in, destroyed sandbox out — on
-/// every path, so an error can never leak a live sandbox.
+/// every path, so an error can never leak a live sandbox. `None` means
+/// the iteration failed — a crashed agent or a twice-rejected report —
+/// with the details already in the log.
 async fn iterate(
     ctx: &KernelContext,
     iteration: u32,
     previous: Option<&ProgressReport>,
-) -> Result<IterationEnd, KernelError> {
+    human: Option<&Resume>,
+) -> Result<Option<ProgressReport>, KernelError> {
     // Re-read every iteration: the domain prompt is agent-editable.
     // A prompt that cannot be read — including one the agent deleted —
     // is run-fatal by design: the loop must not iterate without its
     // domain rules.
     let domain_prompt = ctx.workspace.domain_prompt().await?;
     let prompt = preamble::compose(
-        iteration,
-        ctx.budgets.max_iterations,
-        previous,
+        &preamble::Preamble {
+            iteration,
+            max_iterations: ctx.budgets.max_iterations,
+            previous,
+            answers: human.map_or(&[], |resume| &resume.answers),
+            note: human.and_then(|resume| resume.note.as_deref()),
+        },
         &domain_prompt,
     );
 
@@ -145,14 +161,47 @@ async fn iterate(
     Ok(end)
 }
 
-/// The part of an iteration that needs the sandbox alive: run the
-/// agent, checkpoint what it changed, collect its report.
+/// The part of an iteration that needs the sandbox alive: one full
+/// agent attempt, and — when its report fails validation — the one
+/// repair re-prompt ADR 0007 grants. The repair runs in the same
+/// sandbox: the workspace already holds the iteration's work, and only
+/// the report is being repaired. Every rejection is emitted here;
+/// `None` means the iteration is out of chances.
 async fn drive_agent(
     ctx: &KernelContext,
     iteration: u32,
     sandbox: &SandboxHandle,
     prompt: &str,
-) -> Result<IterationEnd, KernelError> {
+) -> Result<Option<ProgressReport>, KernelError> {
+    let errors = match attempt(ctx, iteration, sandbox, prompt).await? {
+        AttemptEnd::Reported(report) => return Ok(Some(report)),
+        AttemptEnd::Crashed => return Ok(None),
+        AttemptEnd::Rejected(errors) => errors,
+    };
+    let repair = preamble::repair(&errors);
+    ctx.events
+        .emit(RunEvent::ProgressRejected { iteration, errors })
+        .await?;
+    match attempt(ctx, iteration, sandbox, &repair).await? {
+        AttemptEnd::Reported(report) => Ok(Some(report)),
+        AttemptEnd::Crashed => Ok(None),
+        AttemptEnd::Rejected(errors) => {
+            ctx.events
+                .emit(RunEvent::ProgressRejected { iteration, errors })
+                .await?;
+            Ok(None)
+        }
+    }
+}
+
+/// One agent attempt: invoke it headless, checkpoint what it changed,
+/// collect its report.
+async fn attempt(
+    ctx: &KernelContext,
+    iteration: u32,
+    sandbox: &SandboxHandle,
+    prompt: &str,
+) -> Result<AttemptEnd, KernelError> {
     let invocation = ctx.agent.invocation(prompt);
     let mut output = ctx.sandbox.exec_stream(sandbox, &invocation).await?;
     let mut stdout = String::new();
@@ -190,7 +239,7 @@ async fn drive_agent(
     }
 
     if !exit.is_some_and(|status| status.success()) {
-        return Ok(IterationEnd::Crashed);
+        return Ok(AttemptEnd::Crashed);
     }
 
     if let Some(commit) = ctx
@@ -207,7 +256,7 @@ async fn drive_agent(
     let raw = match ctx.sandbox.get_file(sandbox, &report_path).await {
         Ok(raw) => raw,
         Err(error) => {
-            return Ok(IterationEnd::Rejected(vec![format!(
+            return Ok(AttemptEnd::Rejected(vec![format!(
                 "progress report missing: {error}"
             )]));
         }
@@ -223,16 +272,16 @@ fn into_text(bytes: Vec<u8>) -> String {
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
-fn parse_report(raw: &[u8]) -> IterationEnd {
+fn parse_report(raw: &[u8]) -> AttemptEnd {
     let text = match std::str::from_utf8(raw) {
         Ok(text) => text,
         Err(error) => {
-            return IterationEnd::Rejected(vec![format!("progress report is not UTF-8: {error}")]);
+            return AttemptEnd::Rejected(vec![format!("progress report is not UTF-8: {error}")]);
         }
     };
     match ProgressReport::from_agent_json(text) {
-        Ok(report) => IterationEnd::Reported(report),
-        Err(error) => IterationEnd::Rejected(vec![error.to_string()]),
+        Ok(report) => AttemptEnd::Reported(report),
+        Err(error) => AttemptEnd::Rejected(vec![error.to_string()]),
     }
 }
 
