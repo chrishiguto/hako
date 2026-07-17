@@ -8,9 +8,9 @@ use std::path::Path;
 use engine::{ExecSpec, SandboxError, WorkspaceMount};
 
 /// The one smolvm version this adapter is written against. smolvm is
-/// young and fast-moving (ADR-0004), so the daemon refuses to run
-/// against anything else: silent upstream drift must fail preflight,
-/// not corrupt iterations.
+/// young and fast-moving, so the daemon refuses to run against
+/// anything else: silent upstream drift must fail preflight, not
+/// corrupt iterations.
 pub const PINNED_SMOLVM_VERSION: &str = "1.6.3";
 
 /// Prefix for the host-side variables that carry secret values into

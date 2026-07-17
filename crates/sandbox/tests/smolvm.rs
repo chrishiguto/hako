@@ -8,8 +8,10 @@
 //! Machines are bare (no `--image`), so no registry pull and no
 //! network is needed. What lives here is exactly what the fake-binary
 //! tests cannot prove: smolvm's mount, streaming, exit-code, and
-//! teardown behavior on this machine — the rw-mount validation that
-//! upstream issue #428 made load-bearing for the workspace design.
+//! teardown behavior on this machine. The rw-mount checks carry the
+//! most weight: the mounted workspace is the only channel through
+//! which an iteration's work survives, and Linux rw mounts are where
+//! upstream has broken before (smol-machines/smolvm#428).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -77,8 +79,8 @@ async fn a_full_iteration_lifecycle_against_real_smolvm() {
     let vm = adapter.create(&spec).await.unwrap();
 
     // The workspace mount is read-write and visible in both
-    // directions — the go/no-go this ticket exists to establish
-    // (upstream #428).
+    // directions — the only channel through which an iteration's work
+    // survives.
     let (stdout, _, code) = drain(&adapter, &vm, &["cat", "/workspace/h2g.txt"]).await;
     assert_eq!(code, Some(0));
     assert_eq!(stdout, b"host to guest\n");

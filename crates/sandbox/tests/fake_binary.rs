@@ -113,8 +113,6 @@ async fn preflight_accepts_the_pinned_version() {
 
 #[tokio::test]
 async fn exec_streams_both_pipes_and_ends_with_the_exit_code() {
-    // create/start succeed silently; exec produces interleaved output
-    // and a distinctive exit code.
     let (_dir, adapter) = fake_adapter(
         r#"case "$2" in
 exec) printf 'chunk-out'; printf 'chunk-err' >&2; exit 7;;

@@ -1,7 +1,7 @@
 //! The smolvm-backed implementation of the engine's `Sandbox` seam:
 //! ephemeral microVMs, one per iteration.
 //!
-//! smolvm ships no Rust SDK, so the adapter drives its CLI (ADR-0004):
+//! smolvm ships no Rust SDK, so the adapter drives its CLI:
 //! one persistent named machine per sandbox, created with the
 //! workspace mounted read-write, executed into with `machine exec
 //! --stream`, and force-deleted on destroy. The version is pinned —
@@ -13,7 +13,7 @@
 //! Dropping an [`ExecStream`] mid-command abandons the host-side exec
 //! client but not the guest command, which runs until it finishes or
 //! `destroy` tears the machine down — cancellation is the
-//! fresh-VM-per-iteration teardown (ADR-0003), not a kill signal.
+//! fresh-VM-per-iteration teardown, not a kill signal.
 
 mod command;
 
