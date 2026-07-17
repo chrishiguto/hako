@@ -21,8 +21,8 @@ const REPORT_SHAPE: &str = r#"{
 }"#;
 
 /// Everything the engine frames one iteration's prompt with. One
-/// field per concern, so the next input (the skeptic's findings, per
-/// ADR 0007) adds a field instead of another positional argument.
+/// field per concern, so the next input adds a field instead of
+/// another positional argument.
 pub(crate) struct Preamble<'a> {
     pub iteration: u32,
     pub max_iterations: Option<u32>,
@@ -75,7 +75,7 @@ pub(crate) fn compose(frame: &Preamble, domain_prompt: &str) -> String {
 }
 
 /// The repair re-prompt — the one second chance a rejected report
-/// earns (ADR 0007). Deliberately bare: the iteration's work is done
+/// earns. Deliberately bare: the iteration's work is done
 /// and stays done; only the report needs writing, so this carries the
 /// validation errors and the contract and nothing else.
 pub(crate) fn repair(errors: &[String]) -> String {

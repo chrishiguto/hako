@@ -163,9 +163,9 @@ async fn iterate(
 
 /// The part of an iteration that needs the sandbox alive: one full
 /// agent attempt, and — when its report fails validation — the one
-/// repair re-prompt ADR 0007 grants. The repair runs in the same
-/// sandbox: the workspace already holds the iteration's work, and only
-/// the report is being repaired. Every rejection is emitted here;
+/// repair re-prompt a rejected report earns. The repair runs in the
+/// same sandbox: the workspace already holds the iteration's work, and
+/// only the report is being repaired. Every rejection is emitted here;
 /// `None` means the iteration is out of chances.
 async fn drive_agent(
     ctx: &KernelContext,
