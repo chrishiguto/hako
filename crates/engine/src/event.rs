@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 
-pub use proto::event::{IterationOutcome, OutputStream, RunEvent};
+pub use proto::event::{EventEnvelope, IterationOutcome, OutputStream, RunEvent};
 
 /// Where a kernel's events go — an append-only log in production, a
 /// vector in tests. Serves exactly one run.

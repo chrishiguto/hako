@@ -18,6 +18,9 @@ async-trait = "0.1.89"
 clap = { version = "4.6.1", features = ["derive"] }
 futures-core = "0.3.32"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+# Event-log timestamps only — instant + RFC 3339; the tz features
+# would bundle a timezone database the engine never consults.
+jiff = { version = "0.2.32", default-features = false, features = ["std"] }
 # Schema-agreement tests only (product code parses with proto's flow
 # types); the resolve-* defaults would pull HTTP/TLS.
 jsonschema = { version = "0.47.0", default-features = false }

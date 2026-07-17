@@ -84,6 +84,23 @@ pub enum RunEvent {
     },
 }
 
+/// One event as it lands in the run's JSONL log and crosses the wire —
+/// the same shape, because the daemon streams log lines verbatim.
+/// `seq` doubles as the SSE event id, so a client reconnecting with
+/// `Last-Event-ID` resumes exactly where it dropped — no losses, no
+/// duplicates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct EventEnvelope {
+    /// Position in the run's append-only event log, starting at 0.
+    pub seq: u64,
+    pub run_id: String,
+    /// RFC 3339 UTC timestamp of when the event was recorded.
+    pub at: String,
+    #[serde(flatten)]
+    pub event: RunEvent,
+}
+
 /// How one iteration ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -116,6 +133,45 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
             json!({"type": "iteration_started", "iteration": 3})
+        );
+    }
+
+    /// The envelope flattens the event so a logged line reads as one
+    /// flat object — and stays a verbatim copy of what SSE delivers.
+    #[test]
+    fn the_envelope_is_flat_on_the_wire() {
+        let envelope = EventEnvelope {
+            seq: 42,
+            run_id: "r1".into(),
+            at: "2026-07-13T09:00:00Z".into(),
+            event: RunEvent::IterationStarted { iteration: 5 },
+        };
+        assert_eq!(
+            serde_json::to_value(&envelope).unwrap(),
+            json!({
+                "seq": 42,
+                "run_id": "r1",
+                "at": "2026-07-13T09:00:00Z",
+                "type": "iteration_started",
+                "iteration": 5
+            })
+        );
+    }
+
+    #[test]
+    fn envelopes_round_trip() {
+        let envelope = EventEnvelope {
+            seq: 7,
+            run_id: "r2".into(),
+            at: "2026-07-13T09:00:00Z".into(),
+            event: RunEvent::StateChanged {
+                state: RunState::Done,
+            },
+        };
+        let wire = serde_json::to_string(&envelope).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EventEnvelope>(&wire).unwrap(),
+            envelope
         );
     }
 

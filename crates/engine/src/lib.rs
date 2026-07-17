@@ -18,6 +18,7 @@ pub mod ralph;
 pub mod run;
 pub mod sandbox;
 pub mod secrets;
+pub mod store;
 pub mod workspace;
 
 // The flow language lives in proto; re-exported so a flow remains
@@ -26,7 +27,9 @@ pub use proto::flow;
 
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
-pub use event::{EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent};
+pub use event::{
+    EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
+};
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use progress::{ProgressReport, ProgressStatus, Question};
@@ -37,4 +40,5 @@ pub use sandbox::{
     WorkspaceMount,
 };
 pub use secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
+pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
 pub use workspace::{Workspace, WorkspaceError};

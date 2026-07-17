@@ -59,7 +59,7 @@ mod paths {
         AnswerRequest, ApiError, ListRunsResponse, ResumeRequest, RunStatusResponse,
         SubmitRunRequest, SubmitRunResponse,
     };
-    use crate::event::EventEnvelope;
+    use proto::EventEnvelope;
 
     /// Submit a flow; the run starts immediately and detaches.
     #[utoipa::path(
