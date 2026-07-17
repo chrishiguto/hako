@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::progress::ProgressReport;
+
 pub use proto::run::{PauseReason, RunState};
 
 /// Names one run for its whole life — directory name, API path segment,
@@ -26,6 +28,31 @@ impl std::fmt::Display for RunId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// A human's answer to one question a paused run asked, addressed by
+/// the question's id (`hako answer <run> <id>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub question_id: String,
+    pub answer: String,
+}
+
+/// What a resume call carries back into a paused run: where the loop
+/// stood and what the human said. The host derives it from the run's
+/// records — the kernel itself keeps nothing between `run` calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resume {
+    /// The last iteration that finished before the pause; the resumed
+    /// loop continues after it.
+    pub iteration: u32,
+    /// The report that iteration filed — the summary and remaining
+    /// list the next preamble carries, and the questions the answers
+    /// are attributed to.
+    pub report: ProgressReport,
+    pub answers: Vec<Answer>,
+    /// The free-form note from `hako resume --note`.
+    pub note: Option<String>,
 }
 
 /// How a kernel invocation ended — every run state except `Running`,
