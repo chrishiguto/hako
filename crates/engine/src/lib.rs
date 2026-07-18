@@ -8,6 +8,7 @@
 //! That is what makes an entire loop testable in-process with fakes.
 
 pub mod agent;
+pub mod agents;
 pub mod budget;
 pub mod event;
 pub mod kernel;

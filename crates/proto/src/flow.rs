@@ -79,6 +79,12 @@ pub struct AgentConfig {
     /// are registered at runtime — so unlike `kernel` it is not an
     /// enum.
     pub engine: String,
+    /// The argv template for the `cmd` engine, e.g.
+    /// `["aider", "--message", "{prompt}"]` — every `{prompt}`
+    /// placeholder is replaced with the composed prompt. Meaningful
+    /// only with `engine = "cmd"`; adapter resolution rejects it
+    /// elsewhere and requires it there.
+    pub command: Option<Vec<String>>,
 }
 
 /// The caps a flow puts on one run. Everything left unset keeps the
@@ -376,8 +382,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cmd_flow_carries_its_command_template() {
+        let flow = MINIMAL_FLOW.replace(
+            "engine = \"claude\"",
+            "engine = \"cmd\"\ncommand = [\"aider\", \"--message\", \"{prompt}\"]",
+        );
+        let flow = FlowConfig::from_toml(&flow).unwrap();
+        assert_eq!(flow.agent.engine, "cmd");
+        assert_eq!(
+            flow.agent.command.unwrap(),
+            ["aider", "--message", "{prompt}"]
+        );
+    }
+
+    #[test]
     fn minimal_flow_leaves_optional_sections_default() {
         let flow = FlowConfig::from_toml(MINIMAL_FLOW).unwrap();
+        assert_eq!(flow.agent.command, None);
         assert_eq!(flow.budget, BudgetConfig::default());
         assert_eq!(flow.verify, VerifyConfig::default());
         assert_eq!(flow.verify.on_fail.then, FailAction::Pause);
