@@ -44,6 +44,16 @@
       "description": "Which agent drives the iterations.",
       "type": "object",
       "properties": {
+        "command": {
+          "description": "The argv template for the `cmd` engine, e.g.\n`[\"aider\", \"--message\", \"{prompt}\"]` — every `{prompt}`\nplaceholder is replaced with the composed prompt. Meaningful\nonly with `engine = \"cmd\"`; adapter resolution rejects it\nelsewhere and requires it there.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "engine": {
           "description": "An agent adapter name, e.g. `claude`. An open set — adapters\nare registered at runtime — so unlike `kernel` it is not an\nenum.",
           "type": "string"
