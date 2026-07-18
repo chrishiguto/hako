@@ -4,10 +4,10 @@
 //! before a sandbox ever boots.
 //!
 //! Submit is also as early as these rules *can* run: the engine set
-//! is open (ADR 0009), so the schema behind `hako validate` cannot
-//! know them, and the CLI never links this crate (ADR 0008). A flow
-//! can therefore validate clean locally and still be rejected here —
-//! an accepted consequence of keeping the flow language engine-free.
+//! is open, so the schema behind `hako validate` cannot know them,
+//! and the CLI never links this crate. A flow can therefore validate
+//! clean locally and still be rejected here — an accepted consequence
+//! of keeping the flow language engine-free.
 
 mod claude;
 mod cmd;
@@ -24,10 +24,9 @@ use crate::agent::AgentAdapter;
 
 /// Builds the adapter a flow's `[agent]` table selects.
 ///
-/// The engine name is an open set at the flow-language level (ADR
-/// 0009), so this is where a typo like `cluade` surfaces — with the
-/// built-in names in the error, mirroring what the schema does for
-/// kernels.
+/// The engine name is an open set at the flow-language level, so this
+/// is where a typo like `cluade` surfaces — with the built-in names
+/// in the error, mirroring what the schema does for kernels.
 pub fn resolve(config: &AgentConfig) -> Result<Arc<dyn AgentAdapter>, AgentConfigError> {
     let adapter: Arc<dyn AgentAdapter> = match config.engine.as_str() {
         // Absent and `[]` deliberately share MissingCommand: the fix
