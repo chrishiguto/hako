@@ -14,7 +14,7 @@ use std::process::Output;
 
 use tokio::process::Command;
 
-use crate::sandbox::WorkspaceMount;
+use crate::sandbox::{WorkspaceMount, into_text};
 
 /// Where the workspace lands inside every sandbox. Fixed so domain
 /// prompts and agent muscle memory transfer between flows.
@@ -117,7 +117,7 @@ impl Workspace {
         if !output.status.success() {
             return Err(git_failure(&args.join(" "), &output));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(into_text(output.stdout))
     }
 }
 

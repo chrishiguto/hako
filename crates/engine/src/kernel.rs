@@ -12,6 +12,7 @@ use crate::run::{Resume, RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretsError, SecretsProvider};
 use crate::workspace::{Workspace, WorkspaceError};
+use proto::flow::VerifyConfig;
 
 /// A loop pattern. Kernels own all control flow — iterate, verify,
 /// retry, stop — leaving flow files nothing to program.
@@ -33,6 +34,12 @@ pub trait Kernel: Send + Sync {
 pub struct KernelContext {
     pub run_id: RunId,
     pub budgets: Budgets,
+    /// The verify checks an iteration must pass to count as progress,
+    /// and what to do when they keep failing. Empty checks means every
+    /// iteration counts. Lifted straight from the flow — no engine-side
+    /// lowering, unlike [`Budgets`], because nothing here needs
+    /// resolving.
+    pub verify: VerifyConfig,
     /// Prepared before the kernel starts; the kernel mounts it,
     /// checkpoints it, and reads the domain prompt from it.
     pub workspace: Workspace,

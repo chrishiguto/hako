@@ -14,11 +14,13 @@ use futures_util::StreamExt;
 
 use crate::event::{IterationOutcome, OutputStream, RunEvent};
 use crate::kernel::{Kernel, KernelContext, KernelError};
-use crate::preamble;
+use crate::preamble::{self, Feedback};
 use crate::progress::{ProgressReport, ProgressStatus};
 use crate::run::{PauseReason, Resume, RunOutcome};
-use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec};
+use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec, into_text};
+use crate::verify::{self, VerifyOutcome};
 use proto::budget::BudgetKind;
+use proto::flow::FailAction;
 
 /// The v1 kernel. Stateless — everything a run needs arrives in its
 /// [`KernelContext`].
@@ -66,6 +68,12 @@ impl Kernel for RalphKernel {
                 (None, 1)
             }
         };
+        // Why the last iteration did not count, and how many verify
+        // failures have piled up against the on_fail retry budget.
+        // Both reset the moment an iteration makes it past the verify
+        // gate — checks green, or skipped by a pausing status.
+        let mut feedback: Option<Feedback> = None;
+        let mut verify_failures: u32 = 0;
         loop {
             if ctx
                 .budgets
@@ -85,17 +93,18 @@ impl Kernel for RalphKernel {
                 .await?;
 
             let resume = human.take();
-            let Some(report) = iterate(&ctx, iteration, previous.as_ref(), resume.as_ref()).await?
+            let Some(IterationResult { report, verify }) = iterate(
+                &ctx,
+                iteration,
+                previous.as_ref(),
+                feedback.as_ref(),
+                resume.as_ref(),
+            )
+            .await?
             else {
                 return fail_iteration(&ctx, iteration).await;
             };
 
-            ctx.events
-                .emit(RunEvent::ProgressReported {
-                    iteration,
-                    report: report.clone(),
-                })
-                .await?;
             ctx.events
                 .emit(RunEvent::IterationFinished {
                     iteration,
@@ -103,14 +112,36 @@ impl Kernel for RalphKernel {
                 })
                 .await?;
 
+            // The verify gate: an iteration counts as progress only
+            // when its checks pass. Blocked and needs_input skip
+            // their checks, so they can never fail the gate.
+            match verify {
+                VerifyOutcome::Failed { command, output } => {
+                    verify_failures += 1;
+                    if verify_failures > ctx.verify.on_fail.retries {
+                        let outcome = match ctx.verify.on_fail.then {
+                            FailAction::Pause => RunOutcome::Paused(PauseReason::VerifyFailed),
+                            FailAction::Fail => RunOutcome::Failed,
+                        };
+                        return conclude(&ctx, outcome).await;
+                    }
+                    feedback = Some(Feedback::VerifyFailed { command, output });
+                    previous = Some(report);
+                    iteration += 1;
+                    continue;
+                }
+                VerifyOutcome::Passed | VerifyOutcome::Skipped => {}
+            }
+            verify_failures = 0;
+            feedback = None;
+
             match report.status {
                 ProgressStatus::Continue => {
                     previous = Some(report);
                     iteration += 1;
                 }
-                // A done claim is accepted as-is here; the Verified
-                // Done gate (verify checks plus a skeptic iteration)
-                // guards it in the full loop.
+                // Green checks are the whole gate on a done claim —
+                // no skeptic iteration re-verifies it.
                 ProgressStatus::Done => return conclude(&ctx, RunOutcome::Done).await,
                 ProgressStatus::Blocked => {
                     return conclude(&ctx, RunOutcome::Paused(PauseReason::Blocked)).await;
@@ -123,6 +154,13 @@ impl Kernel for RalphKernel {
     }
 }
 
+/// What a full iteration produced: the agent's report and how the
+/// verify checks that gate it came out.
+struct IterationResult {
+    report: ProgressReport,
+    verify: VerifyOutcome,
+}
+
 /// One full iteration: fresh sandbox in, destroyed sandbox out — on
 /// every path, so an error can never leak a live sandbox. `None` means
 /// the iteration failed — a crashed agent or a twice-rejected report —
@@ -131,8 +169,9 @@ async fn iterate(
     ctx: &KernelContext,
     iteration: u32,
     previous: Option<&ProgressReport>,
+    feedback: Option<&Feedback>,
     human: Option<&Resume>,
-) -> Result<Option<ProgressReport>, KernelError> {
+) -> Result<Option<IterationResult>, KernelError> {
     // Re-read every iteration: the domain prompt is agent-editable.
     // A prompt that cannot be read — including one the agent deleted —
     // is run-fatal by design: the loop must not iterate without its
@@ -143,6 +182,7 @@ async fn iterate(
             iteration,
             max_iterations: ctx.budgets.max_iterations,
             previous,
+            feedback,
             answers: human.map_or(&[], |resume| &resume.answers),
             note: human.and_then(|resume| resume.note.as_deref()),
         },
@@ -154,11 +194,41 @@ async fn iterate(
         env: BTreeMap::new(),
     };
     let sandbox = ctx.sandbox.create(&spec).await?;
-    let end = drive_agent(ctx, iteration, &sandbox, &prompt).await;
+    let result = drive_and_verify(ctx, iteration, &sandbox, &prompt).await;
     let destroyed = ctx.sandbox.destroy(sandbox).await;
-    let end = end?;
+    let result = result?;
     destroyed?;
-    Ok(end)
+    Ok(result)
+}
+
+/// The sandbox-alive part of an iteration: drive the agent to a report,
+/// record it, then run the verify checks against the work it left. The
+/// report is emitted here — before its checks — so the log reads claim
+/// first, verdict second. Blocked and needs_input stop the run on the
+/// agent's own word, so there is no progress to verify and the checks
+/// are skipped.
+async fn drive_and_verify(
+    ctx: &KernelContext,
+    iteration: u32,
+    sandbox: &SandboxHandle,
+    prompt: &str,
+) -> Result<Option<IterationResult>, KernelError> {
+    let Some(report) = drive_agent(ctx, iteration, sandbox, prompt).await? else {
+        return Ok(None);
+    };
+    ctx.events
+        .emit(RunEvent::ProgressReported {
+            iteration,
+            report: report.clone(),
+        })
+        .await?;
+    let verify = match report.status {
+        ProgressStatus::Continue | ProgressStatus::Done => {
+            verify::run_checks(ctx, sandbox, iteration).await?
+        }
+        ProgressStatus::Blocked | ProgressStatus::NeedsInput => VerifyOutcome::Skipped,
+    };
+    Ok(Some(IterationResult { report, verify }))
 }
 
 /// The part of an iteration that needs the sandbox alive: one full
@@ -262,14 +332,6 @@ async fn attempt(
         }
     };
     Ok(parse_report(&raw))
-}
-
-/// Exec output decoded for the event log. Valid UTF-8 — the common
-/// case — moves without a copy; invalid bytes fall back to the lossy
-/// copy, byte for byte what `from_utf8_lossy` would produce.
-fn into_text(bytes: Vec<u8>) -> String {
-    String::from_utf8(bytes)
-        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
 fn parse_report(raw: &[u8]) -> AttemptEnd {

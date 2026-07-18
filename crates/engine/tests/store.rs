@@ -14,7 +14,8 @@ use engine::{
     AgentAdapter, Budgets, EventSink, ExecEvent, ExecSpec, ExecStream, ExitStatus, Kernel,
     KernelContext, Notification, Notifier, NotifierError, PauseReason, RalphKernel, RunDir,
     RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
-    SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage, Workspace, WorkspaceMount,
+    SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    WorkspaceMount,
 };
 use futures_util::{StreamExt, stream};
 use serde_json::json;
@@ -194,6 +195,7 @@ async fn run_ralph_over(
     let ctx = KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
+        verify: VerifyConfig::default(),
         workspace,
         resume: None,
         sandbox: FakeSandbox::scripted(script),

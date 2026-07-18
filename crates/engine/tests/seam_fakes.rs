@@ -15,7 +15,7 @@ use engine::{
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
     PauseReason, ProgressReport, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
     SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
-    SecretsProvider, TokenUsage, Workspace,
+    SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -306,6 +306,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
     let ctx = KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
+        verify: VerifyConfig::default(),
         workspace,
         resume: None,
         sandbox: sandbox.clone(),
