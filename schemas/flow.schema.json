@@ -215,14 +215,44 @@
       "description": "The one thing that survives iterations — the repo the loop works\non.",
       "type": "object",
       "properties": {
+        "branch": {
+          "description": "An existing branch the clone checks out and pushes to, so a run\ncontinues prior work and updates its PR. Meaningful only in\nclone mode; preparation rejects it elsewhere. Absent, the run\ngets its own fresh branch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force": {
+          "description": "Runs against a dirty mounted checkout anyway. Meaningful only\nin mount mode; preparation rejects it elsewhere.",
+          "type": "boolean",
+          "default": false
+        },
+        "mode": {
+          "$ref": "#/$defs/WorkspaceMode"
+        },
         "repo": {
-          "description": "Path to the repository the workspace is seeded from.",
+          "description": "The repository the run works on: a git URL or local path to\nclone from, or — in mount mode — the checkout to work in.",
           "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "repo"
+      ]
+    },
+    "WorkspaceMode": {
+      "description": "How the run's workspace comes to exist. A closed set on purpose —\npreparation is engine logic, not a seam.",
+      "oneOf": [
+        {
+          "description": "The default: the run clones `repo` into a run-owned workspace\non a run branch, so the source checkout stays unreachable by\nconstruction.",
+          "type": "string",
+          "const": "clone"
+        },
+        {
+          "description": "Opt-in: the run works directly in the existing checkout at\n`repo` — for developing the tool itself and pre-cloned repos on\na VPS.",
+          "type": "string",
+          "const": "mount"
+        }
       ]
     }
   }

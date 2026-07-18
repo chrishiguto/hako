@@ -148,8 +148,37 @@ pub enum FailAction {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
-    /// Path to the repository the workspace is seeded from.
+    /// The repository the run works on: a git URL or local path to
+    /// clone from, or — in mount mode — the checkout to work in.
     pub repo: String,
+    #[serde(default)]
+    pub mode: WorkspaceMode,
+    /// An existing branch the clone checks out and pushes to, so a run
+    /// continues prior work and updates its PR. Meaningful only in
+    /// clone mode; preparation rejects it elsewhere. Absent, the run
+    /// gets its own fresh branch.
+    pub branch: Option<String>,
+    /// Runs against a dirty mounted checkout anyway. Meaningful only
+    /// in mount mode; preparation rejects it elsewhere.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// How the run's workspace comes to exist. A closed set on purpose —
+/// preparation is engine logic, not a seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceMode {
+    /// The default: the run clones `repo` into a run-owned workspace
+    /// on a run branch, so the source checkout stays unreachable by
+    /// construction.
+    #[default]
+    Clone,
+    /// Opt-in: the run works directly in the existing checkout at
+    /// `repo` — for developing the tool itself and pre-cloned repos on
+    /// a VPS.
+    Mount,
 }
 
 /// Secret *names* only — values live in the daemon's store, so flow
@@ -402,8 +431,39 @@ mod tests {
         assert_eq!(flow.budget, BudgetConfig::default());
         assert_eq!(flow.verify, VerifyConfig::default());
         assert_eq!(flow.verify.on_fail.then, FailAction::Pause);
+        assert_eq!(flow.workspace.mode, WorkspaceMode::Clone);
+        assert_eq!(flow.workspace.branch, None);
+        assert!(!flow.workspace.force);
         assert!(flow.secrets.env.is_empty());
         assert_eq!(flow.notify, None);
+    }
+
+    #[test]
+    fn a_mount_flow_carries_its_mode_and_force() {
+        let flow = MINIMAL_FLOW.replace(
+            "repo = \".\"",
+            "repo = \".\"\nmode = \"mount\"\nforce = true",
+        );
+        let flow = FlowConfig::from_toml(&flow).unwrap();
+        assert_eq!(flow.workspace.mode, WorkspaceMode::Mount);
+        assert!(flow.workspace.force);
+    }
+
+    #[test]
+    fn a_clone_flow_carries_its_seed_branch() {
+        let flow = MINIMAL_FLOW.replace("repo = \".\"", "repo = \".\"\nbranch = \"feat/x\"");
+        let flow = FlowConfig::from_toml(&flow).unwrap();
+        assert_eq!(flow.workspace.mode, WorkspaceMode::Clone);
+        assert_eq!(flow.workspace.branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn a_misspelled_workspace_mode_is_rejected_naming_the_real_ones() {
+        let flow = MINIMAL_FLOW.replace("repo = \".\"", "repo = \".\"\nmode = \"mounted\"");
+        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
+        assert!(err.contains("mounted"), "{err}");
+        assert!(err.contains("mount"), "{err}");
+        assert!(err.contains("clone"), "{err}");
     }
 
     #[test]

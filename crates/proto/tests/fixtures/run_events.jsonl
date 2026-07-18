@@ -16,6 +16,7 @@
 {"type":"agent_output","iteration":1,"stream":"stderr","chunk":"warning: unused import\n"}
 {"type":"verify_check_finished","iteration":1,"command":"cargo test","passed":false,"output":"test tests::it_works ... FAILED"}
 {"type":"workspace_checkpointed","iteration":1,"commit":"a1b2c3d"}
+{"type":"workspace_pushed","iteration":1,"branch":"hako/r1"}
 {"type":"progress_reported","iteration":1,"report":{"status":"continue","summary":"ported the parser","remaining":["port the printer"],"blockers":[],"questions":[]}}
 {"type":"progress_reported","iteration":2,"report":{"status":"done","summary":"all acceptance criteria met","remaining":[],"blockers":[],"questions":[]}}
 {"type":"progress_reported","iteration":3,"report":{"status":"blocked","summary":"cannot reach the registry","remaining":["publish the crate"],"blockers":["registry timeout"],"questions":[]}}
