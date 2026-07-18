@@ -70,7 +70,8 @@ impl Kernel for RalphKernel {
         };
         // Why the last iteration did not count, and how many verify
         // failures have piled up against the on_fail retry budget.
-        // Both reset the moment an iteration's checks come back green.
+        // Both reset the moment an iteration makes it past the verify
+        // gate — checks green, or skipped by a pausing status.
         let mut feedback: Option<Feedback> = None;
         let mut verify_failures: u32 = 0;
         loop {
@@ -115,28 +116,31 @@ impl Kernel for RalphKernel {
             // when its checks pass. A failure feeds the next preamble
             // and spends one of the on_fail retries; exhausting them
             // ends the run per the flow's policy. Blocked and
-            // needs_input never reach here failing — their checks are
-            // skipped, so their outcome is always `Passed`.
-            if let VerifyOutcome::Failed { command, output } = verify {
-                verify_failures += 1;
-                if verify_failures > ctx.verify.on_fail.retries {
-                    let outcome = match ctx.verify.on_fail.then {
-                        FailAction::Pause => RunOutcome::Paused(PauseReason::VerifyFailed),
-                        FailAction::Fail => RunOutcome::Failed,
-                    };
-                    return conclude(&ctx, outcome).await;
+            // needs_input skip their checks, so they can never fail
+            // the gate.
+            match verify {
+                VerifyOutcome::Failed { command, output } => {
+                    verify_failures += 1;
+                    if verify_failures > ctx.verify.on_fail.retries {
+                        let outcome = match ctx.verify.on_fail.then {
+                            FailAction::Pause => RunOutcome::Paused(PauseReason::VerifyFailed),
+                            FailAction::Fail => RunOutcome::Failed,
+                        };
+                        return conclude(&ctx, outcome).await;
+                    }
+                    feedback = Some(Feedback::VerifyFailed { command, output });
+                    previous = Some(report);
+                    iteration += 1;
+                    continue;
                 }
-                feedback = Some(Feedback::VerifyFailed { command, output });
-                previous = Some(report);
-                iteration += 1;
-                continue;
+                VerifyOutcome::Passed | VerifyOutcome::Skipped => {}
             }
             verify_failures = 0;
+            feedback = None;
 
             match report.status {
                 ProgressStatus::Continue => {
                     previous = Some(report);
-                    feedback = None;
                     iteration += 1;
                 }
                 // Green checks accept the done claim. The skeptic
@@ -226,7 +230,7 @@ async fn drive_and_verify(
         ProgressStatus::Continue | ProgressStatus::Done => {
             verify::run_checks(ctx, sandbox, iteration).await?
         }
-        ProgressStatus::Blocked | ProgressStatus::NeedsInput => VerifyOutcome::Passed,
+        ProgressStatus::Blocked | ProgressStatus::NeedsInput => VerifyOutcome::Skipped,
     };
     Ok(Some(IterationResult { report, verify }))
 }

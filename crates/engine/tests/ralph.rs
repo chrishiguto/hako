@@ -89,6 +89,9 @@ impl ScriptedIteration {
     /// Scripts this iteration's verify checks, in the order the kernel
     /// runs them. Fail-fast stops at the first failure, so the list
     /// ends there — only the checks that actually run need an outcome.
+    /// The queue installs per agent exec, so when a rejected report
+    /// earns a repair re-prompt, the checks belong on the repair step —
+    /// the iteration's last exec.
     fn checking(mut self, results: &[(bool, &str)]) -> Self {
         self.checks = results
             .iter()
@@ -125,10 +128,9 @@ impl FakeSandbox {
         })
     }
 
-    fn prompt_of(&self, exec: usize) -> String {
-        let execs = self.execs.lock().unwrap();
-        let (_, spec) = &execs[exec];
-        spec.argv.last().unwrap().clone()
+    /// The prompt of the nth agent invocation.
+    fn prompt_of(&self, invocation: usize) -> String {
+        self.agent_prompts()[invocation].clone()
     }
 
     /// The prompts of the agent invocations, in order — skipping the
@@ -143,7 +145,8 @@ impl FakeSandbox {
             .collect()
     }
 
-    /// Which sandbox each agent invocation ran in, in order.
+    /// Which sandbox each exec ran in, in order — agent invocations
+    /// and verify checks alike.
     fn handles(&self) -> Vec<String> {
         let execs = self.execs.lock().unwrap();
         execs.iter().map(|(handle, _)| handle.clone()).collect()
@@ -221,8 +224,14 @@ impl Sandbox for FakeSandbox {
             .pop_front()
             .expect("the agent was invoked beyond its script");
         // This iteration's checks become the queue the shell execs
-        // draw from until the next agent invocation resets it.
-        *self.pending_checks.lock().unwrap() = step.checks.into();
+        // draw from until the next agent invocation resets it. Checks
+        // scripted but never run fail loud here — a test must not
+        // appear to prove gating that never executed.
+        let leftover = std::mem::replace(
+            &mut *self.pending_checks.lock().unwrap(),
+            step.checks.into(),
+        );
+        assert!(leftover.is_empty(), "scripted verify checks never ran");
         let host = {
             let mounts = self.mounts.lock().unwrap();
             mounts[sandbox.as_str()].host.clone()
@@ -453,6 +462,12 @@ async fn run_ralph_verifying(
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(workspace, sandbox.clone(), sink.clone(), budgets, verify);
     let outcome = RalphKernel.run(ctx).await.unwrap();
+    // The last iteration's scripted checks must all have run — the
+    // in-run half of this assertion lives in exec_stream.
+    assert!(
+        sandbox.pending_checks.lock().unwrap().is_empty(),
+        "scripted verify checks never ran"
+    );
     (dir, sandbox, sink, outcome)
 }
 
@@ -1219,6 +1234,32 @@ async fn spent_retries_fail_the_run_when_on_fail_is_fail() {
             "verify_check_finished",
             "iteration_finished",
             "state_changed",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_red_first_check_stops_the_list() {
+    let (_dir, _sandbox, sink, outcome) = run_ralph_verifying(
+        vec![
+            continuing("broke the build", &["fix it"]).checking(&[(false, "error: build broke")]),
+            finishing("fixed and green").checking(&[(true, "compiled"), (true, "42 passed")]),
+        ],
+        Budgets::default(),
+        verifying(&["cargo build", "cargo test"], 1, FailAction::Pause),
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    // Fail-fast: the red build ends iteration 1's list — cargo test
+    // never runs there — and the retry runs both checks green. Running
+    // past the failure would pop a check the script does not hold.
+    assert_eq!(
+        verify_checks(&sink),
+        [
+            ("cargo build".into(), false),
+            ("cargo build".into(), true),
+            ("cargo test".into(), true),
         ]
     );
 }

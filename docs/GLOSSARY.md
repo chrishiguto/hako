@@ -76,7 +76,7 @@ Completion as the engine defines it: the agent claims done, verify checks pass, 
 ## Control
 
 **Verify Checks**:
-The commands (build, test, lint) that must pass for an iteration to count as progress; failures retry, then pause the run.
+The commands (build, test, lint) that must pass for an iteration to count as progress; failures retry, then pause or fail the run per the flow's on_fail policy.
 _Avoid_: gates, validations
 
 **Budget**:

@@ -42,6 +42,13 @@ pub enum RunEvent {
         iteration: u32,
         command: String,
         passed: bool,
+        /// What a failing check printed, tail-capped like the preamble
+        /// feedback — the log must be able to say why a run stopped
+        /// verifying, because the sandbox that could reproduce it is
+        /// already gone. Empty for a passing check: there, `passed` is
+        /// the whole story.
+        #[serde(default)]
+        output: String,
     },
     /// The workspace was git-checkpointed, so the loop's work can be
     /// inspected, bisected, or rolled back iteration by iteration.
