@@ -113,11 +113,8 @@ impl Kernel for RalphKernel {
                 .await?;
 
             // The verify gate: an iteration counts as progress only
-            // when its checks pass. A failure feeds the next preamble
-            // and spends one of the on_fail retries; exhausting them
-            // ends the run per the flow's policy. Blocked and
-            // needs_input skip their checks, so they can never fail
-            // the gate.
+            // when its checks pass. Blocked and needs_input skip
+            // their checks, so they can never fail the gate.
             match verify {
                 VerifyOutcome::Failed { command, output } => {
                     verify_failures += 1;
@@ -143,9 +140,8 @@ impl Kernel for RalphKernel {
                     previous = Some(report);
                     iteration += 1;
                 }
-                // Green checks accept the done claim. The skeptic
-                // iteration that turns done from a claim into a
-                // verdict lands in a follow-up.
+                // Green checks are the whole gate on a done claim —
+                // no skeptic iteration re-verifies it.
                 ProgressStatus::Done => return conclude(&ctx, RunOutcome::Done).await,
                 ProgressStatus::Blocked => {
                     return conclude(&ctx, RunOutcome::Paused(PauseReason::Blocked)).await;

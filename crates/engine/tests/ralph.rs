@@ -38,9 +38,8 @@ struct ScriptedIteration {
     checks: Vec<CheckResult>,
 }
 
-/// One verify check's scripted outcome: whether it passes and the
-/// output it prints — a failure's output is what feeds the next
-/// preamble.
+/// One verify check's scripted outcome — a failure's output is what
+/// feeds the next preamble.
 struct CheckResult {
     passed: bool,
     output: String,
@@ -128,7 +127,6 @@ impl FakeSandbox {
         })
     }
 
-    /// The prompt of the nth agent invocation.
     fn prompt_of(&self, invocation: usize) -> String {
         self.agent_prompts()[invocation].clone()
     }
