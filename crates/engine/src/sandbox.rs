@@ -121,6 +121,15 @@ impl ExitStatus {
     }
 }
 
+/// Decodes one raw exec-output chunk to text — the decode [`ExecEvent`]
+/// defers to its consumers. Valid UTF-8, the common case, moves without
+/// a copy; invalid bytes fall back to the lossy copy, byte for byte what
+/// `from_utf8_lossy` would produce.
+pub(crate) fn into_text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
 /// A sandbox operation that failed. Opaque by design: kernels react to
 /// sandbox failure uniformly (fail the iteration), never to its cause.
 #[derive(Debug, thiserror::Error)]

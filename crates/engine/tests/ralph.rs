@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use engine::workspace::{DOMAIN_PROMPT_FILE, PROGRESS_FILE};
 use engine::{
     AgentAdapter, Answer, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream,
-    ExitStatus, Kernel, KernelContext, Notification, Notifier, NotifierError, PauseReason,
-    ProgressReport, Question, RalphKernel, Resume, RunEvent, RunId, RunOutcome, RunState, Sandbox,
-    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
-    SecretsProvider, TokenUsage, Workspace, WorkspaceMount,
+    ExitStatus, FailAction, Kernel, KernelContext, Notification, Notifier, NotifierError, OnFail,
+    PauseReason, ProgressReport, Question, RalphKernel, Resume, RunEvent, RunId, RunOutcome,
+    RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue,
+    SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace, WorkspaceMount,
 };
 use futures_util::{StreamExt, stream};
 use proto::budget::BudgetKind;
@@ -27,12 +27,23 @@ use serde_json::json;
 const DOMAIN_PROMPT: &str = "## Domain rules\n\nkeep the build green\n";
 
 /// What the scripted agent does inside one sandbox: edit workspace
-/// files, print output, leave (or not) a progress report, exit.
+/// files, print output, leave (or not) a progress report, exit — and
+/// how this iteration's verify checks come out when the kernel runs
+/// them in the same sandbox afterwards.
 struct ScriptedIteration {
     files: Vec<(String, String)>,
     stdout: String,
     report: Option<String>,
     exit: ExitStatus,
+    checks: Vec<CheckResult>,
+}
+
+/// One verify check's scripted outcome: whether it passes and the
+/// output it prints — a failure's output is what feeds the next
+/// preamble.
+struct CheckResult {
+    passed: bool,
+    output: String,
 }
 
 fn reporting(report: serde_json::Value) -> ScriptedIteration {
@@ -41,6 +52,7 @@ fn reporting(report: serde_json::Value) -> ScriptedIteration {
         stdout: "working\n".into(),
         report: Some(report.to_string()),
         exit: ExitStatus { code: Some(0) },
+        checks: vec![],
     }
 }
 
@@ -59,6 +71,7 @@ fn crashing() -> ScriptedIteration {
         stdout: "panic!\n".into(),
         report: None,
         exit: ExitStatus { code: Some(1) },
+        checks: vec![],
     }
 }
 
@@ -72,6 +85,20 @@ impl ScriptedIteration {
         self.stdout = stdout.into();
         self
     }
+
+    /// Scripts this iteration's verify checks, in the order the kernel
+    /// runs them. Fail-fast stops at the first failure, so the list
+    /// ends there — only the checks that actually run need an outcome.
+    fn checking(mut self, results: &[(bool, &str)]) -> Self {
+        self.checks = results
+            .iter()
+            .map(|(passed, output)| CheckResult {
+                passed: *passed,
+                output: (*output).into(),
+            })
+            .collect();
+        self
+    }
 }
 
 /// Boots nothing. Exec replays the next scripted iteration, writing
@@ -81,6 +108,9 @@ impl ScriptedIteration {
 #[derive(Default)]
 struct FakeSandbox {
     script: Mutex<VecDeque<ScriptedIteration>>,
+    /// The outcomes of the current iteration's verify checks, drawn
+    /// down as the kernel runs them through the shell after the agent.
+    pending_checks: Mutex<VecDeque<CheckResult>>,
     mounts: Mutex<BTreeMap<String, WorkspaceMount>>,
     execs: Mutex<Vec<(String, ExecSpec)>>,
     created: AtomicU32,
@@ -99,6 +129,18 @@ impl FakeSandbox {
         let execs = self.execs.lock().unwrap();
         let (_, spec) = &execs[exec];
         spec.argv.last().unwrap().clone()
+    }
+
+    /// The prompts of the agent invocations, in order — skipping the
+    /// shell execs the verify checks run through, so an index tracks
+    /// iterations even when checks run between them.
+    fn agent_prompts(&self) -> Vec<String> {
+        let execs = self.execs.lock().unwrap();
+        execs
+            .iter()
+            .filter(|(_, spec)| !is_check(spec))
+            .map(|(_, spec)| spec.argv.last().unwrap().clone())
+            .collect()
     }
 
     /// Which sandbox each agent invocation ran in, in order.
@@ -123,6 +165,13 @@ impl FakeSandbox {
     }
 }
 
+/// A verify check is the only exec the kernel routes through a shell;
+/// the agent invocation is argv-exact. That is how the fake tells them
+/// apart.
+fn is_check(spec: &ExecSpec) -> bool {
+    spec.argv.first().map(String::as_str) == Some("sh")
+}
+
 #[async_trait]
 impl Sandbox for FakeSandbox {
     async fn create(&self, spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
@@ -141,12 +190,39 @@ impl Sandbox for FakeSandbox {
         sandbox: &SandboxHandle,
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
+        self.execs
+            .lock()
+            .unwrap()
+            .push((sandbox.as_str().to_owned(), command.clone()));
+
+        // A verify check runs through the shell in the iteration's own
+        // sandbox; serve its scripted outcome without consuming an
+        // agent iteration.
+        if is_check(command) {
+            let check = self
+                .pending_checks
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("a verify check ran beyond its script");
+            let transcript: Vec<Result<ExecEvent, SandboxError>> = vec![
+                Ok(ExecEvent::Stdout(check.output.into_bytes())),
+                Ok(ExecEvent::Exited(ExitStatus {
+                    code: Some(i32::from(!check.passed)),
+                })),
+            ];
+            return Ok(stream::iter(transcript).boxed());
+        }
+
         let step = self
             .script
             .lock()
             .unwrap()
             .pop_front()
             .expect("the agent was invoked beyond its script");
+        // This iteration's checks become the queue the shell execs
+        // draw from until the next agent invocation resets it.
+        *self.pending_checks.lock().unwrap() = step.checks.into();
         let host = {
             let mounts = self.mounts.lock().unwrap();
             mounts[sandbox.as_str()].host.clone()
@@ -161,10 +237,6 @@ impl Sandbox for FakeSandbox {
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
             std::fs::write(target, report).unwrap();
         }
-        self.execs
-            .lock()
-            .unwrap()
-            .push((sandbox.as_str().to_owned(), command.clone()));
 
         let transcript: Vec<Result<ExecEvent, SandboxError>> = vec![
             Ok(ExecEvent::Stdout(step.stdout.into_bytes())),
@@ -336,10 +408,12 @@ fn context(
     sandbox: Arc<FakeSandbox>,
     sink: Arc<RecordingSink>,
     budgets: Budgets,
+    verify: VerifyConfig,
 ) -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
         budgets,
+        verify,
         workspace,
         resume: None,
         sandbox,
@@ -359,10 +433,25 @@ async fn run_ralph(
     Arc<RecordingSink>,
     RunOutcome,
 ) {
+    run_ralph_verifying(script, budgets, VerifyConfig::default()).await
+}
+
+/// `run_ralph` with the flow's verify section in play — the checks that
+/// gate each iteration and the on_fail policy when they keep failing.
+async fn run_ralph_verifying(
+    script: Vec<ScriptedIteration>,
+    budgets: Budgets,
+    verify: VerifyConfig,
+) -> (
+    tempfile::TempDir,
+    Arc<FakeSandbox>,
+    Arc<RecordingSink>,
+    RunOutcome,
+) {
     let (dir, workspace) = seeded_workspace();
     let sandbox = FakeSandbox::scripted(script);
     let sink = Arc::new(RecordingSink::default());
-    let ctx = context(workspace, sandbox.clone(), sink.clone(), budgets);
+    let ctx = context(workspace, sandbox.clone(), sink.clone(), budgets, verify);
     let outcome = RalphKernel.run(ctx).await.unwrap();
     (dir, sandbox, sink, outcome)
 }
@@ -377,7 +466,13 @@ async fn resume_ralph(
 ) -> (Arc<FakeSandbox>, Arc<RecordingSink>, RunOutcome) {
     let sandbox = FakeSandbox::scripted(script);
     let sink = Arc::new(RecordingSink::default());
-    let mut ctx = context(workspace, sandbox.clone(), sink.clone(), budgets);
+    let mut ctx = context(
+        workspace,
+        sandbox.clone(),
+        sink.clone(),
+        budgets,
+        VerifyConfig::default(),
+    );
     ctx.resume = Some(resume);
     let outcome = RalphKernel.run(ctx).await.unwrap();
     (sandbox, sink, outcome)
@@ -409,6 +504,29 @@ fn rejections(sink: &RecordingSink) -> Vec<Vec<String>> {
         .iter()
         .filter_map(|event| match event {
             RunEvent::ProgressRejected { errors, .. } => Some(errors.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A verify section: the checks that gate each iteration and what to do
+/// when they keep failing.
+fn verifying(checks: &[&str], retries: u32, then: FailAction) -> VerifyConfig {
+    VerifyConfig {
+        checks: checks.iter().map(|check| (*check).to_string()).collect(),
+        on_fail: OnFail { retries, then },
+    }
+}
+
+/// Every verify check the run reported, as `(command, passed)`, in
+/// order.
+fn verify_checks(sink: &RecordingSink) -> Vec<(String, bool)> {
+    sink.events()
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::VerifyCheckFinished {
+                command, passed, ..
+            } => Some((command.clone(), *passed)),
             _ => None,
         })
         .collect()
@@ -856,6 +974,7 @@ async fn a_missing_report_earns_the_same_repair_re_prompt() {
         stdout: "did things, reported nothing\n".into(),
         report: None,
         exit: ExitStatus { code: Some(0) },
+        checks: vec![],
     };
     let (_dir, sandbox, sink, outcome) =
         run_ralph(vec![silent, finishing("recovered")], Budgets::default()).await;
@@ -942,4 +1061,164 @@ async fn token_usage_reported_by_the_adapter_lands_in_the_log() {
             output: 3
         },
     }));
+}
+
+#[tokio::test]
+async fn green_checks_run_in_the_iteration_sandbox_and_let_the_done_claim_through() {
+    let (_dir, sandbox, sink, outcome) = run_ralph_verifying(
+        vec![finishing("shipped it").checking(&[(true, "compiled"), (true, "42 passed")])],
+        Budgets::default(),
+        verifying(&["cargo build", "cargo test"], 0, FailAction::Pause),
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    // Every check runs, in order, after the report and before the
+    // iteration closes.
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_started",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "verify_check_finished",
+            "verify_check_finished",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
+    assert_eq!(
+        verify_checks(&sink),
+        [("cargo build".into(), true), ("cargo test".into(), true),]
+    );
+    // Agent then checks, all in the one sandbox the iteration owns.
+    assert_eq!(sandbox.handles(), ["vm-0", "vm-0", "vm-0"]);
+    assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_red_check_does_not_count_and_its_output_rides_the_next_preamble() {
+    let (_dir, sandbox, sink, outcome) = run_ralph_verifying(
+        vec![
+            continuing("added the parser", &["hook it up"])
+                .checking(&[(false, "error[E0433]: cannot find `Parser`")]),
+            finishing("hooked up and green").checking(&[(true, "ok")]),
+        ],
+        Budgets::default(),
+        verifying(&["cargo build"], 1, FailAction::Pause),
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Done);
+    assert_eq!(
+        verify_checks(&sink),
+        [("cargo build".into(), false), ("cargo build".into(), true),]
+    );
+    // The retry's preamble carries the failure — the command and its
+    // output, under the verify-failure heading.
+    let retry = sandbox.agent_prompts()[1].clone();
+    assert!(retry.contains("## Verify checks failed"), "{retry}");
+    assert!(retry.contains("cargo build"), "{retry}");
+    assert!(
+        retry.contains("error[E0433]: cannot find `Parser`"),
+        "{retry}"
+    );
+    // The retry is a fresh iteration, not a re-prompt in the same VM.
+    assert_eq!(sandbox.created.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_done_claim_with_red_checks_is_not_accepted() {
+    let (_dir, sandbox, _sink, outcome) = run_ralph_verifying(
+        vec![
+            finishing("all acceptance criteria met").checking(&[(false, "1 test failed")]),
+            finishing("actually green now").checking(&[(true, "all pass")]),
+        ],
+        Budgets::default(),
+        verifying(&["cargo test"], 2, FailAction::Pause),
+    )
+    .await;
+
+    // The first done claim did not end the run: red checks sent it back
+    // for another iteration, which reached done only once checks passed.
+    assert_eq!(outcome, RunOutcome::Done);
+    assert_eq!(sandbox.agent_prompts().len(), 2);
+    let retry = sandbox.agent_prompts()[1].clone();
+    assert!(
+        retry.contains("Fix the cause before reporting done"),
+        "{retry}"
+    );
+    assert!(retry.contains("1 test failed"), "{retry}");
+}
+
+#[tokio::test]
+async fn checks_that_keep_failing_pause_with_verify_failed_after_the_retries() {
+    let (_dir, sandbox, sink, outcome) = run_ralph_verifying(
+        vec![
+            continuing("first attempt", &["fix the build"]).checking(&[(false, "error: first")]),
+            continuing("second attempt", &["fix the build"]).checking(&[(false, "error: second")]),
+        ],
+        Budgets::default(),
+        verifying(&["cargo build"], 1, FailAction::Pause),
+    )
+    .await;
+
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::VerifyFailed));
+    assert_eq!(
+        last_state(&sink),
+        RunState::Paused {
+            reason: PauseReason::VerifyFailed
+        }
+    );
+    // One original attempt plus one retry — the on_fail budget — both
+    // red, then the pause.
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_started",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "verify_check_finished",
+            "iteration_finished",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "verify_check_finished",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
+    // The retry saw the first failure before failing on its own.
+    assert!(sandbox.agent_prompts()[1].contains("error: first"));
+    assert_eq!(sandbox.created.load(Ordering::SeqCst), 2);
+    assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn spent_retries_fail_the_run_when_on_fail_is_fail() {
+    let (_dir, _sandbox, sink, outcome) = run_ralph_verifying(
+        vec![continuing("one shot", &["more"]).checking(&[(false, "boom")])],
+        Budgets::default(),
+        verifying(&["cargo test"], 0, FailAction::Fail),
+    )
+    .await;
+
+    // retries = 0: the first red check spends the budget, and
+    // then = fail ends the run rather than pausing it.
+    assert_eq!(outcome, RunOutcome::Failed);
+    assert_eq!(last_state(&sink), RunState::Failed);
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_started",
+            "iteration_started",
+            "agent_output",
+            "progress_reported",
+            "verify_check_finished",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
 }
