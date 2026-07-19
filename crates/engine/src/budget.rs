@@ -68,8 +68,9 @@ mod tests {
 
     #[test]
     fn authored_budgets_lower_onto_engine_budgets() {
-        let flow = proto::flow::FlowConfig::from_toml(include_str!("../../../examples/ralph.toml"))
-            .unwrap();
+        let flow =
+            proto::flow::FlowConfig::from_toml(include_str!("../../../examples/pipeline.toml"))
+                .unwrap();
         let budgets = Budgets::from(&flow.budget);
         assert_eq!(budgets.max_iterations, Some(20));
         assert_eq!(budgets.max_wall_clock, Some(Duration::from_secs(6 * 3600)));

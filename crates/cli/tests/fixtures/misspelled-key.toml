@@ -1,7 +1,7 @@
 # `max_iteration` is missing its final `s`.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

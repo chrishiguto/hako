@@ -1,7 +1,7 @@
-# No kernel named `ralf` ships with the engine.
+# No kernel named `pypeline` ships with the engine.
 
 [loop]
-kernel = "ralf"
+kernel = "pypeline"
 
 [agent]
 engine = "claude"

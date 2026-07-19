@@ -11,9 +11,6 @@ The library that executes kernels. Hosted by the daemon in production; embeddabl
 A named loop pattern implemented inside the engine, owning all control flow (iterate, verify, retry, stop). A new loop shape is a new kernel in Rust, never logic in a flow.
 _Avoid_: workflow engine, orchestrator
 
-**Ralph** (v1, shipped):
-The single-prompt kernel: every iteration runs the same domain prompt in a fresh context, one work item at a time, memory only through the workspace. The objective lives entirely in the domain prompt.
-
 **Pipeline** (v1, specced):
 The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize each stage's prompt; stages communicate only through schema-validated stage reports.
 
@@ -56,22 +53,22 @@ _Avoid_: model, bot
 The engine's knowledge of how to drive one agent: headless invocation, token-usage reporting, required secrets.
 
 **Domain Prompt**:
-The user-authored, agent-editable prompt file living in the workspace; carries the objective and the domain rules, never loop mechanics.
+A user-authored prompt carrying the objective and the domain rules, never loop mechanics. Which prompt files a kernel reads, and when, is kernel policy.
 _Avoid_: system prompt
 
 **Preamble**:
-The engine-composed frame wrapped around the domain prompt each iteration: iteration count, last progress, feedback, human answers, and the progress-report contract.
+The frame a kernel composes around its prompts: feedback, human answers, and the report contract. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
 
 **Progress Report**:
-The schema-validated declaration the agent must write to end an iteration: continue, done, blocked, or needs_input.
+The schema-validated report an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the shapes are kernel-owned, the status vocabulary shared.
 _Avoid_: outputs, output extraction
 
 **Skeptic Iteration**:
-A fresh iteration prompted to refute a done claim (see Verified Done).
+A fresh agent invocation prompted to refute a done claim from any stage (see Verified Done).
 _Avoid_: review pass
 
 **Verified Done**:
-Completion as the engine defines it: the agent claims done, verify checks pass, and a skeptic iteration cannot refute the claim.
+Completion as the engine defines it: a stage claims done, verify checks pass, and a skeptic iteration cannot refute the claim.
 
 ## Control
 

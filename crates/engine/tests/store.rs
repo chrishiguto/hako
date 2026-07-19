@@ -1,53 +1,48 @@
-//! The run store under the real kernel: `FileEventSink` serves the
-//! ralph loop through the same seam the in-memory sink serves in the
-//! ralph suite, and asserts the same event sequence — from the file.
-//! Then the daemon-restart story: everything the run was comes back
-//! from the directory alone.
+//! The run store under a kernel: `FileEventSink` serves a kernel
+//! through the same seam the in-memory sink serves elsewhere, and the
+//! event sequence reads back from the file. Then the daemon-restart
+//! story: everything the run was comes back from the directory alone.
+//!
+//! The kernel here is a test-local fake that replays a scripted event
+//! sequence — the store's contract is with the seam, not with any
+//! particular loop.
 
-use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use engine::workspace::{DOMAIN_PROMPT_FILE, PROGRESS_FILE};
 use engine::{
-    AgentAdapter, Budgets, EventSink, ExecEvent, ExecSpec, ExecStream, ExitStatus, Kernel,
-    KernelContext, Notification, Notifier, NotifierError, PauseReason, RalphKernel, RunDir,
-    RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
-    SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
-    WorkspaceMount,
+    AgentAdapter, Budgets, EventSink, ExecSpec, ExecStream, Kernel, KernelContext, KernelError,
+    Notification, Notifier, NotifierError, PauseReason, RunDir, RunEvent, RunId, RunOutcome,
+    RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue,
+    SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
-use futures_util::{StreamExt, stream};
-use serde_json::json;
+use proto::event::{IterationOutcome, OutputStream};
 
-/// What the scripted agent leaves behind in one sandbox: optionally a
-/// workspace edit, always a progress report.
-struct ScriptedIteration {
-    edit: Option<(&'static str, &'static str)>,
-    report: serde_json::Value,
-}
-
-/// Boots nothing; exec writes the next scripted edit and report
-/// through the mount, like a real sandbox's rw mount would.
-struct FakeSandbox {
-    script: Mutex<VecDeque<ScriptedIteration>>,
-    mount: Mutex<Option<WorkspaceMount>>,
-}
-
-impl FakeSandbox {
-    fn scripted(script: Vec<ScriptedIteration>) -> Arc<Self> {
-        Arc::new(Self {
-            script: Mutex::new(script.into()),
-            mount: Mutex::new(None),
-        })
-    }
+/// Replays a scripted event sequence through the sink and ends with
+/// the scripted outcome — a kernel-shaped probe for the store.
+struct ScriptedKernel {
+    events: Vec<RunEvent>,
+    outcome: RunOutcome,
 }
 
 #[async_trait]
-impl Sandbox for FakeSandbox {
-    async fn create(&self, spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
-        *self.mount.lock().unwrap() = Some(spec.workspace.clone());
-        Ok(SandboxHandle::new("vm"))
+impl Kernel for ScriptedKernel {
+    async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
+        for event in &self.events {
+            ctx.events.emit(event.clone()).await?;
+        }
+        Ok(self.outcome)
+    }
+}
+
+/// The scripted kernel touches no sandbox; every call is a test bug.
+struct NoSandbox;
+
+#[async_trait]
+impl Sandbox for NoSandbox {
+    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+        unreachable!("the scripted kernel boots no sandbox");
     }
 
     async fn exec_stream(
@@ -55,25 +50,7 @@ impl Sandbox for FakeSandbox {
         _sandbox: &SandboxHandle,
         _command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
-        let step = self
-            .script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("the agent was invoked beyond its script");
-        let host = self.mount.lock().unwrap().as_ref().unwrap().host.clone();
-        if let Some((path, contents)) = step.edit {
-            std::fs::write(host.join(path), contents).unwrap();
-        }
-        let report_path = host.join(PROGRESS_FILE);
-        std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
-        std::fs::write(report_path, step.report.to_string()).unwrap();
-
-        let transcript: Vec<Result<ExecEvent, SandboxError>> = vec![
-            Ok(ExecEvent::Stdout(b"working\n".to_vec())),
-            Ok(ExecEvent::Exited(ExitStatus { code: Some(0) })),
-        ];
-        Ok(stream::iter(transcript).boxed())
+        unreachable!("the scripted kernel execs nothing");
     }
 
     async fn put_file(
@@ -82,23 +59,19 @@ impl Sandbox for FakeSandbox {
         _path: &Path,
         _contents: &[u8],
     ) -> Result<(), SandboxError> {
-        unreachable!("the ralph kernel never uploads files");
+        unreachable!("the scripted kernel uploads nothing");
     }
 
     async fn get_file(
         &self,
         _sandbox: &SandboxHandle,
-        path: &Path,
+        _path: &Path,
     ) -> Result<Vec<u8>, SandboxError> {
-        let mount = self.mount.lock().unwrap().clone().unwrap();
-        let relative = path
-            .strip_prefix(&mount.guest)
-            .map_err(|_| SandboxError(format!("outside the mount: {}", path.display())))?;
-        std::fs::read(mount.host.join(relative)).map_err(|error| SandboxError(error.to_string()))
+        unreachable!("the scripted kernel reads nothing");
     }
 
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
-        Ok(())
+        unreachable!("the scripted kernel boots no sandbox");
     }
 
     async fn preflight(&self) -> Result<(), SandboxError> {
@@ -106,9 +79,9 @@ impl Sandbox for FakeSandbox {
     }
 }
 
-struct ScriptedAgent;
+struct NoAgent;
 
-impl AgentAdapter for ScriptedAgent {
+impl AgentAdapter for NoAgent {
     fn name(&self) -> &str {
         "scripted"
     }
@@ -117,11 +90,8 @@ impl AgentAdapter for ScriptedAgent {
         vec![]
     }
 
-    fn invocation(&self, prompt: &str) -> ExecSpec {
-        ExecSpec {
-            argv: vec!["scripted-agent".into(), prompt.into()],
-            cwd: None,
-        }
+    fn invocation(&self, _prompt: &str) -> ExecSpec {
+        unreachable!("the scripted kernel invokes no agent");
     }
 
     fn token_usage(&self, _stdout: &str) -> Option<TokenUsage> {
@@ -147,65 +117,26 @@ impl SecretsProvider for NoSecrets {
     }
 }
 
-fn seeded_workspace() -> (tempfile::TempDir, Workspace) {
-    let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q", "-b", "main"]);
-    std::fs::write(
-        dir.path().join(DOMAIN_PROMPT_FILE),
-        "keep the build green\n",
-    )
-    .unwrap();
-    git(dir.path(), &["add", "-A"]);
-    git(
-        dir.path(),
-        &[
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@localhost",
-            "commit",
-            "-qm",
-            "seed",
-        ],
-    );
-    let workspace = Workspace::at(dir.path());
-    (dir, workspace)
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
-}
-
-/// Runs the ralph kernel over the file sink of a freshly created run
+/// Runs a scripted kernel over the file sink of a freshly created run
 /// directory — the exact wiring a daemon host will do.
-async fn run_ralph_over(
-    runs_root: &Path,
-    script: Vec<ScriptedIteration>,
-) -> (tempfile::TempDir, RunOutcome) {
-    let (workspace_dir, workspace) = seeded_workspace();
-    let run_dir = RunDir::create(runs_root, RunId::new("r1"), "ralph", "scripted")
+async fn run_scripted(runs_root: &Path, events: Vec<RunEvent>, outcome: RunOutcome) -> RunOutcome {
+    let run_dir = RunDir::create(runs_root, RunId::new("r1"), "pipeline", "scripted")
         .await
         .unwrap();
     let sink: Arc<dyn EventSink> = Arc::new(run_dir.event_sink().await.unwrap());
+    let workspace_dir = tempfile::tempdir().unwrap();
     let ctx = KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify: VerifyConfig::default(),
-        workspace,
-        resume: None,
-        sandbox: FakeSandbox::scripted(script),
-        agent: Arc::new(ScriptedAgent),
+        workspace: Workspace::at(workspace_dir.path()),
+        sandbox: Arc::new(NoSandbox),
+        agent: Arc::new(NoAgent),
         events: sink,
         notifier: Arc::new(StubNotifier),
         secrets: Arc::new(NoSecrets),
     };
-    let outcome = RalphKernel.run(ctx).await.unwrap();
-    (workspace_dir, outcome)
+    ScriptedKernel { events, outcome }.run(ctx).await.unwrap()
 }
 
 fn kinds(events: &[engine::EventEnvelope]) -> Vec<String> {
@@ -220,30 +151,40 @@ fn kinds(events: &[engine::EventEnvelope]) -> Vec<String> {
         .collect()
 }
 
-/// The drop-in criterion: the same continue→done loop the ralph suite
-/// drives through the in-memory sink, driven through the file sink —
-/// same seam, same event sequence, read back from the log file.
+fn started() -> RunEvent {
+    RunEvent::RunStarted {
+        kernel: "scripted".into(),
+        agent: "scripted".into(),
+    }
+}
+
+/// The drop-in criterion: a full iteration's event sequence driven
+/// through the file sink via the kernel seam — same seam as the
+/// in-memory sinks, read back from the log file with stable ids.
 #[tokio::test]
-async fn the_file_sink_serves_the_ralph_kernel_as_a_drop_in() {
+async fn the_file_sink_serves_a_kernel_as_a_drop_in() {
     let runs_root = tempfile::tempdir().unwrap();
-    let (_workspace, outcome) = run_ralph_over(
-        runs_root.path(),
-        vec![
-            ScriptedIteration {
-                edit: Some(("store.rs", "store v1")),
-                report: json!({
-                    "status": "continue",
-                    "summary": "wired the store",
-                    "remaining": ["tests"],
-                }),
-            },
-            ScriptedIteration {
-                edit: None,
-                report: json!({"status": "done", "summary": "all green"}),
-            },
-        ],
-    )
-    .await;
+    let script = vec![
+        started(),
+        RunEvent::IterationStarted { iteration: 1 },
+        RunEvent::AgentOutput {
+            iteration: 1,
+            stream: OutputStream::Stdout,
+            chunk: "working\n".into(),
+        },
+        RunEvent::WorkspaceCheckpointed {
+            iteration: 1,
+            commit: "a1b2c3d".into(),
+        },
+        RunEvent::IterationFinished {
+            iteration: 1,
+            outcome: IterationOutcome::Completed,
+        },
+        RunEvent::StateChanged {
+            state: RunState::Done,
+        },
+    ];
+    let outcome = run_scripted(runs_root.path(), script, RunOutcome::Done).await;
 
     assert_eq!(outcome, RunOutcome::Done);
 
@@ -258,17 +199,12 @@ async fn the_file_sink_serves_the_ralph_kernel_as_a_drop_in() {
             "iteration_started",
             "agent_output",
             "workspace_checkpointed",
-            "progress_reported",
-            "iteration_finished",
-            "iteration_started",
-            "agent_output",
-            "progress_reported",
             "iteration_finished",
             "state_changed",
         ]
     );
     let seqs: Vec<u64> = events.iter().map(|envelope| envelope.seq).collect();
-    assert_eq!(seqs, (0..11).collect::<Vec<u64>>());
+    assert_eq!(seqs, (0..6).collect::<Vec<u64>>());
 }
 
 /// The daemon-restart story: nothing survives but the run directory,
@@ -277,16 +213,18 @@ async fn the_file_sink_serves_the_ralph_kernel_as_a_drop_in() {
 #[tokio::test]
 async fn a_restarted_host_reconstructs_the_run_from_disk_alone() {
     let runs_root = tempfile::tempdir().unwrap();
-    let (_workspace, outcome) = run_ralph_over(
+    let script = vec![
+        started(),
+        RunEvent::StateChanged {
+            state: RunState::Paused {
+                reason: PauseReason::Blocked,
+            },
+        },
+    ];
+    let outcome = run_scripted(
         runs_root.path(),
-        vec![ScriptedIteration {
-            edit: None,
-            report: json!({
-                "status": "blocked",
-                "summary": "the schema decision is not mine",
-                "blockers": ["storage layout undecided"],
-            }),
-        }],
+        script,
+        RunOutcome::Paused(PauseReason::Blocked),
     )
     .await;
     assert_eq!(outcome, RunOutcome::Paused(PauseReason::Blocked));
@@ -295,7 +233,7 @@ async fn a_restarted_host_reconstructs_the_run_from_disk_alone() {
     let run_dir = RunDir::open(runs_root.path(), &RunId::new("r1"))
         .await
         .unwrap();
-    assert_eq!(run_dir.meta().kernel, "ralph");
+    assert_eq!(run_dir.meta().kernel, "pipeline");
     assert_eq!(run_dir.meta().agent, "scripted");
     assert_eq!(
         run_dir.state().await.unwrap(),

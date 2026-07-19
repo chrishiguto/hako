@@ -20,9 +20,8 @@ pub trait AgentAdapter: Send + Sync {
     /// iteration N.
     fn required_secrets(&self) -> Vec<SecretName>;
 
-    /// The headless invocation for one iteration, given the fully
-    /// composed prompt (engine preamble wrapped around the domain
-    /// prompt).
+    /// The headless invocation, given the fully composed prompt — the
+    /// kernel's framing already applied.
     fn invocation(&self, prompt: &str) -> ExecSpec;
 
     /// Token usage parsed from the agent's stdout. `None` when this

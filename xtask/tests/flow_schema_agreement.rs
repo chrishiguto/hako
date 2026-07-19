@@ -21,7 +21,7 @@ use proto::flow::{self, FlowConfig};
 
 /// The representative flow the corpus mutates; also driven verbatim by
 /// the CLI's validate tests.
-const RALPH_EXAMPLE: &str = include_str!("../../examples/ralph.toml");
+const PIPELINE_EXAMPLE: &str = include_str!("../../examples/pipeline.toml");
 
 /// The committed smallest-valid flow; proto's flow tests drive the
 /// same file.
@@ -70,11 +70,11 @@ fn walk_objects(
 
 #[test]
 fn schema_and_serde_agree_on_the_corpus() {
-    let misspelled_key = RALPH_EXAMPLE.replace("max_iterations", "max_iteration");
-    let misspelled_kernel = RALPH_EXAMPLE.replace("\"ralph\"", "\"ralf\"");
+    let misspelled_key = PIPELINE_EXAMPLE.replace("max_iterations", "max_iteration");
+    let misspelled_kernel = PIPELINE_EXAMPLE.replace("\"pipeline\"", "\"pypeline\"");
     let missing_section = MINIMAL_FLOW.replace("[workspace]\nrepo = \".\"", "");
     let corpus: &[(&str, &str, bool)] = &[
-        ("representative flow", RALPH_EXAMPLE, true),
+        ("representative flow", PIPELINE_EXAMPLE, true),
         ("minimal flow", MINIMAL_FLOW, true),
         ("misspelled key", &misspelled_key, false),
         ("misspelled kernel", &misspelled_kernel, false),
@@ -119,8 +119,8 @@ fn schema_and_serde_agree_on_the_corpus() {
         (
             "the deleted goal key",
             &MINIMAL_FLOW.replace(
-                "kernel = \"ralph\"",
-                "kernel = \"ralph\"\ngoal = \"Fix the flaky test\"",
+                "kernel = \"pipeline\"",
+                "kernel = \"pipeline\"\ngoal = \"Fix the flaky test\"",
             ),
             false,
         ),
@@ -194,7 +194,7 @@ fn every_integer_format_in_the_schema_carries_bounds() {
 /// no hand-kept list to forget.
 #[test]
 fn the_schema_names_every_flow_section() {
-    let example: toml::Value = toml::from_str(RALPH_EXAMPLE).unwrap();
+    let example: toml::Value = toml::from_str(PIPELINE_EXAMPLE).unwrap();
     let sections: BTreeSet<&str> = example
         .as_table()
         .unwrap()

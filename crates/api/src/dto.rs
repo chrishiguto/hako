@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use proto::progress::Question;
+use proto::progress::{Answer, Question};
 use proto::run::RunState;
 
 /// Submit a flow for execution as a new run.
@@ -65,13 +65,6 @@ pub struct AnswerRequest {
     pub answers: Vec<Answer>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct Answer {
-    /// Matches a `Question::id` from the run's progress report.
-    pub question_id: String,
-    pub answer: String,
-}
-
 /// Resume a paused run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResumeRequest {
@@ -125,7 +118,7 @@ mod tests {
             state: RunState::Paused {
                 reason: PauseReason::Budget,
             },
-            kernel: "ralph".into(),
+            kernel: "pipeline".into(),
             agent: "claude".into(),
             created_at: "2026-07-13T08:00:00Z".into(),
             updated_at: "2026-07-13T09:30:00Z".into(),
@@ -136,7 +129,7 @@ mod tests {
                 "run_id": "r1",
                 "state": "paused",
                 "reason": "budget",
-                "kernel": "ralph",
+                "kernel": "pipeline",
                 "agent": "claude",
                 "created_at": "2026-07-13T08:00:00Z",
                 "updated_at": "2026-07-13T09:30:00Z"
@@ -147,7 +140,7 @@ mod tests {
     #[test]
     fn commands_round_trip() {
         let submit = SubmitRunRequest {
-            flow: "[loop]\nkernel = \"ralph\"\n".into(),
+            flow: "[loop]\nkernel = \"pipeline\"\n".into(),
         };
         let answer = AnswerRequest {
             answers: vec![Answer {
@@ -176,7 +169,7 @@ mod tests {
             run: RunSummary {
                 run_id: "r9".into(),
                 state: RunState::Running,
-                kernel: "ralph".into(),
+                kernel: "pipeline".into(),
                 agent: "codex".into(),
                 created_at: "2026-07-13T08:00:00Z".into(),
                 updated_at: "2026-07-13T09:30:00Z".into(),
@@ -190,7 +183,7 @@ mod tests {
             json!({
                 "run_id": "r9",
                 "state": "running",
-                "kernel": "ralph",
+                "kernel": "pipeline",
                 "agent": "codex",
                 "created_at": "2026-07-13T08:00:00Z",
                 "updated_at": "2026-07-13T09:30:00Z",

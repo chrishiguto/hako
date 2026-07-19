@@ -1,6 +1,6 @@
 # Progress is a schema-validated report; "done" must survive a skeptic
 
-The only structured channel from agent to engine is the progress report the agent writes at the end of each iteration (continue | done | blocked | needs_input), validated against a published JSON Schema with one repair re-prompt before the iteration counts as failed. A done claim is accepted only when verify checks pass AND a fresh skeptic iteration — new sandbox, new context, prompted to find evidence the domain prompt's objective is unmet — fails to refute it.
+The only structured channel from agent to engine is the schema-validated report the agent writes to end each invocation — a stage report carrying the uniform status (continue | done | blocked | needs_input) plus its stage's payload — validated against a published JSON Schema with one repair re-prompt before the invocation counts as failed. A done claim is accepted only when verify checks pass AND a fresh skeptic iteration — new sandbox, new context, prompted to find evidence the domain prompts' objective is unmet — fails to refute it.
 
 ## Considered Options
 

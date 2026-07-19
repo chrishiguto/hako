@@ -11,16 +11,16 @@ pub mod agent;
 pub mod agents;
 pub mod budget;
 pub mod event;
+pub mod invocation;
 pub mod kernel;
 pub mod notify;
-mod preamble;
+pub mod preamble;
 pub mod progress;
-pub mod ralph;
 pub mod run;
 pub mod sandbox;
 pub mod secrets;
 pub mod store;
-mod verify;
+pub mod verify;
 pub mod workspace;
 
 // The flow language lives in proto; re-exported so a flow remains
@@ -33,11 +33,10 @@ pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
 };
-pub use kernel::{Kernel, KernelContext, KernelError};
+pub use kernel::{Kernel, KernelConfigError, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
-pub use progress::{ProgressReport, ProgressStatus, Question};
-pub use ralph::RalphKernel;
-pub use run::{Answer, PauseReason, Resume, RunId, RunOutcome, RunState};
+pub use progress::{Answer, ProgressStatus, Question};
+pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
     WorkspaceMount,

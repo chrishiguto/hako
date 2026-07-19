@@ -9,13 +9,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use engine::workspace::DOMAIN_PROMPT_FILE;
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
-    PauseReason, ProgressReport, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
-    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
-    SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    PauseReason, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError,
+    SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage,
+    VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -159,17 +158,13 @@ struct OneIterationKernel;
 
 #[async_trait]
 impl Kernel for OneIterationKernel {
-    fn name(&self) -> &str {
-        "one-iteration"
-    }
-
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         ctx.sandbox.preflight().await?;
         let token = ctx.secrets.resolve(&SecretName::new("GH_TOKEN")).await?;
 
         ctx.events
             .emit(RunEvent::RunStarted {
-                kernel: self.name().into(),
+                kernel: "one-iteration".into(),
                 agent: ctx.agent.name().into(),
             })
             .await?;
@@ -187,7 +182,7 @@ impl Kernel for OneIterationKernel {
         ctx.sandbox
             .put_file(
                 &vm,
-                &spec.workspace.guest.join(DOMAIN_PROMPT_FILE),
+                &spec.workspace.guest.join("prompt.md"),
                 prompt.as_bytes(),
             )
             .await?;
@@ -238,22 +233,20 @@ impl Kernel for OneIterationKernel {
                 .await?;
         }
 
+        // The report shape is this kernel's own — kernels parse their
+        // reports themselves; only the status vocabulary is shared.
         let raw = ctx
             .sandbox
             .get_file(&vm, &ctx.workspace.guest_progress_path())
             .await?;
-        let report: ProgressReport =
-            serde_json::from_slice(&raw).expect("the test seeds a valid progress report");
-        ctx.events
-            .emit(RunEvent::ProgressReported {
-                iteration: 1,
-                report: report.clone(),
-            })
-            .await?;
+        let report: serde_json::Value =
+            serde_json::from_slice(&raw).expect("the test seeds a valid report");
+        let status: ProgressStatus = serde_json::from_value(report["status"].clone())
+            .expect("the test's report carries a status");
 
         ctx.sandbox.destroy(vm).await?;
 
-        if report.status != ProgressStatus::NeedsInput {
+        if status != ProgressStatus::NeedsInput {
             ctx.events
                 .emit(RunEvent::StateChanged {
                     state: RunState::Done,
@@ -272,7 +265,10 @@ impl Kernel for OneIterationKernel {
             .notify(&Notification {
                 run_id: ctx.run_id.clone(),
                 reason: PauseReason::AwaitingHuman,
-                summary: report.summary,
+                summary: report["summary"]
+                    .as_str()
+                    .expect("the test's report carries a summary")
+                    .to_owned(),
             })
             .await?;
         Ok(RunOutcome::Paused(PauseReason::AwaitingHuman))
@@ -308,7 +304,6 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         budgets: Budgets::default(),
         verify: VerifyConfig::default(),
         workspace,
-        resume: None,
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent),
         events: sink.clone(),
@@ -343,7 +338,6 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
             "agent_output",
             "agent_output",
             "tokens_used",
-            "progress_reported",
             "state_changed",
         ]
     );

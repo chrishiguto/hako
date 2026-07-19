@@ -5,10 +5,11 @@
 //! Clone, the default: the source — git URL or local path — is cloned
 //! into a run-owned directory on a run branch, so the user's checkout
 //! and uncommitted work are unreachable by construction. A clone of a
-//! remote URL keeps `origin` and pushes its branch on every
-//! [`Workspace::push`]; a clone of a local path has its remote
-//! stripped — the engine must never write into the user's repository —
-//! so its results stay in the workspace, inspectable as a local diff.
+//! remote URL keeps `origin`, so an agent whose prompts say to deliver
+//! can push — the engine itself never pushes. A clone of a local path
+//! has its remote stripped — the engine must never write into the
+//! user's repository, and nothing the agent is told can either — so
+//! its results stay in the workspace, inspectable as a local diff.
 //!
 //! Mount, the opt-in: the run works directly in an existing checkout —
 //! refusing a dirty one unless forced, and locking the path to one
@@ -40,9 +41,8 @@ const MOUNT_LOCK_FILE: &str = "hako-mount.lock";
 /// Prepares the run's workspace as the flow's `[workspace]` table
 /// asks. `clone_dest` is where a clone lands — the run's own
 /// directory; mount mode ignores it and works at `repo` itself. The
-/// workspace carries everything preparation established — the push
-/// target, a mounted path's lock — so handing it to a kernel is the
-/// whole handover.
+/// workspace carries everything preparation established — a mounted
+/// path's lock — so handing it to a kernel is the whole handover.
 pub async fn prepare(
     config: &WorkspaceConfig,
     run_id: &RunId,
@@ -75,10 +75,11 @@ pub async fn prepare(
 /// Whether `repo` names a local path — the deciding question of clone
 /// mode. Anything that exists as a directory on this host is one;
 /// everything else — ssh, https, and explicitly spelled `file://` URLs
-/// included — is a remote by declaration: `origin` stays and the run
-/// branch is pushed there. The by-construction safety story protects
-/// plain-path sources like the default `repo = "."`, where a user
-/// points at a checkout without meaning to publish anything into it.
+/// included — is a remote by declaration: `origin` stays, so an agent
+/// told to deliver can push the run branch there. The by-construction
+/// safety story protects plain-path sources like the default
+/// `repo = "."`, where a user points at a checkout without meaning to
+/// publish anything into it.
 fn is_local_path(repo: &str) -> bool {
     Path::new(repo).is_dir()
 }
@@ -108,33 +109,22 @@ async fn clone(
         .map_err(|error| WorkspaceError(format!("cannot resolve {}: {error}", dest.display())))?;
 
     // Seeding from a branch means continuing it — prior work piles up
-    // there and its PR updates. Without one, the run gets its own.
-    let run_branch = match &config.branch {
-        Some(branch) => branch.clone(),
-        None => {
-            let branch = format!("{RUN_BRANCH_PREFIX}{run_id}");
-            git_ok(Some(&dest), &["checkout", "--quiet", "-b", &branch]).await?;
-            branch
-        }
-    };
+    // there. Without one, the run gets its own.
+    if config.branch.is_none() {
+        let branch = format!("{RUN_BRANCH_PREFIX}{run_id}");
+        git_ok(Some(&dest), &["checkout", "--quiet", "-b", &branch]).await?;
+    }
 
-    let push_branch = if local_source {
+    if local_source {
         // With the remote stripped, the user's repository is
         // unreachable from the workspace by construction — nothing the
         // run does, or is told to do, can push into it.
         git_ok(Some(&dest), &["remote", "remove", "origin"]).await?;
-        None
-    } else {
-        Some(run_branch)
-    };
-
-    if local_source {
         seed_dep_caches(Path::new(&config.repo), &dest).await?;
     }
 
     Ok(Workspace {
         root: dest,
-        push_branch,
         lock: None,
     })
 }
@@ -169,7 +159,6 @@ async fn mount(config: &WorkspaceConfig, run_id: &RunId) -> Result<Workspace, Wo
     let lock = MountLock::acquire(git_dir.join(MOUNT_LOCK_FILE), &root, run_id).await?;
     Ok(Workspace {
         root,
-        push_branch: None,
         lock: Some(Arc::new(lock)),
     })
 }
@@ -290,7 +279,7 @@ fn utf8_path(path: &Path) -> Result<&str, WorkspaceError> {
 mod tests {
     use std::path::Path;
 
-    use super::super::testkit::{commit, git, git_stdout, head, seeded_repo};
+    use super::super::testkit::{SEED_FILE, commit, git, git_stdout, head, seeded_repo};
     use super::*;
 
     fn clone_config(repo: impl Into<String>) -> WorkspaceConfig {
@@ -353,7 +342,7 @@ mod tests {
     async fn a_clone_lands_on_a_run_branch_leaving_the_source_untouched() {
         let source = seeded_repo();
         // Uncommitted work in the source must stay unreachable.
-        std::fs::write(source.path().join("PROMPT.md"), "uncommitted edit\n").unwrap();
+        std::fs::write(source.path().join(SEED_FILE), "uncommitted edit\n").unwrap();
         std::fs::write(source.path().join("scratch.txt"), "untracked\n").unwrap();
         let before = repo_fingerprint(source.path());
 
@@ -368,17 +357,18 @@ mod tests {
         );
         // The clone carries committed state only.
         assert_eq!(
-            std::fs::read_to_string(dest.join("PROMPT.md")).unwrap(),
-            "domain rules\n"
+            std::fs::read_to_string(dest.join(SEED_FILE)).unwrap(),
+            "seed\n"
         );
         assert!(!dest.join("scratch.txt").exists());
         assert_eq!(repo_fingerprint(source.path()), before);
     }
 
     /// A local source is unreachable by construction: the clone keeps
-    /// no remote at all, and its work stays a local diff.
+    /// no remote at all, so no `git push` — the engine's or an
+    /// agent's — has anywhere to land.
     #[tokio::test]
-    async fn a_local_clone_has_no_remote_and_pushes_nowhere() {
+    async fn a_local_clone_has_no_remote_at_all() {
         let source = seeded_repo();
         let dest = tempfile::tempdir().unwrap();
         let dest = dest.path().join("workspace");
@@ -387,24 +377,27 @@ mod tests {
         assert_eq!(git_stdout(&dest, &["remote"]), "");
         std::fs::write(dest.join("work.rs"), "fn work() {}").unwrap();
         workspace.checkpoint("hako: iteration 1").await.unwrap();
-        assert_eq!(workspace.push().await.unwrap(), None);
         // The run branch and its checkpoint exist only in the
         // workspace — that is the locally inspectable diff.
         assert!(!git_stdout(source.path(), &["branch"]).contains("hako/r1"));
     }
 
+    /// A URL clone keeps `origin`, so an agent whose prompts say to
+    /// deliver can push the run branch — the push here is the agent's
+    /// own `git push`, never the engine's.
     #[tokio::test]
-    async fn a_url_clone_pushes_the_run_branch_to_origin() {
+    async fn a_url_clone_keeps_origin_for_the_agent_to_push_to() {
         let (_source, bare, url) = bare_origin();
         let origin = bare.path().join("origin.git");
         let dest = tempfile::tempdir().unwrap();
         let dest = dest.path().join("workspace");
         let workspace = prepared_clone(&url, &dest).await;
 
+        assert_eq!(git_stdout(&dest, &["remote"]), "origin");
         std::fs::write(dest.join("work.rs"), "fn work() {}").unwrap();
         let checkpoint = workspace.checkpoint("hako: iteration 1").await.unwrap();
 
-        assert_eq!(workspace.push().await.unwrap().as_deref(), Some("hako/r1"));
+        git(&dest, &["push", "-q", "origin", "hako/r1"]);
         assert_eq!(
             git_stdout(&origin, &["rev-parse", "hako/r1"]),
             checkpoint.unwrap()
@@ -412,9 +405,10 @@ mod tests {
     }
 
     /// Seed-from-branch continues prior work: the clone checks the
-    /// branch out, and pushes update it — the branch's PR follows.
+    /// branch out, and an agent-side push updates it — the branch's
+    /// PR follows.
     #[tokio::test]
-    async fn seeding_from_a_branch_continues_it_and_updates_origin() {
+    async fn seeding_from_a_branch_continues_it() {
         let (source, bare, url) = bare_origin();
         let origin = bare.path().join("origin.git");
         git(source.path(), &["checkout", "-q", "-b", "feat/x"]);
@@ -439,7 +433,7 @@ mod tests {
 
         std::fs::write(dest.join("more.rs"), "fn more() {}").unwrap();
         workspace.checkpoint("hako: iteration 1").await.unwrap();
-        assert_eq!(workspace.push().await.unwrap().as_deref(), Some("feat/x"));
+        git(&dest, &["push", "-q", "origin", "feat/x"]);
         assert_eq!(git_stdout(&origin, &["rev-parse", "feat/x"]), head(&dest));
     }
 
@@ -576,7 +570,7 @@ mod tests {
     #[tokio::test]
     async fn a_dirty_mount_is_refused_unless_forced() {
         let checkout = seeded_repo();
-        std::fs::write(checkout.path().join("PROMPT.md"), "uncommitted\n").unwrap();
+        std::fs::write(checkout.path().join(SEED_FILE), "uncommitted\n").unwrap();
         let unused = tempfile::tempdir().unwrap();
         let config = mount_config(checkout.path().to_str().unwrap());
 

@@ -1,4 +1,4 @@
-{"type":"run_started","kernel":"ralph","agent":"claude"}
+{"type":"run_started","kernel":"pipeline","agent":"claude"}
 {"type":"state_changed","state":"running"}
 {"type":"state_changed","state":"paused","reason":"blocked"}
 {"type":"state_changed","state":"paused","reason":"verify_failed"}
@@ -16,11 +16,6 @@
 {"type":"agent_output","iteration":1,"stream":"stderr","chunk":"warning: unused import\n"}
 {"type":"verify_check_finished","iteration":1,"command":"cargo test","passed":false,"output":"test tests::it_works ... FAILED"}
 {"type":"workspace_checkpointed","iteration":1,"commit":"a1b2c3d"}
-{"type":"workspace_pushed","iteration":1,"branch":"hako/r1"}
-{"type":"progress_reported","iteration":1,"report":{"status":"continue","summary":"ported the parser","remaining":["port the printer"],"blockers":[],"questions":[]}}
-{"type":"progress_reported","iteration":2,"report":{"status":"done","summary":"all acceptance criteria met","remaining":[],"blockers":[],"questions":[]}}
-{"type":"progress_reported","iteration":3,"report":{"status":"blocked","summary":"cannot reach the registry","remaining":["publish the crate"],"blockers":["registry timeout"],"questions":[]}}
-{"type":"progress_reported","iteration":4,"report":{"status":"needs_input","summary":"need a storage decision","remaining":["wire the store"],"blockers":[],"questions":[{"id":"q1","text":"sqlite or plain files?","options":["sqlite","plain files"]}]}}
 {"type":"progress_rejected","iteration":5,"errors":["missing required field `summary`"]}
 {"type":"skeptic_verdict","iteration":6,"refuted":true,"findings":["tests reference a module that does not exist"]}
 {"type":"tokens_used","iteration":6,"usage":{"input":1200,"output":340}}

@@ -30,27 +30,20 @@ const GUEST_ROOT: &str = "/workspace";
 /// it: scratch is conversation, not the loop's work.
 const SCRATCH_DIR: &str = ".hako";
 
-/// Where the agent must write its progress report, relative to the
-/// workspace root. Part of the published agent contract — the preamble
-/// quotes it verbatim.
+/// Where the agent must write its report, relative to the workspace
+/// root. Part of the published agent contract — the repair re-prompt
+/// quotes it verbatim, and it is the path the invocation executor
+/// fetches.
 pub const PROGRESS_FILE: &str = ".hako/progress.json";
 
-/// The user-authored, agent-editable prompt file at the workspace
-/// root. Re-read every iteration so an agent's edits take effect on
-/// the next pass.
-pub const DOMAIN_PROMPT_FILE: &str = "PROMPT.md";
-
 /// A prepared workspace: a git repository the run owns. All host-side
-/// effects — reading the domain prompt, checkpointing, pushing — go
-/// through here.
+/// effects — checkpointing — go through here. Which prompt files a
+/// kernel reads, and when, is kernel policy, not workspace API; the
+/// one path the workspace fixes is the scratch contract,
+/// [`PROGRESS_FILE`].
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
-    /// The branch [`Workspace::push`] sends to `origin` — set by clone
-    /// preparation when the source is a remote URL. `None` pushes
-    /// nowhere: the run branch stays inspectable in the workspace
-    /// itself.
-    push_branch: Option<String>,
     /// Mount mode's one-active-run lock, riding every clone of this
     /// workspace so it cannot release before the last holder is gone —
     /// the host keeps a `Workspace`, and the path stays held, by
@@ -63,7 +56,6 @@ impl Workspace {
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            push_branch: None,
             lock: None,
         }
     }
@@ -81,14 +73,6 @@ impl Workspace {
     /// the guest's view, never the host's.
     pub fn guest_progress_path(&self) -> PathBuf {
         Path::new(GUEST_ROOT).join(PROGRESS_FILE)
-    }
-
-    /// The domain prompt as it stands right now.
-    pub async fn domain_prompt(&self) -> Result<String, WorkspaceError> {
-        let path = self.root.join(DOMAIN_PROMPT_FILE);
-        tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|error| WorkspaceError(format!("cannot read {}: {error}", path.display())))
     }
 
     /// Commits everything the iteration changed and returns the commit
@@ -121,23 +105,6 @@ impl Workspace {
         .await?;
         let head = self.git_ok(&["rev-parse", "HEAD"]).await?;
         Ok(Some(head.trim().to_owned()))
-    }
-
-    /// Pushes the run branch to `origin` and names what it pushed —
-    /// the durability step after a checkpoint, so a daemon crash
-    /// cannot hold an AFK run's work hostage. `None` means this
-    /// workspace has nowhere to push — a clone of a local path, a
-    /// mounted checkout — and the work stays inspectable locally
-    /// instead. The branch is flow-authored in the seed-from-branch
-    /// case, so it rides behind `--end-of-options`: a name can never
-    /// steer git.
-    pub async fn push(&self) -> Result<Option<String>, WorkspaceError> {
-        let Some(branch) = self.push_branch.as_deref() else {
-            return Ok(None);
-        };
-        self.git_ok(&["push", "--quiet", "--end-of-options", "origin", branch])
-            .await?;
-        Ok(Some(branch.to_owned()))
     }
 
     async fn git(&self, args: &[&str]) -> Result<Output, WorkspaceError> {
@@ -194,14 +161,15 @@ pub struct WorkspaceError(pub String);
 pub(crate) mod testkit {
     use std::path::Path;
 
-    use super::DOMAIN_PROMPT_FILE;
+    /// The one committed file every seeded repository starts with — a
+    /// stand-in for whatever a real repo holds.
+    pub const SEED_FILE: &str = "README.md";
 
-    /// A repository on branch `main` holding one committed domain
-    /// prompt.
+    /// A repository on branch `main` holding one committed file.
     pub fn seeded_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.path().join(DOMAIN_PROMPT_FILE), "domain rules\n").unwrap();
+        std::fs::write(dir.path().join(SEED_FILE), "seed\n").unwrap();
         git(dir.path(), &["add", "-A"]);
         commit(dir.path(), "seed");
         dir
@@ -278,19 +246,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_domain_prompt_is_read_from_the_workspace() {
-        let (_dir, workspace) = seeded_repo();
-        assert_eq!(workspace.domain_prompt().await.unwrap(), "domain rules\n");
-    }
-
-    #[tokio::test]
-    async fn a_missing_domain_prompt_fails_naming_the_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = Workspace::at(dir.path()).domain_prompt().await.unwrap_err();
-        assert!(error.to_string().contains(DOMAIN_PROMPT_FILE), "{error}");
-    }
-
-    #[tokio::test]
     async fn a_checkpoint_commits_the_changes_and_reports_the_hash() {
         let (dir, workspace) = seeded_repo();
         std::fs::write(dir.path().join("work.rs"), "fn work() {}").unwrap();
@@ -328,15 +283,6 @@ mod tests {
             workspace.checkpoint("hako: iteration 1").await.unwrap(),
             None
         );
-    }
-
-    /// `Workspace::at` builds the no-remote workspace tests and mount
-    /// mode use — pushing is something only clone preparation can
-    /// switch on.
-    #[tokio::test]
-    async fn a_workspace_without_a_push_target_pushes_nowhere() {
-        let (_dir, workspace) = seeded_repo();
-        assert_eq!(workspace.push().await.unwrap(), None);
     }
 
     #[tokio::test]

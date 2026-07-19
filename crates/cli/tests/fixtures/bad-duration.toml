@@ -1,7 +1,7 @@
 # A leading zero — the duration grammar wants `30m`.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

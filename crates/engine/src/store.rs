@@ -367,14 +367,14 @@ mod tests {
     use crate::run::PauseReason;
 
     async fn created(runs_root: &Path) -> RunDir {
-        RunDir::create(runs_root, RunId::new("r1"), "ralph", "claude")
+        RunDir::create(runs_root, RunId::new("r1"), "pipeline", "claude")
             .await
             .unwrap()
     }
 
     fn started() -> RunEvent {
         RunEvent::RunStarted {
-            kernel: "ralph".into(),
+            kernel: "pipeline".into(),
             agent: "claude".into(),
         }
     }
@@ -396,7 +396,7 @@ mod tests {
         let meta: RunMeta = serde_json::from_str(&meta_raw).unwrap();
         assert_eq!(meta, *dir.meta());
         assert_eq!(meta.run_id, RunId::new("r1"));
-        assert_eq!(meta.kernel, "ralph");
+        assert_eq!(meta.kernel, "pipeline");
         assert_eq!(meta.agent, "claude");
         meta.created_at
             .parse::<jiff::Timestamp>()
@@ -416,7 +416,7 @@ mod tests {
     async fn a_duplicate_run_id_is_rejected() {
         let root = tempfile::tempdir().unwrap();
         created(root.path()).await;
-        let error = RunDir::create(root.path(), RunId::new("r1"), "ralph", "claude")
+        let error = RunDir::create(root.path(), RunId::new("r1"), "pipeline", "claude")
             .await
             .unwrap_err();
         assert!(matches!(error, StoreError::AlreadyExists(id) if id == RunId::new("r1")));
@@ -487,7 +487,7 @@ mod tests {
         }
 
         let dir = RunDir::open(root.path(), &run_id).await.unwrap();
-        assert_eq!(dir.meta().kernel, "ralph");
+        assert_eq!(dir.meta().kernel, "pipeline");
 
         let events = dir.events().await.unwrap();
         assert_eq!(events.len(), 3);
