@@ -56,6 +56,14 @@ pub enum RunEvent {
         iteration: u32,
         commit: String,
     },
+    /// The run branch was pushed to the workspace's remote — the
+    /// durability step: from here a daemon crash cannot lose the
+    /// iteration's work. Absent for workspaces with nowhere to push,
+    /// where the work stays inspectable locally.
+    WorkspacePushed {
+        iteration: u32,
+        branch: String,
+    },
     ProgressReported {
         iteration: u32,
         report: ProgressReport,

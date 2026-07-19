@@ -24,6 +24,7 @@ fn variant_tripwire(event: &RunEvent) {
         | RunEvent::AgentOutput { .. }
         | RunEvent::VerifyCheckFinished { .. }
         | RunEvent::WorkspaceCheckpointed { .. }
+        | RunEvent::WorkspacePushed { .. }
         | RunEvent::ProgressReported { .. }
         | RunEvent::ProgressRejected { .. }
         | RunEvent::SkepticVerdict { .. }
@@ -76,6 +77,7 @@ fn the_fixture_covers_every_event_variant() {
         "agent_output",
         "verify_check_finished",
         "workspace_checkpointed",
+        "workspace_pushed",
         "progress_reported",
         "progress_rejected",
         "skeptic_verdict",

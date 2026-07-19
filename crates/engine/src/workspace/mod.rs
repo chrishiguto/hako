@@ -1,7 +1,7 @@
 //! The workspace a kernel works on — the one thing that survives
 //! iterations. Deliberately not a seam: it is a real directory the
 //! engine reaches with real git, in production and in tests alike.
-//! Preparing one (clone vs mount) is a separate concern; a kernel
+//! Preparing one (clone vs mount) is [`prepare`]'s concern; a kernel
 //! receives it ready.
 //!
 //! Scratch under [`PROGRESS_FILE`] is the exception: it is produced
@@ -9,12 +9,17 @@
 //! from here — kernels must keep working even where the guest's view
 //! and the host's diverge.
 
+mod prepare;
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::Arc;
 
 use tokio::process::Command;
 
 use crate::sandbox::{WorkspaceMount, into_text};
+
+pub use prepare::prepare;
 
 /// Where the workspace lands inside every sandbox. Fixed so domain
 /// prompts and agent muscle memory transfer between flows.
@@ -36,16 +41,31 @@ pub const PROGRESS_FILE: &str = ".hako/progress.json";
 pub const DOMAIN_PROMPT_FILE: &str = "PROMPT.md";
 
 /// A prepared workspace: a git repository the run owns. All host-side
-/// effects — reading the domain prompt, checkpointing — go through
-/// here.
+/// effects — reading the domain prompt, checkpointing, pushing — go
+/// through here.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
+    /// The branch [`Workspace::push`] sends to `origin` — set by clone
+    /// preparation when the source is a remote URL. `None` pushes
+    /// nowhere: the run branch stays inspectable in the workspace
+    /// itself.
+    push_branch: Option<String>,
+    /// Mount mode's one-active-run lock, riding every clone of this
+    /// workspace so it cannot release before the last holder is gone —
+    /// the host keeps a `Workspace`, and the path stays held, by
+    /// construction.
+    #[expect(dead_code, reason = "held for its Drop: releases the mounted path")]
+    lock: Option<Arc<prepare::MountLock>>,
 }
 
 impl Workspace {
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            push_branch: None,
+            lock: None,
+        }
     }
 
     /// How this workspace mounts into a sandbox.
@@ -103,22 +123,55 @@ impl Workspace {
         Ok(Some(head.trim().to_owned()))
     }
 
+    /// Pushes the run branch to `origin` and names what it pushed —
+    /// the durability step after a checkpoint, so a daemon crash
+    /// cannot hold an AFK run's work hostage. `None` means this
+    /// workspace has nowhere to push — a clone of a local path, a
+    /// mounted checkout — and the work stays inspectable locally
+    /// instead. The branch is flow-authored in the seed-from-branch
+    /// case, so it rides behind `--end-of-options`: a name can never
+    /// steer git.
+    pub async fn push(&self) -> Result<Option<String>, WorkspaceError> {
+        let Some(branch) = self.push_branch.as_deref() else {
+            return Ok(None);
+        };
+        self.git_ok(&["push", "--quiet", "--end-of-options", "origin", branch])
+            .await?;
+        Ok(Some(branch.to_owned()))
+    }
+
     async fn git(&self, args: &[&str]) -> Result<Output, WorkspaceError> {
-        Command::new("git")
-            .args(args)
-            .current_dir(&self.root)
-            .output()
-            .await
-            .map_err(|error| WorkspaceError(format!("cannot run git: {error}")))
+        git(Some(&self.root), args).await
     }
 
     async fn git_ok(&self, args: &[&str]) -> Result<String, WorkspaceError> {
-        let output = self.git(args).await?;
-        if !output.status.success() {
-            return Err(git_failure(&args.join(" "), &output));
-        }
-        Ok(into_text(output.stdout))
+        git_ok(Some(&self.root), args).await
     }
+}
+
+/// Runs git in `dir` — or in the process's own cwd when `None`, which
+/// is what `clone` needs: the workspace directory does not exist yet,
+/// and relative path arguments must resolve the way the caller wrote
+/// them. Fails only when git itself cannot run.
+async fn git(dir: Option<&Path>, args: &[&str]) -> Result<Output, WorkspaceError> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    command
+        .output()
+        .await
+        .map_err(|error| WorkspaceError(format!("cannot run git: {error}")))
+}
+
+/// Like [`git`], but demands success and hands back the stdout.
+async fn git_ok(dir: Option<&Path>, args: &[&str]) -> Result<String, WorkspaceError> {
+    let output = git(dir, args).await?;
+    if !output.status.success() {
+        return Err(git_failure(&args.join(" "), &output));
+    }
+    Ok(into_text(output.stdout))
 }
 
 fn git_failure(command: &str, output: &Output) -> WorkspaceError {
@@ -134,23 +187,27 @@ fn git_failure(command: &str, output: &Output) -> WorkspaceError {
 #[error("workspace failure: {0}")]
 pub struct WorkspaceError(pub String);
 
+/// Real-git fixtures shared by this module's tests and preparation's:
+/// the workspace is asserted through git effects, so every suite
+/// builds the same kind of throwaway repositories.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testkit {
     use std::path::Path;
 
-    use super::*;
+    use super::DOMAIN_PROMPT_FILE;
 
-    fn seeded_repo() -> (tempfile::TempDir, Workspace) {
+    /// A repository on branch `main` holding one committed domain
+    /// prompt.
+    pub fn seeded_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"]);
         std::fs::write(dir.path().join(DOMAIN_PROMPT_FILE), "domain rules\n").unwrap();
         git(dir.path(), &["add", "-A"]);
         commit(dir.path(), "seed");
-        let workspace = Workspace::at(dir.path());
-        (dir, workspace)
+        dir
     }
 
-    fn git(dir: &Path, args: &[&str]) {
+    pub fn git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .args(args)
             .current_dir(dir)
@@ -159,7 +216,7 @@ mod tests {
         assert!(status.success(), "git {args:?}");
     }
 
-    fn commit(dir: &Path, message: &str) {
+    pub fn commit(dir: &Path, message: &str) {
         git(
             dir,
             &[
@@ -174,13 +231,33 @@ mod tests {
         );
     }
 
-    fn head(dir: &Path) -> String {
+    /// A git query's stdout, trimmed — `head` and friends.
+    pub fn git_stdout(dir: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
+            .args(args)
             .current_dir(dir)
             .output()
             .unwrap();
+        assert!(output.status.success(), "git {args:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    pub fn head(dir: &Path) -> String {
+        git_stdout(dir, &["rev-parse", "HEAD"])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::testkit::{head, seeded_repo as seeded_dir};
+    use super::*;
+
+    fn seeded_repo() -> (tempfile::TempDir, Workspace) {
+        let dir = seeded_dir();
+        let workspace = Workspace::at(dir.path());
+        (dir, workspace)
     }
 
     #[test]
@@ -251,6 +328,15 @@ mod tests {
             workspace.checkpoint("hako: iteration 1").await.unwrap(),
             None
         );
+    }
+
+    /// `Workspace::at` builds the no-remote workspace tests and mount
+    /// mode use — pushing is something only clone preparation can
+    /// switch on.
+    #[tokio::test]
+    async fn a_workspace_without_a_push_target_pushes_nowhere() {
+        let (_dir, workspace) = seeded_repo();
+        assert_eq!(workspace.push().await.unwrap(), None);
     }
 
     #[tokio::test]

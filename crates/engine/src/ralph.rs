@@ -320,6 +320,16 @@ async fn attempt(
         ctx.events
             .emit(RunEvent::WorkspaceCheckpointed { iteration, commit })
             .await?;
+        // Durability rides every checkpoint: pushed now, the work can
+        // survive anything that happens to the daemon. A failed push is
+        // run-fatal on purpose — the checkpoint is safe locally, but an
+        // AFK run that silently stopped delivering would betray the
+        // promise the push exists to keep.
+        if let Some(branch) = ctx.workspace.push().await? {
+            ctx.events
+                .emit(RunEvent::WorkspacePushed { iteration, branch })
+                .await?;
+        }
     }
 
     let report_path = ctx.workspace.guest_progress_path();

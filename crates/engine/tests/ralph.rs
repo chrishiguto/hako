@@ -395,6 +395,16 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
+fn rev_parse(dir: &Path, rev: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git rev-parse {rev}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 /// Commit hashes oldest-first, excluding the seed commit.
 fn checkpoints_in_history(dir: &Path) -> Vec<String> {
     let output = std::process::Command::new("git")
@@ -616,6 +626,84 @@ async fn a_continue_continue_done_run_completes_and_checkpoints_each_step() {
     assert_eq!(sandbox.created.load(Ordering::SeqCst), 3);
     assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 3);
     assert_eq!(sandbox.handles(), ["vm-0", "vm-1", "vm-2"]);
+}
+
+/// The durability rail over a workspace prepared for real: cloned from
+/// a remote, the run branch is pushed after every checkpoint — the
+/// origin never trails the loop by more than the running iteration.
+#[tokio::test]
+async fn a_cloned_workspace_pushes_the_run_branch_after_every_checkpoint() {
+    // A bare origin addressed by file:// URL — remote enough for git,
+    // no network involved.
+    let (seed, _seed_workspace) = seeded_workspace();
+    let origin = tempfile::tempdir().unwrap();
+    let origin = origin.path().join("origin.git");
+    git(
+        seed.path(),
+        &["clone", "--quiet", "--bare", ".", origin.to_str().unwrap()],
+    );
+
+    let dest = tempfile::tempdir().unwrap();
+    let dest = dest.path().join("workspace");
+    let config = proto::flow::WorkspaceConfig {
+        repo: format!("file://{}", origin.display()),
+        mode: proto::flow::WorkspaceMode::Clone,
+        branch: None,
+        force: false,
+    };
+    let workspace = engine::workspace::prepare(&config, &RunId::new("r1"), &dest)
+        .await
+        .unwrap();
+
+    let sandbox = FakeSandbox::scripted(vec![
+        continuing("wired the store", &["docs"]).editing("store.rs", "store v1"),
+        finishing("all green").editing("docs.md", "how it works"),
+    ]);
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(
+        workspace,
+        sandbox,
+        sink.clone(),
+        Budgets::default(),
+        VerifyConfig::default(),
+    );
+    let outcome = RalphKernel.run(ctx).await.unwrap();
+
+    assert_eq!(outcome, RunOutcome::Done);
+    assert_eq!(
+        sink.kinds(),
+        [
+            "run_started",
+            "iteration_started",
+            "agent_output",
+            "workspace_checkpointed",
+            "workspace_pushed",
+            "progress_reported",
+            "iteration_finished",
+            "iteration_started",
+            "agent_output",
+            "workspace_checkpointed",
+            "workspace_pushed",
+            "progress_reported",
+            "iteration_finished",
+            "state_changed",
+        ]
+    );
+    let pushes: Vec<(u32, String)> = sink
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::WorkspacePushed { iteration, branch } => Some((*iteration, branch.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pushes, [(1, "hako/r1".into()), (2, "hako/r1".into())]);
+
+    // The origin holds the whole run: its branch tip is the last
+    // checkpoint.
+    let history = checkpoints_in_history(&dest);
+    assert_eq!(history.len(), 2);
+    assert_eq!(rev_parse(&origin, "hako/r1"), history[1]);
 }
 
 #[tokio::test]
