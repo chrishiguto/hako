@@ -14,6 +14,8 @@
 //! serialization — the only such conversion in the tree, and
 //! test-only: no product code converts a flow to JSON.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -43,29 +45,6 @@ fn schema_accepts(flow_toml: &str) -> bool {
 
 fn serde_accepts(flow_toml: &str) -> bool {
     FlowConfig::from_toml(flow_toml).is_ok()
-}
-
-/// Depth-first visit of every object node in the schema, with its
-/// path — the one walker the structural guards below share.
-fn walk_objects(
-    node: &serde_json::Value,
-    path: &str,
-    visit: &mut impl FnMut(&serde_json::Map<String, serde_json::Value>, &str),
-) {
-    match node {
-        serde_json::Value::Object(entries) => {
-            visit(entries, path);
-            for (key, entry) in entries {
-                walk_objects(entry, &format!("{path}/{key}"), visit);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                walk_objects(item, &format!("{path}/{index}"), visit);
-            }
-        }
-        _ => {}
-    }
 }
 
 #[test]
@@ -139,52 +118,14 @@ fn zero_fraction_floats_are_the_one_known_divergence() {
     assert!(!serde_accepts(&flow));
 }
 
-/// The schema must carry the same strictness as the serde types:
-/// every object schema anywhere in it rejects unknown keys, or an
-/// editor would bless flows the daemon rejects. Walking every node —
-/// not just the top-level `$defs` — keeps future inline subschemas
-/// covered too.
 #[test]
 fn every_object_in_the_schema_rejects_unknown_keys() {
-    let mut found = 0;
-    walk_objects(&SCHEMA, "", &mut |entries, path| {
-        let is_object_schema = entries.contains_key("properties")
-            || entries.get("type") == Some(&serde_json::json!("object"));
-        if is_object_schema {
-            found += 1;
-            assert_eq!(
-                entries.get("additionalProperties"),
-                Some(&serde_json::json!(false)),
-                "{path}: object schema does not reject unknown keys"
-            );
-        }
-    });
-    assert!(found > 0, "the walk matched no object schemas");
+    common::assert_every_object_rejects_unknown_keys(&SCHEMA);
 }
 
-/// Every sub-64-bit integer anywhere in the schema must carry the
-/// explicit bounds the generator's transform stamps — a config field
-/// with an integer type the transform doesn't know fails here instead
-/// of becoming a hole editors would bless. The 64-bit formats are
-/// exempt: TOML integers are i64, so their bounds are unreachable
-/// from a flow file.
 #[test]
 fn every_integer_format_in_the_schema_carries_bounds() {
-    let mut found = 0;
-    walk_objects(&SCHEMA, "", &mut |entries, path| {
-        let sub_64_bit = |f: &&str| f.contains("int") && *f != "uint64" && *f != "int64";
-        let format = entries.get("format").and_then(serde_json::Value::as_str);
-        if let Some(format) = format.filter(sub_64_bit) {
-            found += 1;
-            for bound in ["minimum", "maximum"] {
-                assert!(
-                    entries.contains_key(bound),
-                    "{path}: format `{format}` lacks `{bound}` — teach the \
-                     generator's bounds transform this format or use a bounded type"
-                );
-            }
-        }
-    });
+    let found = common::assert_integer_formats_carry_bounds(&SCHEMA);
     assert!(found > 0, "the walk matched no integer formats");
 }
 

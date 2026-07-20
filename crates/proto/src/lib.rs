@@ -10,18 +10,23 @@
 //! speak live in `api`: the REST bodies. The `openapi` feature adds
 //! `utoipa` schema derives so `api` can generate the OpenAPI document;
 //! the `schema` feature adds `schemars` derives so xtask can generate
-//! the committed flow schema. Product crates build without either.
+//! the committed schemas. Product crates build without either.
 
 pub mod budget;
 pub mod event;
 pub mod flow;
 pub mod report;
 pub mod run;
+#[cfg(feature = "schema")]
+pub(crate) mod schema;
 pub mod secrets;
 
 pub use budget::{BudgetKind, TokenUsage};
 pub use event::{EventEnvelope, IterationOutcome, OutputStream, RunEvent};
 pub use flow::{FlowConfig, FlowError};
-pub use report::{Answer, Question, ReportStatus};
+pub use report::{
+    Answer, DeliverReport, ImplementReport, PlanReport, Question, ReportStatus, ReviewReport,
+    SimplifyReport, Stage, StageReport,
+};
 pub use run::{PauseReason, RunState};
 pub use secrets::SecretName;

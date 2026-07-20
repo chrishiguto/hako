@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewReport",
+  "description": "What the review stage leaves behind: its verdict, plus the\nfindings it could not fix in place.",
+  "type": "object",
+  "properties": {
+    "blockers": {
+      "description": "What prevents progress, one entry per blocker; expected when\nthe status is `blocked`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "findings": {
+      "description": "Findings the review could not patch itself; they feed the next\niteration's plan.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "questions": {
+      "description": "Questions only a human can answer; expected when the status is\n`needs_input`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/ReportStatus"
+    },
+    "summary": {
+      "description": "The verdict in the agent's words: what was checked, what was\npatched in place.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "$defs": {
+    "Question": {
+      "description": "A question the agent needs a human to answer before it can proceed.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The handle an answer is addressed to (`hako answer <run> <id>`).",
+          "type": "string"
+        },
+        "options": {
+          "description": "Suggested answers; free-text is always allowed.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "ReportStatus": {
+      "description": "The agent's claim about where the loop stands. `done` is a claim,\nnot a verdict — the engine accepts it only after verify checks pass\nand a skeptic iteration fails to refute it.",
+      "type": "string",
+      "enum": [
+        "continue",
+        "done",
+        "blocked",
+        "needs_input"
+      ]
+    }
+  }
+}

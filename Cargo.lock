@@ -1456,6 +1456,7 @@ dependencies = [
  "cargo_metadata",
  "jsonschema",
  "proto",
+ "schemars",
  "serde_json",
  "toml",
 ]
