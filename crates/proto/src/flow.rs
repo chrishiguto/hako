@@ -134,9 +134,8 @@ impl KernelName {
     }
 
     /// The prompt slots the selected kernel publishes — the legal
-    /// `[prompts]` keys. Slot vocabulary is dialect (ADR 0010): the
-    /// names live in the kernel's own module; only this dispatch is
-    /// core.
+    /// `[prompts]` keys. Slot vocabulary is dialect: the names live
+    /// in the kernel's own module; only this dispatch is core.
     pub fn prompt_slots(self) -> &'static [&'static str] {
         match self {
             Self::Pipeline => &crate::pipeline::PROMPT_SLOTS,
