@@ -30,8 +30,12 @@ One execution of a flow by the daemon, from submission to a terminal state (done
 _Avoid_: job, session
 
 **Iteration**:
-The unit of work within a run: one fresh sandbox, one fresh-context agent invocation, verification, a checkpoint, and a report.
+One pass of a kernel's loop over its work. For the pipeline, one work unit driven through its stages — each stage its own fresh sandbox, fresh-context invocation, and report; the mutating stages verified and checkpointed.
 _Avoid_: step, turn, cycle
+
+**Stage**:
+One step of a staged kernel's iteration — for the pipeline, plan, implement, review, or simplify (deliver optional). The kernel owns their order and gating in Rust; a flow customizes only each stage's prompt. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
+_Avoid_: phase, step
 
 ## Isolation & state
 

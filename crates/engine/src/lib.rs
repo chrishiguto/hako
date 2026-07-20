@@ -14,6 +14,7 @@ pub mod event;
 pub mod invocation;
 pub mod kernel;
 pub mod notify;
+pub mod pipeline;
 pub mod preamble;
 pub mod report;
 pub mod run;
@@ -26,15 +27,16 @@ pub mod workspace;
 // The flow language lives in proto; re-exported so a flow remains
 // part of the engine's own vocabulary — it is what a kernel runs.
 pub use proto::flow;
-pub use proto::flow::{FailAction, OnFail, VerifyConfig};
+pub use proto::flow::{FailAction, OnFail, PromptsConfig, VerifyConfig};
 
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
 };
-pub use kernel::{Kernel, KernelConfigError, KernelContext, KernelError};
+pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
+pub use pipeline::PipelineKernel;
 pub use report::{Answer, Question, ReportStatus};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{

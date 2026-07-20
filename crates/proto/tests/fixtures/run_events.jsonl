@@ -12,6 +12,8 @@
 {"type":"iteration_finished","iteration":1,"outcome":"completed"}
 {"type":"iteration_finished","iteration":2,"outcome":"failed"}
 {"type":"iteration_finished","iteration":3,"outcome":"timed_out"}
+{"type":"stage_started","iteration":1,"stage":"implement"}
+{"type":"stage_reported","iteration":1,"stage":"plan","report":{"blockers":[],"questions":[],"status":"continue","steps":["add the type"],"summary":"drive issue #7","work_unit":"issue #7"}}
 {"type":"agent_output","iteration":1,"stream":"stdout","chunk":"working on it\n"}
 {"type":"agent_output","iteration":1,"stream":"stderr","chunk":"warning: unused import\n"}
 {"type":"verify_check_finished","iteration":1,"command":"cargo test","passed":false,"output":"test tests::it_works ... FAILED"}

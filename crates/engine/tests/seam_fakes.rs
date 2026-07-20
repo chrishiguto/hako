@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
-    PauseReason, ReportStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError,
-    SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage,
-    VerifyConfig, Workspace,
+    PauseReason, PromptsConfig, ReportStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
+    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
+    SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -303,6 +303,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify: VerifyConfig::default(),
+        prompts: PromptsConfig::default(),
         workspace,
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent),

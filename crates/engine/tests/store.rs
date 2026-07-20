@@ -13,9 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use engine::{
     AgentAdapter, Budgets, EventSink, ExecSpec, ExecStream, Kernel, KernelContext, KernelError,
-    Notification, Notifier, NotifierError, PauseReason, RunDir, RunEvent, RunId, RunOutcome,
-    RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue,
-    SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    Notification, Notifier, NotifierError, PauseReason, PromptsConfig, RunDir, RunEvent, RunId,
+    RunOutcome, RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName,
+    SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use proto::event::{IterationOutcome, OutputStream};
 
@@ -129,6 +129,7 @@ async fn run_scripted(runs_root: &Path, events: Vec<RunEvent>, outcome: RunOutco
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify: VerifyConfig::default(),
+        prompts: PromptsConfig::default(),
         workspace: Workspace::at(workspace_dir.path()),
         sandbox: Arc::new(NoSandbox),
         agent: Arc::new(NoAgent),

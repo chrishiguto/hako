@@ -15,8 +15,8 @@ use engine::verify::{self, VerifyOutcome};
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     KernelContext, KernelError, Notification, Notifier, NotifierError, OnFail, OutputStream,
-    RunEvent, RunId, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue,
-    SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    PromptsConfig, RunEvent, RunId, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName,
+    SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -181,6 +181,7 @@ fn context(
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify,
+        prompts: PromptsConfig::default(),
         workspace: Workspace::at("/srv/runs/r1/workspace"),
         sandbox,
         agent: Arc::new(ScriptedAgent),

@@ -240,6 +240,29 @@ impl StageReport {
         }
     }
 
+    /// This report's own payload as JSON — the inner shape, not the
+    /// enum wrapper. What a stage-scoped event embeds: the same bytes a
+    /// typed consumer re-parses against this stage's type. Infallible —
+    /// the report types are plain strings and lists, which always
+    /// serialize.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        let value = match self {
+            Self::Plan(report) => serde_json::to_value(report),
+            Self::Implement(report) => serde_json::to_value(report),
+            Self::Review(report) => serde_json::to_value(report),
+            Self::Simplify(report) => serde_json::to_value(report),
+            Self::Deliver(report) => serde_json::to_value(report),
+        };
+        value.expect("stage reports serialize")
+    }
+
+    /// The same payload laid out for reading — what a stage's preamble
+    /// quotes back to the next stage. One home for the "reports always
+    /// serialize" invariant, so a caller never re-asserts it.
+    pub fn to_pretty_json(&self) -> String {
+        serde_json::to_string_pretty(&self.to_json_value()).expect("stage reports serialize")
+    }
+
     /// The questions a `needs_input` report asks — uniform across
     /// stages, so pausing surfaces them the same wherever they arose.
     pub fn questions(&self) -> &[Question] {
