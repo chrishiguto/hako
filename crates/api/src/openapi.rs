@@ -207,7 +207,8 @@ mod tests {
             "RunState",
             "EventEnvelope",
             "RunEvent",
-            "ProgressReport",
+            "Answer",
+            "Question",
             "ApiError",
         ] {
             assert!(

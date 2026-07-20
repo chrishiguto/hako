@@ -1,7 +1,7 @@
 # TOML allows `inf`; a token budget doesn't.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

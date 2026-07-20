@@ -21,7 +21,8 @@ use crate::secrets::SecretName;
 
 /// A parsed flow: which kernel to run, with which agent, under which
 /// limits. Contains no logic — control flow belongs to the kernel —
-/// and no objective: that lives in the workspace's domain prompt.
+/// and no objective: that lives in the domain prompts the kernel
+/// reads.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -63,11 +64,26 @@ pub struct LoopConfig {
 /// The loop patterns the engine ships. A closed set by design: a new
 /// loop shape is a new kernel in Rust, never logic in the flow file —
 /// which is what lets the schema reject a misspelled kernel outright.
+/// A name may be declared ahead of its kernel so the flow language
+/// never has zero kernels; submitting such a flow fails at kernel
+/// resolution, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum KernelName {
-    Ralph,
+    /// The staged loop: one work unit per iteration, driven through a
+    /// fixed stage sequence the kernel owns in Rust.
+    Pipeline,
+}
+
+impl KernelName {
+    /// The wire string flows select the kernel by — the same string
+    /// serde reads, spelled once for error messages and run metadata.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pipeline => "pipeline",
+        }
+    }
 }
 
 /// Which agent drives the iterations.
@@ -153,10 +169,10 @@ pub struct WorkspaceConfig {
     pub repo: String,
     #[serde(default)]
     pub mode: WorkspaceMode,
-    /// An existing branch the clone checks out and pushes to, so a run
-    /// continues prior work and updates its PR. Meaningful only in
-    /// clone mode; preparation rejects it elsewhere. Absent, the run
-    /// gets its own fresh branch.
+    /// An existing branch the clone checks out, so a run continues
+    /// prior work — and can update its PR when its prompts say to
+    /// push. Meaningful only in clone mode; preparation rejects it
+    /// elsewhere. Absent, the run gets its own fresh branch.
     pub branch: Option<String>,
     /// Runs against a dirty mounted checkout anyway. Meaningful only
     /// in mount mode; preparation rejects it elsewhere.
@@ -371,12 +387,14 @@ mod schema {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     /// The committed example is the spec's representative flow — the
     /// CLI's validate tests drive the same file, so the two suites
     /// cannot drift apart on what a canonical flow looks like.
-    const REPRESENTATIVE_FLOW: &str = include_str!("../../../examples/ralph.toml");
+    const REPRESENTATIVE_FLOW: &str = include_str!("../../../examples/pipeline.toml");
 
     /// The committed smallest-valid flow — the schema agreement tests
     /// in `xtask/tests/` drive the same file, so the two suites cannot
@@ -386,7 +404,7 @@ mod tests {
     #[test]
     fn representative_flow_parses() {
         let flow = FlowConfig::from_toml(REPRESENTATIVE_FLOW).unwrap();
-        assert_eq!(flow.r#loop.kernel, KernelName::Ralph);
+        assert_eq!(flow.r#loop.kernel, KernelName::Pipeline);
         assert_eq!(flow.agent.engine, "claude");
         assert_eq!(
             flow.budget,
@@ -484,10 +502,17 @@ mod tests {
 
     #[test]
     fn a_misspelled_kernel_is_rejected_naming_the_real_one() {
-        let flow = REPRESENTATIVE_FLOW.replace("\"ralph\"", "\"ralf\"");
+        let flow = REPRESENTATIVE_FLOW.replace("\"pipeline\"", "\"pypeline\"");
         let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
-        assert!(err.contains("ralf"), "{err}");
-        assert!(err.contains("ralph"), "{err}");
+        assert!(err.contains("pypeline"), "{err}");
+        assert!(err.contains("pipeline"), "{err}");
+    }
+
+    #[test]
+    fn the_kernel_name_matches_its_wire_string() {
+        let parsed: KernelName = serde_json::from_value(json!("pipeline")).unwrap();
+        assert_eq!(parsed, KernelName::Pipeline);
+        assert_eq!(KernelName::Pipeline.as_str(), "pipeline");
     }
 
     #[test]

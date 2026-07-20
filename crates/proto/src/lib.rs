@@ -1,7 +1,7 @@
 //! The published language — the vocabulary the engine and its clients
 //! both speak: the run state machine, the event log's payloads, the
-//! agent's progress report, and the flow file format. JSON via serde,
-//! not protobuf, despite the crate name's lineage.
+//! report vocabulary kernels share, and the flow file format. JSON via
+//! serde, not protobuf, despite the crate name's lineage.
 //!
 //! One definition serves every side. The engine emits these types, the
 //! daemon records and streams them verbatim, and clients deserialize
@@ -15,13 +15,13 @@
 pub mod budget;
 pub mod event;
 pub mod flow;
-pub mod progress;
+pub mod report;
 pub mod run;
 pub mod secrets;
 
 pub use budget::{BudgetKind, TokenUsage};
 pub use event::{EventEnvelope, IterationOutcome, OutputStream, RunEvent};
 pub use flow::{FlowConfig, FlowError};
-pub use progress::{ProgressReport, ProgressStatus, Question};
+pub use report::{Answer, Question, ReportStatus};
 pub use run::{PauseReason, RunState};
 pub use secrets::SecretName;

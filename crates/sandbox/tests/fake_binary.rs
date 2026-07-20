@@ -242,7 +242,7 @@ esac"#,
 
     let vm = adapter.create(&spec()).await.unwrap();
     let bytes = adapter
-        .get_file(&vm, Path::new("/workspace/.hako/progress.json"))
+        .get_file(&vm, Path::new("/workspace/.hako/report.json"))
         .await
         .unwrap();
     assert_eq!(bytes, b"report\x00bytes");

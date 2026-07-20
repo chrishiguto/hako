@@ -1,4 +1,4 @@
 # The section header is never closed.
 
 [loop
-kernel = "ralph"
+kernel = "pipeline"

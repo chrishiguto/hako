@@ -34,7 +34,7 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn the_committed_example_flow_validates() {
-    let output = hako(&["validate", &repo_path("../../examples/ralph.toml")]);
+    let output = hako(&["validate", &repo_path("../../examples/pipeline.toml")]);
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("valid flow"));
 }
@@ -48,7 +48,7 @@ fn invalid_flows_fail_with_the_parsers_error_text() {
             "misspelled-key.toml",
             &["max_iteration", "max_iterations", "line"],
         ),
-        ("misspelled-kernel.toml", &["ralf", "ralph"]),
+        ("misspelled-kernel.toml", &["pypeline", "pipeline"]),
         ("out-of-range.toml", &["max_iterations", "u32"]),
         ("nonfinite.toml", &["max_tokens", "inf"]),
         ("datetime.toml", &["repo", "string"]),

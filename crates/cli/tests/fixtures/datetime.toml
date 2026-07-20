@@ -1,7 +1,7 @@
 # An unquoted date — TOML parses it as a datetime, not a string.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

@@ -28,7 +28,8 @@ const MAX_OUTPUT_BYTES: usize = OUTPUT_TAIL_CHARS * 4 + 4;
 /// How an iteration came out of the verify gate. `Skipped` is distinct
 /// from `Passed` so nothing downstream can mistake an unverified
 /// iteration for a verified one.
-pub(crate) enum VerifyOutcome {
+#[derive(Debug)]
+pub enum VerifyOutcome {
     Passed,
     /// No checks ran: the report's status pauses the run on the
     /// agent's own word, so there is no progress to verify.
@@ -45,7 +46,7 @@ pub(crate) enum VerifyOutcome {
 /// running them past a failure only buries the real error. Each check
 /// that runs emits a [`RunEvent::VerifyCheckFinished`]; no checks
 /// configured means every iteration passes.
-pub(crate) async fn run_checks(
+pub async fn run_checks(
     ctx: &KernelContext,
     sandbox: &SandboxHandle,
     iteration: u32,

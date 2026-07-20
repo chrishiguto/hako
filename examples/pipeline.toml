@@ -1,9 +1,9 @@
-# The representative ralph flow from the v1 spec. Both the engine's
+# The representative pipeline flow from the v1 spec. Both the engine's
 # flow tests and the CLI's validate tests parse this exact file, so the
 # one canonical example can never drift from what the code accepts.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

@@ -1,7 +1,7 @@
 # u32::MAX + 1 iterations — more than the engine can count.
 
 [loop]
-kernel = "ralph"
+kernel = "pipeline"
 
 [agent]
 engine = "claude"

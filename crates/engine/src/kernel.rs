@@ -1,4 +1,5 @@
-//! The kernel seam and the context a kernel works through.
+//! The kernel seam, the context a kernel works through, and the
+//! resolution from a flow's `[loop]` table.
 
 use std::sync::Arc;
 
@@ -8,23 +9,40 @@ use crate::agent::AgentAdapter;
 use crate::budget::Budgets;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
-use crate::run::{Resume, RunId, RunOutcome};
+use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretsError, SecretsProvider};
 use crate::workspace::{Workspace, WorkspaceError};
-use proto::flow::VerifyConfig;
+use proto::flow::{KernelName, VerifyConfig};
 
 /// A loop pattern. Kernels own all control flow — iterate, verify,
-/// retry, stop — leaving flow files nothing to program.
+/// retry, stop — leaving flow files nothing to program. A kernel
+/// carries no name of its own: flows select one by [`KernelName`],
+/// and [`resolve`] is the only door in.
 #[async_trait]
 pub trait Kernel: Send + Sync {
-    /// The name flows select the kernel by, e.g. `ralph`.
-    fn name(&self) -> &str;
-
     /// Drives the run until it can go no further and reports how it
     /// ended. Resuming a paused run is another `run` call on the same
     /// context.
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError>;
+}
+
+/// Builds the kernel a flow's `[loop]` table selects — the loop-side
+/// twin of [`crate::agents::resolve`], run at submit. A name may be
+/// declared in the flow language ahead of its kernel, so the language
+/// never has zero kernels; resolving such a name is where a submit
+/// learns the flow cannot run yet.
+pub fn resolve(name: KernelName) -> Result<Arc<dyn Kernel>, KernelConfigError> {
+    match name {
+        KernelName::Pipeline => Err(KernelConfigError::NotImplemented(name)),
+    }
+}
+
+/// A `[loop]` table naming a kernel the engine cannot serve yet.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum KernelConfigError {
+    #[error("kernel `{}` is not implemented yet", .0.as_str())]
+    NotImplemented(KernelName),
 }
 
 /// Everything a kernel may touch. Collaborators are handed in here and
@@ -40,13 +58,9 @@ pub struct KernelContext {
     /// lowering, unlike [`Budgets`], because nothing here needs
     /// resolving.
     pub verify: VerifyConfig,
-    /// Prepared before the kernel starts; the kernel mounts it,
-    /// checkpoints it, and reads the domain prompt from it.
+    /// Prepared before the kernel starts; the kernel mounts it and
+    /// checkpoints it.
     pub workspace: Workspace,
-    /// Present when this call resumes a paused run: where the loop
-    /// stood and what the human said, injected into the first
-    /// iteration's preamble. `None` starts the run from the top.
-    pub resume: Option<Resume>,
     pub sandbox: Arc<dyn Sandbox>,
     pub agent: Arc<dyn AgentAdapter>,
     pub events: Arc<dyn EventSink>,
@@ -70,4 +84,26 @@ pub enum KernelError {
     /// logic rather than a seam; its failures land here.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `pipeline` is declared ahead of its kernel so the flow language
+    /// never has zero kernels; submitting one must say so instead of
+    /// running.
+    #[test]
+    fn the_declared_but_unimplemented_kernel_resolves_to_a_refusal() {
+        let error = resolve(KernelName::Pipeline)
+            .err()
+            .expect("pipeline has no kernel yet");
+        assert_eq!(
+            error,
+            KernelConfigError::NotImplemented(KernelName::Pipeline)
+        );
+        let message = error.to_string();
+        assert!(message.contains("pipeline"), "{message}");
+        assert!(message.contains("not implemented"), "{message}");
+    }
 }
