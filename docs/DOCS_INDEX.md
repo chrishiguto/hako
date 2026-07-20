@@ -21,7 +21,7 @@ Check here first to find the right document, then open that file directly. `/dom
 
 ## Domain
 
-- `docs/GLOSSARY.md` — Glossary (Living) — Ubiquitous language for hako: kernel, kernel dialect, flow, run, iteration, sandbox, workspace, report, verified done, pause, drift, budget, daemon, client. Topics: terminology, domain language.
+- `docs/GLOSSARY.md` — Glossary (Living) — Ubiquitous language for hako: kernel, kernel dialect, flow, run, iteration, sandbox, workspace, prompt slot, report, verified done, pause, drift, budget, daemon, client. Topics: terminology, domain language.
 
 ## Specs / PRDs
 

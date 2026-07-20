@@ -6,7 +6,7 @@
 //! The language has two layers. The core modules — `run`,
 //! `event`, `flow`, `report`, `budget`, `secrets` — are shared
 //! vocabulary every kernel speaks. Each kernel's own additions — its
-//! report shapes, later its prompt slots — form a *dialect*, one
+//! report shapes and prompt slots — form a *dialect*, one
 //! top-level module named after the kernel (`pipeline`), building on
 //! the core and never redefining it. Dialect types are reached through
 //! their module, not re-exported at the crate root: the path is the

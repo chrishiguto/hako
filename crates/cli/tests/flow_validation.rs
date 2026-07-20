@@ -49,6 +49,15 @@ fn invalid_flows_fail_with_the_parsers_error_text() {
             &["max_iteration", "max_iterations", "line"],
         ),
         ("misspelled-kernel.toml", &["pypeline", "pipeline"]),
+        (
+            "unknown-slot.toml",
+            &[
+                "unknown prompt slot",
+                "plann",
+                "kernel `pipeline`",
+                "`plan`",
+            ],
+        ),
         ("out-of-range.toml", &["max_iterations", "u32"]),
         ("nonfinite.toml", &["max_tokens", "inf"]),
         ("datetime.toml", &["repo", "string"]),

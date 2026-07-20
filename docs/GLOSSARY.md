@@ -12,7 +12,7 @@ A named loop pattern implemented inside the engine, owning all control flow (ite
 _Avoid_: workflow engine, orchestrator
 
 **Kernel Dialect**:
-The vocabulary one kernel adds to the published language — its report shapes and, later, its prompt slots — building on the shared core (status, questions, answers) and never redefining it. Every kernel ships with its dialect; the shared core alone runs no loop.
+The vocabulary one kernel adds to the published language — its report shapes and its prompt slots — building on the shared core (status, questions, answers) and never redefining it. Every kernel ships with its dialect; the shared core alone runs no loop.
 _Avoid_: kernel types, kernel schema
 
 **Pipeline** (v1, specced):
@@ -59,6 +59,10 @@ The engine's knowledge of how to drive one agent: headless invocation, token-usa
 **Domain Prompt**:
 A user-authored prompt carrying the objective and the domain rules, never loop mechanics. Which prompt files a kernel reads, and when, is kernel policy.
 _Avoid_: system prompt
+
+**Prompt Slot**:
+A named point where a kernel accepts a domain prompt — part of the kernel's dialect. A flow's `[prompts]` table maps slot name → workspace-relative file; naming a slot the selected kernel doesn't publish fails validation, and an absent slot falls back to the kernel-shipped default prompt.
+_Avoid_: prompt key, prompt variable
 
 **Preamble**:
 The frame a kernel composes around its prompts: feedback, human answers, and the report contract. The engine supplies the shared pieces; which sections, in what order, is kernel policy.

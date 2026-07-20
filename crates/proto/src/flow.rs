@@ -12,6 +12,7 @@
 //! types (`json_schema` via `cargo xtask schema`, behind the `schema`
 //! feature) and drift-checked in CI.
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -23,11 +24,17 @@ use crate::secrets::SecretName;
 /// limits. Contains no logic — control flow belongs to the kernel —
 /// and no objective: that lives in the domain prompts the kernel
 /// reads.
+///
+/// The `stages` namespace is reserved for the future per-stage agent
+/// override (`[stages.<name>]`); nothing else may occupy it. Until it
+/// lands, a `stages` table is rejected like any other unknown key.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FlowConfig {
     pub r#loop: LoopConfig,
+    #[serde(default)]
+    pub prompts: PromptsConfig,
     pub agent: AgentConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
@@ -40,18 +47,52 @@ pub struct FlowConfig {
 }
 
 impl FlowConfig {
-    /// Strictly parses flow TOML; the error carries the offending
-    /// line and key.
+    /// Strictly parses flow TOML, then checks the one rule serde
+    /// cannot see: `[prompts]` keys against the slots the selected
+    /// kernel publishes — no single table knows both. Parse errors
+    /// carry the offending line and key; the slot check names the
+    /// slot, the kernel, and the legal set.
     pub fn from_toml(source: &str) -> Result<Self, FlowError> {
-        Ok(toml::from_str(source)?)
+        let flow: Self = toml::from_str(source)?;
+        let kernel = flow.r#loop.kernel;
+        let published = kernel.prompt_slots();
+        if let Some(slot) = flow.prompts.slots().find(|slot| !published.contains(slot)) {
+            return Err(FlowError::UnknownPromptSlot {
+                slot: slot.to_string(),
+                kernel,
+            });
+        }
+        Ok(flow)
     }
 }
 
-/// A flow that failed strict parsing. Displays the TOML error
-/// verbatim — it already points at the offending line and key.
+/// A flow that failed validation.
 #[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct FlowError(#[from] toml::de::Error);
+pub enum FlowError {
+    /// Strict parsing failed. Displays the TOML error verbatim — it
+    /// already points at the offending line and key.
+    #[error(transparent)]
+    Toml(#[from] toml::de::Error),
+    /// A `[prompts]` key named a slot the selected kernel does not
+    /// publish.
+    #[error(
+        "unknown prompt slot `{slot}` for kernel `{}`: this kernel's slots are {}",
+        kernel.as_str(),
+        published_slots(*kernel)
+    )]
+    UnknownPromptSlot { slot: String, kernel: KernelName },
+}
+
+/// The kernel's published slots spelled for an error message —
+/// backticked, comma-separated.
+fn published_slots(kernel: KernelName) -> String {
+    let slots: Vec<String> = kernel
+        .prompt_slots()
+        .iter()
+        .map(|slot| format!("`{slot}`"))
+        .collect();
+    slots.join(", ")
+}
 
 /// Which kernel runs the loop.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -77,12 +118,57 @@ pub enum KernelName {
 }
 
 impl KernelName {
+    /// Every kernel, for the consumers that sweep the set — today the
+    /// prompts schema's slot union. Like [`crate::pipeline::Stage::ALL`],
+    /// the one enumeration the compiler cannot check: the ordinal test
+    /// below catches an insertion that forgets it; a forgotten append
+    /// rests on review.
+    pub const ALL: [Self; 1] = [Self::Pipeline];
+
     /// The wire string flows select the kernel by — the same string
     /// serde reads, spelled once for error messages and run metadata.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pipeline => "pipeline",
         }
+    }
+
+    /// The prompt slots the selected kernel publishes — the legal
+    /// `[prompts]` keys. Slot vocabulary is dialect (ADR 0010): the
+    /// names live in the kernel's own module; only this dispatch is
+    /// core.
+    pub fn prompt_slots(self) -> &'static [&'static str] {
+        match self {
+            Self::Pipeline => &crate::pipeline::PROMPT_SLOTS,
+        }
+    }
+}
+
+/// The one prose both [`PromptsConfig`]'s rustdoc and its schema
+/// description carry — schemars copies doc comments only for derived
+/// impls, and `#[doc]` cannot read a `const`, so a macro is what keeps
+/// the two from drifting.
+macro_rules! prompts_config_doc {
+    () => {
+        "Per-slot prompt overrides: slot name → workspace-relative prompt file. The legal slots are the ones the selected kernel publishes; every absent slot falls back to the kernel-shipped default prompt, so an empty or missing table is a complete flow."
+    };
+}
+
+#[doc = prompts_config_doc!()]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(transparent)]
+pub struct PromptsConfig(BTreeMap<String, String>);
+
+impl PromptsConfig {
+    /// The prompt file overriding `slot` — workspace-relative — if the
+    /// flow names one.
+    pub fn get(&self, slot: &str) -> Option<&str> {
+        self.0.get(slot).map(String::as_str)
+    }
+
+    /// Every slot the flow overrides, in sorted order.
+    pub fn slots(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 }
 
@@ -304,7 +390,10 @@ mod schema {
 
     use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-    use super::{DURATION_MAX_DIGITS, DURATION_UNITS, FlowConfig, FlowDuration, duration_grammar};
+    use super::{
+        DURATION_MAX_DIGITS, DURATION_UNITS, FlowConfig, FlowDuration, KernelName, PromptsConfig,
+        duration_grammar,
+    };
 
     /// Must accept exactly what [`FlowDuration::from_str`] accepts —
     /// the schema is a non-Rust consumer's only knowledge of the
@@ -320,6 +409,34 @@ mod schema {
     /// drift-checked in CI, and embedded by the CLI for `hako schema`.
     pub fn json_schema() -> Schema {
         crate::schema::root_schema_for::<FlowConfig>()
+    }
+
+    impl JsonSchema for PromptsConfig {
+        fn schema_name() -> Cow<'static, str> {
+            "PromptsConfig".into()
+        }
+
+        /// One optional string property per published slot, closed
+        /// like every other table — an unknown slot fails the schema
+        /// just as it fails [`FlowConfig::from_toml`]. One property
+        /// set serves all kernels, which is exact only while every
+        /// kernel publishes the same slots (one kernel today); the
+        /// agreement suite's exactness test fails the day a kernel
+        /// diverges, naming the needed split into per-kernel
+        /// conditionals.
+        fn json_schema(_: &mut SchemaGenerator) -> Schema {
+            let properties: serde_json::Map<String, serde_json::Value> = KernelName::ALL
+                .into_iter()
+                .flat_map(KernelName::prompt_slots)
+                .map(|slot| ((*slot).to_string(), serde_json::json!({"type": "string"})))
+                .collect();
+            json_schema!({
+                "type": "object",
+                "description": prompts_config_doc!(),
+                "properties": properties,
+                "additionalProperties": false,
+            })
+        }
     }
 
     impl JsonSchema for FlowDuration {
@@ -357,6 +474,9 @@ mod tests {
     fn representative_flow_parses() {
         let flow = FlowConfig::from_toml(REPRESENTATIVE_FLOW).unwrap();
         assert_eq!(flow.r#loop.kernel, KernelName::Pipeline);
+        assert_eq!(flow.prompts.get("plan"), Some("prompts/plan.md"));
+        assert_eq!(flow.prompts.get("review"), Some("prompts/review.md"));
+        assert_eq!(flow.prompts.get("implement"), None);
         assert_eq!(flow.agent.engine, "claude");
         assert_eq!(
             flow.budget,
@@ -397,6 +517,7 @@ mod tests {
     #[test]
     fn minimal_flow_leaves_optional_sections_default() {
         let flow = FlowConfig::from_toml(MINIMAL_FLOW).unwrap();
+        assert_eq!(flow.prompts, PromptsConfig::default());
         assert_eq!(flow.agent.command, None);
         assert_eq!(flow.budget, BudgetConfig::default());
         assert_eq!(flow.verify, VerifyConfig::default());
@@ -458,6 +579,67 @@ mod tests {
         let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
         assert!(err.contains("pypeline"), "{err}");
         assert!(err.contains("pipeline"), "{err}");
+    }
+
+    #[test]
+    fn every_published_slot_validates_for_its_kernel() {
+        for kernel in KernelName::ALL {
+            let overrides: String = kernel
+                .prompt_slots()
+                .iter()
+                .map(|slot| format!("{slot} = \"prompts/{slot}.md\"\n"))
+                .collect();
+            let flow = format!("{MINIMAL_FLOW}\n[prompts]\n{overrides}");
+            let flow = flow.replace(
+                "kernel = \"pipeline\"",
+                &format!("kernel = \"{}\"", kernel.as_str()),
+            );
+            let flow = FlowConfig::from_toml(&flow).unwrap();
+            for slot in kernel.prompt_slots() {
+                assert_eq!(
+                    flow.prompts.get(slot),
+                    Some(format!("prompts/{slot}.md").as_str()),
+                    "{slot}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_prompt_slot_is_rejected_naming_it_the_kernel_and_the_slots() {
+        let flow = format!("{MINIMAL_FLOW}\n[prompts]\nplann = \"prompts/plan.md\"\n");
+        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
+        assert!(err.contains("unknown prompt slot `plann`"), "{err}");
+        assert!(err.contains("kernel `pipeline`"), "{err}");
+        for slot in KernelName::Pipeline.prompt_slots() {
+            assert!(err.contains(&format!("`{slot}`")), "{slot}: {err}");
+        }
+    }
+
+    /// The reserved namespace for the future per-stage agent override:
+    /// nothing may occupy it until that feature lands, so today it
+    /// fails like any stray table.
+    #[test]
+    fn the_reserved_stages_namespace_is_rejected_as_unknown() {
+        let flow = format!("{MINIMAL_FLOW}\n[stages.review]\nagent = \"codex\"\n");
+        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
+        assert!(err.contains("stages"), "{err}");
+    }
+
+    /// Pins `ALL` the same way the stage-order test pins `Stage::ALL`:
+    /// the exhaustive match forces every variant to declare its
+    /// ordinal, so an insertion that forgets `ALL` fails here; a
+    /// forgotten append only review can catch.
+    #[test]
+    fn all_lists_every_kernel() {
+        fn ordinal(kernel: KernelName) -> usize {
+            match kernel {
+                KernelName::Pipeline => 0,
+            }
+        }
+        for (index, kernel) in KernelName::ALL.into_iter().enumerate() {
+            assert_eq!(ordinal(kernel), index, "{kernel:?}");
+        }
     }
 
     #[test]

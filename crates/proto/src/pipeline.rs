@@ -46,7 +46,8 @@ impl Stage {
 
     /// The wire string naming the stage — the same string serde reads,
     /// spelled once for schema file names, events, and error messages.
-    pub fn as_str(self) -> &'static str {
+    /// Const so [`PROMPT_SLOTS`] can derive from it.
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
             Self::Implement => "implement",
@@ -56,6 +57,22 @@ impl Stage {
         }
     }
 }
+
+/// The prompt slots the pipeline kernel publishes — the legal
+/// `[prompts]` keys for a pipeline flow, one per stage, named by the
+/// stage's wire string and derived from it so the two can never
+/// disagree. An absent slot falls back to the kernel-shipped default
+/// prompt; flow validation dispatches here through
+/// [`crate::flow::KernelName::prompt_slots`].
+pub const PROMPT_SLOTS: [&str; Stage::ALL.len()] = {
+    let mut slots = [""; Stage::ALL.len()];
+    let mut index = 0;
+    while index < slots.len() {
+        slots[index] = Stage::ALL[index].as_str();
+        index += 1;
+    }
+    slots
+};
 
 /// What the plan stage leaves behind: the work unit this iteration
 /// drives and the intended route through it.
