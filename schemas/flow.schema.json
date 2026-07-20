@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FlowConfig",
-  "description": "A parsed flow: which kernel to run, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel —\nand no objective: that lives in the domain prompts the kernel\nreads.",
+  "description": "A parsed flow: which kernel to run, with which agent, under which\nlimits. Contains no logic — control flow belongs to the kernel —\nand no objective: that lives in the domain prompts the kernel\nreads.\n\nThe `stages` namespace is reserved for the future per-stage agent\noverride (`[stages.<name>]`); nothing else may occupy it. Until it\nlands, a `stages` table is rejected like any other unknown key.",
   "type": "object",
   "properties": {
     "agent": {
@@ -22,6 +22,9 @@
           "type": "null"
         }
       ]
+    },
+    "prompts": {
+      "$ref": "#/$defs/PromptsConfig"
     },
     "secrets": {
       "$ref": "#/$defs/SecretsConfig"
@@ -173,6 +176,28 @@
         },
         "then": {
           "$ref": "#/$defs/FailAction"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PromptsConfig": {
+      "description": "Per-slot prompt overrides: slot name → workspace-relative prompt file. The legal slots are the ones the selected kernel publishes; every absent slot falls back to the kernel-shipped default prompt, so an empty or missing table is a complete flow.",
+      "type": "object",
+      "properties": {
+        "deliver": {
+          "type": "string"
+        },
+        "implement": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "review": {
+          "type": "string"
+        },
+        "simplify": {
+          "type": "string"
         }
       },
       "additionalProperties": false

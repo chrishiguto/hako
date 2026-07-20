@@ -19,7 +19,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use proto::flow::{self, FlowConfig};
+use proto::flow::{self, FlowConfig, KernelName};
 
 /// The representative flow the corpus mutates; also driven verbatim by
 /// the CLI's validate tests.
@@ -103,6 +103,16 @@ fn schema_and_serde_agree_on_the_corpus() {
             ),
             false,
         ),
+        (
+            "a prompt slot the kernel does not publish",
+            &format!("{MINIMAL_FLOW}\n[prompts]\nplann = \"prompts/plan.md\"\n"),
+            false,
+        ),
+        (
+            "the reserved stages namespace",
+            &format!("{MINIMAL_FLOW}\n[stages.review]\nagent = \"codex\"\n"),
+            false,
+        ),
     ];
     for (name, flow, accepted) in corpus {
         assert_eq!(schema_accepts(flow), *accepted, "schema on: {name}");
@@ -127,6 +137,26 @@ fn every_object_in_the_schema_rejects_unknown_keys() {
 fn every_integer_format_in_the_schema_carries_bounds() {
     let found = common::assert_integer_formats_carry_bounds(&SCHEMA);
     assert!(found > 0, "the walk matched no integer formats");
+}
+
+/// The `prompts` schema lists one property set for all kernels, so it
+/// stays exact only while every kernel publishes the same slots —
+/// today's one-kernel set trivially does. The day a kernel diverges,
+/// this fails, and `PromptsConfig`'s manual `JsonSchema` impl must
+/// split `[prompts]` into per-kernel conditionals.
+#[test]
+fn the_prompts_schema_is_exact_for_every_kernel() {
+    let schema: &serde_json::Value = &SCHEMA;
+    let properties: BTreeSet<&str> = schema["$defs"]["PromptsConfig"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for kernel in KernelName::ALL {
+        let published: BTreeSet<&str> = kernel.prompt_slots().iter().copied().collect();
+        assert_eq!(properties, published, "{}", kernel.as_str());
+    }
 }
 
 /// The representative example documents every flow section, so the

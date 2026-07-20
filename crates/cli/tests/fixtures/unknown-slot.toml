@@ -1,0 +1,13 @@
+# The pipeline kernel publishes no slot named `plann`.
+
+[loop]
+kernel = "pipeline"
+
+[agent]
+engine = "claude"
+
+[workspace]
+repo = "."
+
+[prompts]
+plann = "prompts/plan.md"

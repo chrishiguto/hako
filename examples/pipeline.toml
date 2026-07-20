@@ -5,6 +5,10 @@
 [loop]
 kernel = "pipeline"
 
+[prompts]
+plan = "prompts/plan.md"
+review = "prompts/review.md"
+
 [agent]
 engine = "claude"
 
