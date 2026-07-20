@@ -11,6 +11,10 @@ The library that executes kernels. Hosted by the daemon in production; embeddabl
 A named loop pattern implemented inside the engine, owning all control flow (iterate, verify, retry, stop). A new loop shape is a new kernel in Rust, never logic in a flow.
 _Avoid_: workflow engine, orchestrator
 
+**Kernel Dialect**:
+The vocabulary one kernel adds to the published language — its report shapes and, later, its prompt slots — building on the shared core (status, questions, answers) and never redefining it. Every kernel ships with its dialect; the shared core alone runs no loop.
+_Avoid_: kernel types, kernel schema
+
 **Pipeline** (v1, specced):
 The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize each stage's prompt; stages communicate only through schema-validated stage reports.
 
@@ -60,15 +64,15 @@ _Avoid_: system prompt
 The frame a kernel composes around its prompts: feedback, human answers, and the report contract. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
 
 **Report**:
-The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the shapes are kernel-owned, the status vocabulary shared.
+The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core.
 _Avoid_: progress report, outputs, output extraction
 
 **Skeptic Iteration**:
-A fresh agent invocation prompted to refute a done claim from any stage (see Verified Done).
+A fresh agent invocation prompted to refute a done claim (see Verified Done).
 _Avoid_: review pass
 
 **Verified Done**:
-Completion as the engine defines it: a stage claims done, verify checks pass, and a skeptic iteration cannot refute the claim.
+Completion as the engine defines it: the loop claims done, verify checks pass, and a skeptic iteration cannot refute the claim. Engine mechanism, whatever kernel is running.
 
 ## Control
 

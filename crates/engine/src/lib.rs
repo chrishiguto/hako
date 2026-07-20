@@ -35,10 +35,7 @@ pub use event::{
 };
 pub use kernel::{Kernel, KernelConfigError, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
-pub use report::{
-    Answer, DeliverReport, ImplementReport, PlanReport, Question, ReportStatus, ReviewReport,
-    SimplifyReport, Stage, StageReport,
-};
+pub use report::{Answer, Question, ReportStatus};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,

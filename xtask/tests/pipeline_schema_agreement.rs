@@ -1,16 +1,16 @@
-//! Pins the generated stage-report schemas — the contract each
-//! stage's preamble quotes to its agent — to the strict serde parse
-//! the kernel runs on what comes back. A report one accepts and the
-//! other rejects would send the repair loop chasing a contract the
-//! parser contradicts. These tests live with the generator: xtask is
-//! the one crate that always enables proto's `schema` feature, so
-//! they run on every `cargo test --workspace`.
+//! Pins the pipeline dialect's generated stage-report schemas — the
+//! contract each stage's preamble quotes to its agent — to the strict
+//! serde parse the kernel runs on what comes back. A report one
+//! accepts and the other rejects would send the repair loop chasing a
+//! contract the parser contradicts. These tests live with the
+//! generator: xtask is the one crate that always enables proto's
+//! `schema` feature, so they run on every `cargo test --workspace`.
 
 mod common;
 
 use std::sync::LazyLock;
 
-use proto::report::{Stage, StageReport, stage_schema};
+use proto::pipeline::{Stage, StageReport, stage_schema};
 use serde_json::json;
 
 /// Generated once for the whole binary: every test reads the same

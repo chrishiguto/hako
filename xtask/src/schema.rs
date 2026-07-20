@@ -23,10 +23,15 @@ fn artifacts() -> anyhow::Result<Vec<(String, String)>> {
         format!("{SCHEMAS_DIR}/flow.schema.json"),
         render(&proto::flow::json_schema())?,
     )];
-    for stage in proto::report::Stage::ALL {
+    // Dialect artifacts sit under a directory named after their
+    // kernel, mirroring proto's module layout (ADR 0010).
+    for stage in proto::pipeline::Stage::ALL {
         artifacts.push((
-            format!("{SCHEMAS_DIR}/report/{}.schema.json", stage.as_str()),
-            render(&proto::report::stage_schema(stage))?,
+            format!(
+                "{SCHEMAS_DIR}/report/pipeline/{}.schema.json",
+                stage.as_str()
+            ),
+            render(&proto::pipeline::stage_schema(stage))?,
         ));
     }
     Ok(artifacts)

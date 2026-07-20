@@ -1,7 +1,7 @@
 //! The generator every committed schema shares, behind the `schema`
 //! feature so product crates never carry schemars. Each artifact's
 //! module owns its root function — [`crate::flow::json_schema`], the
-//! per-stage [`crate::report::stage_schema`] — but all of them must
+//! per-stage [`crate::pipeline::stage_schema`] — but all of them must
 //! generate through here, so every artifact carries the same
 //! corrections.
 
