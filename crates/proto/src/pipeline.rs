@@ -3,8 +3,7 @@
 //! writes. Dialects build on the shared report vocabulary in
 //! [`crate::report`] — the uniform status, questions, answers — and
 //! never redefine it; one module per kernel, so the line between core
-//! language and kernel dialect stays visible in the crate tree
-//! (ADR 0010).
+//! language and kernel dialect stays visible in the crate tree.
 //!
 //! The shapes mirror the flow format's pattern: Rust types as the
 //! source of truth, generated JSON Schemas (committed under

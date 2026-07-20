@@ -3,7 +3,7 @@
 //! report vocabulary kernels share, and the flow file format. JSON via
 //! serde, not protobuf, despite the crate name's lineage.
 //!
-//! The language has two layers (ADR 0010). The core modules — `run`,
+//! The language has two layers. The core modules — `run`,
 //! `event`, `flow`, `report`, `budget`, `secrets` — are shared
 //! vocabulary every kernel speaks. Each kernel's own additions — its
 //! report shapes, later its prompt slots — form a *dialect*, one

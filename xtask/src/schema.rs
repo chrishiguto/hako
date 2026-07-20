@@ -24,7 +24,7 @@ fn artifacts() -> anyhow::Result<Vec<(String, String)>> {
         render(&proto::flow::json_schema())?,
     )];
     // Dialect artifacts sit under a directory named after their
-    // kernel, mirroring proto's module layout (ADR 0010).
+    // kernel, mirroring proto's module layout.
     for stage in proto::pipeline::Stage::ALL {
         artifacts.push((
             format!(

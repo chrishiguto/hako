@@ -4,7 +4,7 @@
 //! human sends back are uniform across kernels, so HITL behaves the
 //! same whatever loop is running. Each kernel's own report shapes
 //! build on this vocabulary in its dialect module — the pipeline's in
-//! [`crate::pipeline`] — never redefining it (ADR 0010).
+//! [`crate::pipeline`] — never redefining it.
 //!
 //! The whole vocabulary deserializes strictly — questions and answers
 //! included, wherever they travel. The agent boundary demands it (a
