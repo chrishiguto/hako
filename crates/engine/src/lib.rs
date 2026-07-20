@@ -15,7 +15,7 @@ pub mod invocation;
 pub mod kernel;
 pub mod notify;
 pub mod preamble;
-pub mod progress;
+pub mod report;
 pub mod run;
 pub mod sandbox;
 pub mod secrets;
@@ -35,7 +35,7 @@ pub use event::{
 };
 pub use kernel::{Kernel, KernelConfigError, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
-pub use progress::{Answer, ProgressStatus, Question};
+pub use report::{Answer, Question, ReportStatus};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,

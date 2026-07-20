@@ -19,6 +19,6 @@ pub use openapi::document;
 /// flat re-exports below stays nameable without a direct `proto` dep.
 pub use proto;
 pub use proto::{
-    Answer, BudgetKind, EventEnvelope, IterationOutcome, OutputStream, PauseReason, ProgressStatus,
-    Question, RunEvent, RunState, TokenUsage,
+    Answer, BudgetKind, EventEnvelope, IterationOutcome, OutputStream, PauseReason, Question,
+    ReportStatus, RunEvent, RunState, TokenUsage,
 };

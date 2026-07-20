@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum ProgressStatus {
+pub enum ReportStatus {
     Continue,
     Done,
     Blocked,
@@ -50,10 +50,10 @@ mod tests {
     #[test]
     fn every_status_matches_its_wire_string() {
         let statuses = [
-            (ProgressStatus::Continue, "continue"),
-            (ProgressStatus::Done, "done"),
-            (ProgressStatus::Blocked, "blocked"),
-            (ProgressStatus::NeedsInput, "needs_input"),
+            (ReportStatus::Continue, "continue"),
+            (ReportStatus::Done, "done"),
+            (ReportStatus::Blocked, "blocked"),
+            (ReportStatus::NeedsInput, "needs_input"),
         ];
         for (status, wire) in statuses {
             assert_eq!(serde_json::to_value(status).unwrap(), json!(wire));

@@ -15,13 +15,13 @@
 pub mod budget;
 pub mod event;
 pub mod flow;
-pub mod progress;
+pub mod report;
 pub mod run;
 pub mod secrets;
 
 pub use budget::{BudgetKind, TokenUsage};
 pub use event::{EventEnvelope, IterationOutcome, OutputStream, RunEvent};
 pub use flow::{FlowConfig, FlowError};
-pub use progress::{Answer, ProgressStatus, Question};
+pub use report::{Answer, Question, ReportStatus};
 pub use run::{PauseReason, RunState};
 pub use secrets::SecretName;

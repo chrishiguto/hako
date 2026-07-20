@@ -301,7 +301,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            get_args("hako-1", Path::new("/workspace/.hako/progress.json")),
+            get_args("hako-1", Path::new("/workspace/.hako/report.json")),
             [
                 "machine",
                 "exec",
@@ -309,7 +309,7 @@ mod tests {
                 "hako-1",
                 "--",
                 "cat",
-                "/workspace/.hako/progress.json",
+                "/workspace/.hako/report.json",
             ]
         );
     }

@@ -57,7 +57,7 @@ pub enum RunEvent {
     },
     /// The agent's report failed schema validation; the errors are
     /// what the repair re-prompt carries back.
-    ProgressRejected {
+    ReportRejected {
         iteration: u32,
         errors: Vec<String>,
     },

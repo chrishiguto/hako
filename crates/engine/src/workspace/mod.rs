@@ -4,7 +4,7 @@
 //! Preparing one (clone vs mount) is [`prepare`]'s concern; a kernel
 //! receives it ready.
 //!
-//! Scratch under [`PROGRESS_FILE`] is the exception: it is produced
+//! Scratch under [`REPORT_FILE`] is the exception: it is produced
 //! inside the sandbox and read back through the sandbox seam, never
 //! from here — kernels must keep working even where the guest's view
 //! and the host's diverge.
@@ -26,21 +26,21 @@ pub use prepare::prepare;
 const GUEST_ROOT: &str = "/workspace";
 
 /// The engine's scratch directory inside the workspace — the agent
-/// drops its progress report here, so checkpoints must never commit
-/// it: scratch is conversation, not the loop's work.
+/// drops its report here, so checkpoints must never commit it:
+/// scratch is conversation, not the loop's work.
 const SCRATCH_DIR: &str = ".hako";
 
 /// Where the agent must write its report, relative to the workspace
 /// root. Part of the published agent contract — the repair re-prompt
 /// quotes it verbatim, and it is the path the invocation executor
 /// fetches.
-pub const PROGRESS_FILE: &str = ".hako/progress.json";
+pub const REPORT_FILE: &str = ".hako/report.json";
 
 /// A prepared workspace: a git repository the run owns. All host-side
 /// effects — checkpointing — go through here. Which prompt files a
 /// kernel reads, and when, is kernel policy, not workspace API; the
 /// one path the workspace fixes is the scratch contract,
-/// [`PROGRESS_FILE`].
+/// [`REPORT_FILE`].
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
@@ -68,11 +68,11 @@ impl Workspace {
         }
     }
 
-    /// Where the progress report lands inside the sandbox — the path a
-    /// kernel hands the sandbox seam, because scratch is read through
-    /// the guest's view, never the host's.
-    pub fn guest_progress_path(&self) -> PathBuf {
-        Path::new(GUEST_ROOT).join(PROGRESS_FILE)
+    /// Where the report lands inside the sandbox — the path a kernel
+    /// hands the sandbox seam, because scratch is read through the
+    /// guest's view, never the host's.
+    pub fn guest_report_path(&self) -> PathBuf {
+        Path::new(GUEST_ROOT).join(REPORT_FILE)
     }
 
     /// Commits everything the iteration changed and returns the commit
@@ -229,8 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn the_progress_file_lives_in_the_scratch_dir() {
-        assert!(Path::new(PROGRESS_FILE).starts_with(SCRATCH_DIR));
+    fn the_report_file_lives_in_the_scratch_dir() {
+        assert!(Path::new(REPORT_FILE).starts_with(SCRATCH_DIR));
     }
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
         let (dir, workspace) = seeded_repo();
         let scratch = dir.path().join(SCRATCH_DIR);
         std::fs::create_dir(&scratch).unwrap();
-        std::fs::write(scratch.join("progress.json"), "{}").unwrap();
+        std::fs::write(scratch.join("report.json"), "{}").unwrap();
 
         assert_eq!(
             workspace.checkpoint("hako: iteration 1").await.unwrap(),

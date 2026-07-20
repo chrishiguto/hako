@@ -97,7 +97,7 @@ pub async fn invoke(
         return Ok(InvocationEnd::Crashed);
     }
 
-    let report_path = ctx.workspace.guest_progress_path();
+    let report_path = ctx.workspace.guest_report_path();
     match ctx.sandbox.get_file(sandbox, &report_path).await {
         Ok(raw) => Ok(InvocationEnd::Reported(raw)),
         Err(error) => Ok(InvocationEnd::MissingReport(format!(

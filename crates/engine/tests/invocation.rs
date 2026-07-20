@@ -195,7 +195,7 @@ fn seed_report(ctx: &KernelContext, sandbox: &FakeSandbox, raw: &[u8]) {
         .files
         .lock()
         .unwrap()
-        .insert(ctx.workspace.guest_progress_path(), raw.to_vec());
+        .insert(ctx.workspace.guest_report_path(), raw.to_vec());
 }
 
 #[tokio::test]

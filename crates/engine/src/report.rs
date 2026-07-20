@@ -3,4 +3,4 @@
 //! the same whatever loop is running; the report *shapes* an agent
 //! writes are each kernel's own.
 
-pub use proto::progress::{Answer, ProgressStatus, Question};
+pub use proto::report::{Answer, Question, ReportStatus};

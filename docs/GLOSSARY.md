@@ -26,7 +26,7 @@ One execution of a flow by the daemon, from submission to a terminal state (done
 _Avoid_: job, session
 
 **Iteration**:
-The unit of work within a run: one fresh sandbox, one fresh-context agent invocation, verification, a checkpoint, and a progress report.
+The unit of work within a run: one fresh sandbox, one fresh-context agent invocation, verification, a checkpoint, and a report.
 _Avoid_: step, turn, cycle
 
 ## Isolation & state
@@ -59,9 +59,9 @@ _Avoid_: system prompt
 **Preamble**:
 The frame a kernel composes around its prompts: feedback, human answers, and the report contract. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
 
-**Progress Report**:
-The schema-validated report an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the shapes are kernel-owned, the status vocabulary shared.
-_Avoid_: outputs, output extraction
+**Report**:
+The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the shapes are kernel-owned, the status vocabulary shared.
+_Avoid_: progress report, outputs, output extraction
 
 **Skeptic Iteration**:
 A fresh agent invocation prompted to refute a done claim from any stage (see Verified Done).

@@ -8,8 +8,8 @@
 
 use std::fmt::Write;
 
-use crate::progress::{Answer, Question};
-use crate::workspace::PROGRESS_FILE;
+use crate::report::{Answer, Question};
+use crate::workspace::REPORT_FILE;
 
 /// Why the previous work did not count as progress — machine feedback
 /// a kernel puts in front of the agent so it corrects the cause
@@ -106,7 +106,7 @@ pub fn repair(errors: &[String], shape: &str) -> String {
     }
     let _ = write!(
         text,
-        "\nWrite a corrected `{PROGRESS_FILE}` in the workspace and do \
+        "\nWrite a corrected `{REPORT_FILE}` in the workspace and do \
          nothing else:\n\n\
          ```json\n{shape}\n```\n",
     );
@@ -204,7 +204,7 @@ mod tests {
         );
         assert!(text.contains("- missing field `summary`\n"), "{text}");
         assert!(text.contains("- not UTF-8\n"), "{text}");
-        assert!(text.contains(&format!("`{PROGRESS_FILE}`")), "{text}");
+        assert!(text.contains(&format!("`{REPORT_FILE}`")), "{text}");
         assert!(
             text.contains("```json\n{ \"status\": \"...\" }\n```"),
             "{text}"

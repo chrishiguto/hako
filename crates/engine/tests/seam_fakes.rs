@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
-    PauseReason, ProgressStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError,
+    PauseReason, ReportStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError,
     SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage,
     VerifyConfig, Workspace,
 };
@@ -237,16 +237,16 @@ impl Kernel for OneIterationKernel {
         // reports themselves; only the status vocabulary is shared.
         let raw = ctx
             .sandbox
-            .get_file(&vm, &ctx.workspace.guest_progress_path())
+            .get_file(&vm, &ctx.workspace.guest_report_path())
             .await?;
         let report: serde_json::Value =
             serde_json::from_slice(&raw).expect("the test seeds a valid report");
-        let status: ProgressStatus = serde_json::from_value(report["status"].clone())
+        let status: ReportStatus = serde_json::from_value(report["status"].clone())
             .expect("the test's report carries a status");
 
         ctx.sandbox.destroy(vm).await?;
 
-        if status != ProgressStatus::NeedsInput {
+        if status != ReportStatus::NeedsInput {
             ctx.events
                 .emit(RunEvent::StateChanged {
                     state: RunState::Done,
@@ -279,10 +279,10 @@ impl Kernel for OneIterationKernel {
 async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
     let sandbox = Arc::new(FakeSandbox::default());
     let workspace = Workspace::at("/var/lib/hako/runs/r1/workspace");
-    // The progress file the agent "wrote", seeded up front because the
+    // The report file the agent "wrote", seeded up front because the
     // scripted exec transcript never touches the file store.
     sandbox.files.lock().unwrap().insert(
-        workspace.guest_progress_path(),
+        workspace.guest_report_path(),
         br#"{
             "status": "needs_input",
             "summary": "need a decision before the schema can land",

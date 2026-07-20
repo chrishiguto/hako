@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use proto::progress::{Answer, Question};
+use proto::report::{Answer, Question};
 use proto::run::RunState;
 
 /// Submit a flow for execution as a new run.
@@ -52,7 +52,7 @@ pub struct RunStatusResponse {
     #[serde(flatten)]
     pub run: RunSummary,
     pub iterations_completed: u32,
-    /// The agent's most recent progress summary.
+    /// The summary from the agent's most recent report.
     pub last_summary: Option<String>,
     /// Open questions when paused `awaiting_human`; empty otherwise.
     #[serde(default)]
