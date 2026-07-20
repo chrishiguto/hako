@@ -9,10 +9,10 @@ A Rust workspace, toolchain pinned in `rust-toolchain.toml`. `just` is the singl
 - `just fmt` — format everything
 - `just check` — fmt-check, typos, cargo-deny, dependency rules, schema drift, clippy (warnings denied)
 - `just test` — the workspace test suite
-- `just schema` — regenerate `schemas/flow.schema.json` after changing proto's flow types
+- `just schema` — regenerate the `schemas/` artifacts after changing proto's flow or report types
 - `just setup` — one-time install of cargo-deny and typos (rustup + just assumed)
 
-Automation that outgrows a shell one-liner lives in the `xtask` crate, invoked as `cargo xtask <task>` (today: `deps`, the workspace dependency-rule check, and `schema`, the flow-schema generator and drift check). xtask is a dev tool, not a product crate — exempt from the dependency rules it enforces.
+Automation that outgrows a shell one-liner lives in the `xtask` crate, invoked as `cargo xtask <task>` (today: `deps`, the workspace dependency-rule check, and `schema`, the schema generator and drift check). xtask is a dev tool, not a product crate — exempt from the dependency rules it enforces.
 
 Product crates live in `crates/`: `proto` (the published language — wire types and the flow file format both sides speak), `engine`, `sandbox`, `api`, `server` (binary `hakod`), `cli` (binary `hako`). Three hard rules (ADRs 0006, 0008, and 0009, enforced by `cargo xtask deps` in `just check`): `engine` never depends on `server` or `api`; `cli` depends on `api` and `proto` only; `proto` depends on no workspace crate.
 

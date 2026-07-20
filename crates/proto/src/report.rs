@@ -1,8 +1,17 @@
-//! The report vocabulary every kernel shares. A kernel owns its
-//! report *shapes* — what an agent writes to end an invocation — but
-//! the status semantics, the questions a paused run asks, and the
-//! answers a human sends back are uniform across kernels, so HITL
-//! behaves the same whatever loop is running.
+//! The shared report vocabulary — the only structured channel from
+//! agent to engine, written to end every invocation. The status
+//! semantics, the questions a paused run asks, and the answers a
+//! human sends back are uniform across kernels, so HITL behaves the
+//! same whatever loop is running. Each kernel's own report shapes
+//! build on this vocabulary in its dialect module — the pipeline's in
+//! [`crate::pipeline`] — never redefining it.
+//!
+//! The whole vocabulary deserializes strictly — questions and answers
+//! included, wherever they travel. The agent boundary demands it (a
+//! mistyped key must fail the report and feed the repair re-prompt,
+//! and the schemas must promise exactly what serde enforces), and
+//! both ends of the wire ship from this workspace in lockstep, so
+//! leniency would only let a contract drift land silently.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +20,7 @@ use serde::{Deserialize, Serialize};
 /// and a skeptic iteration fails to refute it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
     Continue,
@@ -22,6 +32,8 @@ pub enum ReportStatus {
 /// A question the agent needs a human to answer before it can proceed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Question {
     /// The handle an answer is addressed to (`hako answer <run> <id>`).
     pub id: String,
@@ -35,6 +47,7 @@ pub struct Question {
 /// the question's id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Answer {
     /// Matches a [`Question::id`] from the run's last report.
     pub question_id: String,

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanReport",
+  "description": "What the plan stage leaves behind: the work unit this iteration\ndrives and the intended route through it.",
+  "type": "object",
+  "properties": {
+    "blockers": {
+      "description": "What prevents progress, one entry per blocker; expected when\nthe status is `blocked`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "questions": {
+      "description": "Questions only a human can answer; expected when the status is\n`needs_input`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/ReportStatus"
+    },
+    "steps": {
+      "description": "The intended steps in order; the implement stage follows them.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "description": "The plan in the agent's words: what this iteration will change\nand why.",
+      "type": "string"
+    },
+    "work_unit": {
+      "description": "The work unit this iteration drives, named so a human can trace\nit to its source — a ticket handle, a one-line description.\nAbsent when no unit could be selected.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "$defs": {
+    "Question": {
+      "description": "A question the agent needs a human to answer before it can proceed.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The handle an answer is addressed to (`hako answer <run> <id>`).",
+          "type": "string"
+        },
+        "options": {
+          "description": "Suggested answers; free-text is always allowed.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "ReportStatus": {
+      "description": "The agent's claim about where the loop stands. `done` is a claim,\nnot a verdict — the engine accepts it only after verify checks pass\nand a skeptic iteration fails to refute it.",
+      "type": "string",
+      "enum": [
+        "continue",
+        "done",
+        "blocked",
+        "needs_input"
+      ]
+    }
+  }
+}

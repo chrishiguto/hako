@@ -20,7 +20,9 @@ fn main() -> anyhow::Result<()> {
             eprintln!();
             eprintln!("tasks:");
             eprintln!("  deps              check the workspace dependency rules (ADR 0006)");
-            eprintln!("  schema [--check]  regenerate schemas/flow.schema.json (or fail on drift)");
+            eprintln!(
+                "  schema [--check]  sync the committed schemas/ artifacts (or fail on drift)"
+            );
             process::exit(2);
         }
     }
