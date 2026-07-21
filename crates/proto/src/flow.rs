@@ -615,6 +615,16 @@ mod tests {
         }
     }
 
+    /// The report dialect is allowed to lead executable control flow,
+    /// but configuration must not pretend the deferred stage runs.
+    #[test]
+    fn the_deliver_prompt_is_rejected_until_the_stage_is_executable() {
+        let flow = format!("{MINIMAL_FLOW}\n[prompts]\ndeliver = \"prompts/deliver.md\"\n");
+        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
+        assert!(err.contains("unknown prompt slot `deliver`"), "{err}");
+        assert!(!KernelName::Pipeline.prompt_slots().contains(&"deliver"));
+    }
+
     /// The reserved namespace for the future per-stage agent override:
     /// nothing may occupy it until that feature lands, so today it
     /// fails like any stray table.

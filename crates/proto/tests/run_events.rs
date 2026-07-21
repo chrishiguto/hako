@@ -21,6 +21,8 @@ fn variant_tripwire(event: &RunEvent) {
         | RunEvent::StateChanged { .. }
         | RunEvent::IterationStarted { .. }
         | RunEvent::IterationFinished { .. }
+        | RunEvent::StageStarted { .. }
+        | RunEvent::StageReported { .. }
         | RunEvent::AgentOutput { .. }
         | RunEvent::VerifyCheckFinished { .. }
         | RunEvent::WorkspaceCheckpointed { .. }
@@ -72,6 +74,8 @@ fn the_fixture_covers_every_event_variant() {
         "state_changed",
         "iteration_started",
         "iteration_finished",
+        "stage_started",
+        "stage_reported",
         "agent_output",
         "verify_check_finished",
         "workspace_checkpointed",

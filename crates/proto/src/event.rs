@@ -30,6 +30,24 @@ pub enum RunEvent {
         iteration: u32,
         outcome: IterationOutcome,
     },
+    /// A staged kernel began one stage's agent invocation. `stage`
+    /// crosses the wire as its dialect string (`plan`, `implement`, …),
+    /// so this shared event carries no kernel's typed vocabulary — the
+    /// enum stays free of any dialect (ADR 0010).
+    StageStarted {
+        iteration: u32,
+        stage: String,
+    },
+    /// A stage's schema-validated report. The kernel has already
+    /// strict-parsed `report` against the stage's `proto::pipeline`
+    /// type; it rides here as JSON so the shared event stays
+    /// dialect-free and a typed consumer can re-parse it by `stage`.
+    StageReported {
+        iteration: u32,
+        stage: String,
+        #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+        report: serde_json::Value,
+    },
     /// A chunk of the agent's live output, replayed verbatim to
     /// attached clients.
     AgentOutput {

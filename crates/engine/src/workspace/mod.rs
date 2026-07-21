@@ -11,7 +11,7 @@
 
 mod prepare;
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Output;
 use std::sync::Arc;
 
@@ -73,6 +73,23 @@ impl Workspace {
     /// guest's view, never the host's.
     pub fn guest_report_path(&self) -> PathBuf {
         Path::new(GUEST_ROOT).join(REPORT_FILE)
+    }
+
+    /// Resolves a workspace-relative path into the sandbox's guest view.
+    /// Agent-editable files are read through the sandbox seam so a
+    /// workspace symlink is followed inside the guest, never by the host.
+    pub fn guest_path(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
+        let path = Path::new(relative);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(WorkspaceError(format!(
+                "path escapes the workspace: {relative}"
+            )));
+        }
+        Ok(Path::new(GUEST_ROOT).join(path))
     }
 
     /// Commits everything the iteration changed and returns the commit
@@ -283,6 +300,27 @@ mod tests {
             workspace.checkpoint("hako: iteration 1").await.unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_workspace_relative_path_resolves_inside_the_guest() {
+        let workspace = Workspace::at("/srv/runs/r1/workspace");
+        assert_eq!(
+            workspace.guest_path("prompts/plan.md").unwrap(),
+            PathBuf::from("/workspace/prompts/plan.md")
+        );
+    }
+
+    #[test]
+    fn a_path_climbing_out_of_the_workspace_is_refused() {
+        let workspace = Workspace::at("/srv/runs/r1/workspace");
+        for escape in ["../secret", "prompts/../../secret", "/etc/passwd"] {
+            let error = workspace.guest_path(escape).unwrap_err();
+            assert!(
+                error.to_string().contains("escapes the workspace"),
+                "{escape}: {error}"
+            );
+        }
     }
 
     #[tokio::test]

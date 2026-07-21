@@ -9,11 +9,12 @@ use crate::agent::AgentAdapter;
 use crate::budget::Budgets;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
+use crate::pipeline::PipelineKernel;
 use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretsError, SecretsProvider};
 use crate::workspace::{Workspace, WorkspaceError};
-use proto::flow::{KernelName, VerifyConfig};
+use proto::flow::{KernelName, PromptsConfig, VerifyConfig};
 
 /// A loop pattern. Kernels own all control flow — iterate, verify,
 /// retry, stop — leaving flow files nothing to program. A kernel
@@ -28,21 +29,15 @@ pub trait Kernel: Send + Sync {
 }
 
 /// Builds the kernel a flow's `[loop]` table selects — the loop-side
-/// twin of [`crate::agents::resolve`], run at submit. A name may be
-/// declared in the flow language ahead of its kernel, so the language
-/// never has zero kernels; resolving such a name is where a submit
-/// learns the flow cannot run yet.
-pub fn resolve(name: KernelName) -> Result<Arc<dyn Kernel>, KernelConfigError> {
+/// twin of [`crate::agents::resolve`], run at submit. Infallible: the
+/// kernel set is closed and every name it admits has a kernel, so the
+/// exhaustive match cannot fall through. A future kernel declared in
+/// the flow language ahead of its implementation would reintroduce the
+/// fallible shape [`crate::agents::resolve`] carries for its open set.
+pub fn resolve(name: KernelName) -> Arc<dyn Kernel> {
     match name {
-        KernelName::Pipeline => Err(KernelConfigError::NotImplemented(name)),
+        KernelName::Pipeline => Arc::new(PipelineKernel),
     }
-}
-
-/// A `[loop]` table naming a kernel the engine cannot serve yet.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum KernelConfigError {
-    #[error("kernel `{}` is not implemented yet", .0.as_str())]
-    NotImplemented(KernelName),
 }
 
 /// Everything a kernel may touch. Collaborators are handed in here and
@@ -58,6 +53,12 @@ pub struct KernelContext {
     /// lowering, unlike [`Budgets`], because nothing here needs
     /// resolving.
     pub verify: VerifyConfig,
+    /// The flow's per-slot prompt overrides — slot name → workspace-
+    /// relative file. A staged kernel resolves each stage's prompt
+    /// through this, falling back to its kernel-shipped default when a
+    /// slot is absent. Lifted straight from the flow, like [`verify`]:
+    /// which slots are legal is the kernel's, checked at validation.
+    pub prompts: PromptsConfig,
     /// Prepared before the kernel starts; the kernel mounts it and
     /// checkpoints it.
     pub workspace: Workspace,
@@ -90,20 +91,13 @@ pub enum KernelError {
 mod tests {
     use super::*;
 
-    /// `pipeline` is declared ahead of its kernel so the flow language
-    /// never has zero kernels; submitting one must say so instead of
-    /// running.
+    /// Every name the flow language admits resolves to a live kernel —
+    /// the closed set has no gaps, so a submit never learns here that
+    /// its flow cannot run.
     #[test]
-    fn the_declared_but_unimplemented_kernel_resolves_to_a_refusal() {
-        let error = resolve(KernelName::Pipeline)
-            .err()
-            .expect("pipeline has no kernel yet");
-        assert_eq!(
-            error,
-            KernelConfigError::NotImplemented(KernelName::Pipeline)
-        );
-        let message = error.to_string();
-        assert!(message.contains("pipeline"), "{message}");
-        assert!(message.contains("not implemented"), "{message}");
+    fn every_kernel_name_resolves_to_a_live_kernel() {
+        for name in KernelName::ALL {
+            let _: Arc<dyn Kernel> = resolve(name);
+        }
     }
 }

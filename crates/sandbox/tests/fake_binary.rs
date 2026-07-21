@@ -176,12 +176,19 @@ async fn a_host_path_that_breaks_the_volume_mapping_is_refused() {
 }
 
 #[tokio::test]
-async fn relative_guest_paths_are_refused_for_put_and_get() {
+async fn relative_guest_paths_are_refused_for_file_operations() {
     let (_dir, adapter) = fake_adapter("exit 0");
     let vm = adapter.create(&spec()).await.unwrap();
 
     let error = adapter
         .put_file(&vm, Path::new("relative.txt"), b"x")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must be absolute"), "{error}");
+
+    let error = adapter
+        .remove_file(&vm, Path::new("relative.txt"))
         .await
         .unwrap_err()
         .to_string();
@@ -246,6 +253,31 @@ esac"#,
         .await
         .unwrap();
     assert_eq!(bytes, b"report\x00bytes");
+}
+
+#[tokio::test]
+async fn remove_file_runs_inside_the_guest() {
+    let dir = tempfile::tempdir().unwrap();
+    let captured = dir.path().join("removed");
+    let adapter = adapter_for(fake_smolvm(
+        dir.path(),
+        &format!(
+            r#"case "$2" in
+exec) printf '%s\n' "$@" > {};;
+*) exit 0;;
+esac"#,
+            captured.display()
+        ),
+    ));
+    let vm = adapter.create(&spec()).await.unwrap();
+
+    adapter
+        .remove_file(&vm, Path::new("/workspace/.hako/report.json"))
+        .await
+        .unwrap();
+
+    let args = std::fs::read_to_string(captured).unwrap();
+    assert!(args.contains("/workspace/.hako/report.json"), "{args}");
 }
 
 #[tokio::test]

@@ -15,8 +15,8 @@ use engine::verify::{self, VerifyOutcome};
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     KernelContext, KernelError, Notification, Notifier, NotifierError, OnFail, OutputStream,
-    RunEvent, RunId, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue,
-    SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    PromptsConfig, RunEvent, RunId, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName,
+    SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -37,6 +37,7 @@ struct FakeSandbox {
     script: Mutex<VecDeque<Transcript>>,
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     execs: Mutex<Vec<ExecSpec>>,
+    report_on_next_exec: Mutex<Option<(PathBuf, Vec<u8>)>>,
     created: AtomicU32,
     destroyed: AtomicU32,
 }
@@ -51,6 +52,10 @@ impl FakeSandbox {
 
     fn execs(&self) -> Vec<ExecSpec> {
         self.execs.lock().unwrap().clone()
+    }
+
+    fn write_report_on_next_exec(&self, path: PathBuf, raw: &[u8]) {
+        *self.report_on_next_exec.lock().unwrap() = Some((path, raw.to_vec()));
     }
 }
 
@@ -67,6 +72,9 @@ impl Sandbox for FakeSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
+        if let Some((path, raw)) = self.report_on_next_exec.lock().unwrap().take() {
+            self.files.lock().unwrap().insert(path, raw);
+        }
         let transcript = self
             .script
             .lock()
@@ -96,6 +104,11 @@ impl Sandbox for FakeSandbox {
             .get(path)
             .cloned()
             .ok_or_else(|| SandboxError(format!("no such file: {}", path.display())))
+    }
+
+    async fn remove_file(&self, _sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
+        self.files.lock().unwrap().remove(path);
+        Ok(())
     }
 
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
@@ -181,6 +194,7 @@ fn context(
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify,
+        prompts: PromptsConfig::default(),
         workspace: Workspace::at("/srv/runs/r1/workspace"),
         sandbox,
         agent: Arc::new(ScriptedAgent),
@@ -208,7 +222,8 @@ async fn an_invocation_streams_output_accounts_tokens_and_fetches_the_report() {
     ]]);
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
-    seed_report(&ctx, &sandbox, br#"{"status": "done"}"#);
+    let report_path = ctx.workspace.guest_report_path();
+    sandbox.write_report_on_next_exec(report_path, br#"{"status": "done"}"#);
     let handle = SandboxHandle::new("vm-0");
 
     let end = invocation::invoke(&ctx, 3, &handle, "do the work")
@@ -291,6 +306,26 @@ async fn a_missing_report_names_the_gap_for_the_repair_re_prompt() {
 
     let InvocationEnd::MissingReport(error) = end else {
         panic!("expected a missing report, got {end:?}");
+    };
+    assert!(error.contains("report missing"), "{error}");
+}
+
+#[tokio::test]
+async fn a_clean_invocation_cannot_reuse_a_previous_report() {
+    let sandbox = FakeSandbox::scripted(vec![exec("forgot the report\n", 0)]);
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
+    seed_report(
+        &ctx,
+        &sandbox,
+        br#"{"status":"continue","summary":"stale"}"#,
+    );
+    let handle = SandboxHandle::new("vm-0");
+
+    let end = invocation::invoke(&ctx, 1, &handle, "work").await.unwrap();
+
+    let InvocationEnd::MissingReport(error) = end else {
+        panic!("expected the stale report to be cleared, got {end:?}");
     };
     assert!(error.contains("report missing"), "{error}");
 }

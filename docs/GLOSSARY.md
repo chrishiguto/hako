@@ -16,7 +16,7 @@ The vocabulary one kernel adds to the published language — its report shapes a
 _Avoid_: kernel types, kernel schema
 
 **Pipeline** (v1, specced):
-The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize each stage's prompt; stages communicate only through schema-validated stage reports.
+The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize executable stages' prompts; stages communicate only through schema-validated stage reports. The current implementation executes the four core stages; optional delivery remains deferred to #29 and its prompt slot is not yet published.
 
 **Fanout** (post-v1):
 The dispatcher kernel: its plan stage decomposes ready work into independent units and spawns one child Pipeline run per unit — one child, one branch, one PR. Parallelism composes at the run level, never inside a run.
@@ -30,8 +30,12 @@ One execution of a flow by the daemon, from submission to a terminal state (done
 _Avoid_: job, session
 
 **Iteration**:
-The unit of work within a run: one fresh sandbox, one fresh-context agent invocation, verification, a checkpoint, and a report.
+One pass of a kernel's loop over its work. For the pipeline, one work unit driven through its stages — each stage its own fresh sandbox, fresh-context invocation, and report; the mutating stages verified and checkpointed.
 _Avoid_: step, turn, cycle
+
+**Stage**:
+One step of a staged kernel's iteration — for the pipeline today, plan, implement, review, or simplify; the optional deliver stage is reserved for #29. The kernel owns their order and gating in Rust; a flow customizes only executable stages' prompts. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
+_Avoid_: phase, step
 
 ## Isolation & state
 
@@ -57,19 +61,23 @@ _Avoid_: model, bot
 The engine's knowledge of how to drive one agent: headless invocation, token-usage reporting, required secrets.
 
 **Domain Prompt**:
-A user-authored prompt carrying the objective and the domain rules, never loop mechanics. Which prompt files a kernel reads, and when, is kernel policy.
+A user-authored prompt carrying the objective and the domain rules, never loop mechanics — what the report's status means and how the loop branches on it belong to the report contract, not here. Which prompt files a kernel reads, and when, is kernel policy.
 _Avoid_: system prompt
 
 **Prompt Slot**:
-A named point where a kernel accepts a domain prompt — part of the kernel's dialect. A flow's `[prompts]` table maps slot name → workspace-relative file; naming a slot the selected kernel doesn't publish fails validation, and an absent slot falls back to the kernel-shipped default prompt.
+A named point where a kernel accepts a domain prompt — part of the kernel's dialect. A flow's `[prompts]` table maps slot name → workspace-relative file; naming a slot the selected kernel doesn't publish fails validation, and an absent slot falls back to the kernel-shipped default prompt. A slot overrides a stage's domain rules only, never the report contract the kernel wraps around it.
 _Avoid_: prompt key, prompt variable
 
 **Preamble**:
-The frame a kernel composes around its prompts: feedback, human answers, and the report contract. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
+The frame a kernel composes around its prompts: feedback, human answers, and the report contract — the kernel-authored section that states the status semantics and quotes the report schema, wrapping the overridable domain prompt so an override cannot reach it. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
 
 **Report**:
-The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core.
+The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core. What each status means, and how the loop branches on it, is kernel-owned — stated in the report contract, never the domain prompt.
 _Avoid_: progress report, outputs, output extraction
+
+**Status**:
+The uniform verdict every report carries — continue, done, blocked, or needs_input — the shared core all kernels speak. What each means is kernel-owned, stated in the report contract: continue advances to the next stage, done claims the objective complete (a claim, gated by Verified Done), blocked and needs_input pause the run for a human. A domain prompt says which to report for its stage's work; it never redefines what they do.
+_Avoid_: state, result
 
 **Skeptic Iteration**:
 A fresh agent invocation prompted to refute a done claim (see Verified Done).

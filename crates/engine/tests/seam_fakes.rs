@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use engine::{
     AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
     Kernel, KernelContext, KernelError, Notification, Notifier, NotifierError, OutputStream,
-    PauseReason, ReportStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox, SandboxError,
-    SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError, SecretsProvider, TokenUsage,
-    VerifyConfig, Workspace,
+    PauseReason, PromptsConfig, ReportStatus, RunEvent, RunId, RunOutcome, RunState, Sandbox,
+    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
+    SecretsProvider, TokenUsage, VerifyConfig, Workspace,
 };
 use futures_util::{StreamExt, stream};
 
@@ -71,6 +71,11 @@ impl Sandbox for FakeSandbox {
             .get(path)
             .cloned()
             .ok_or_else(|| SandboxError(format!("no such file: {}", path.display())))
+    }
+
+    async fn remove_file(&self, _sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
+        self.files.lock().unwrap().remove(path);
+        Ok(())
     }
 
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
@@ -303,6 +308,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         verify: VerifyConfig::default(),
+        prompts: PromptsConfig::default(),
         workspace,
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent),

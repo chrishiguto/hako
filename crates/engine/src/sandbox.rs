@@ -38,6 +38,10 @@ pub trait Sandbox: Send + Sync {
     async fn get_file(&self, sandbox: &SandboxHandle, path: &Path)
     -> Result<Vec<u8>, SandboxError>;
 
+    /// Removes a file inside the sandbox. Missing files are accepted so
+    /// callers can establish a clean boundary without probing first.
+    async fn remove_file(&self, sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError>;
+
     /// Tears the sandbox down. Takes the handle by value: nothing can
     /// address a destroyed sandbox.
     async fn destroy(&self, sandbox: SandboxHandle) -> Result<(), SandboxError>;
