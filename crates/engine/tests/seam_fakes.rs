@@ -73,6 +73,11 @@ impl Sandbox for FakeSandbox {
             .ok_or_else(|| SandboxError(format!("no such file: {}", path.display())))
     }
 
+    async fn remove_file(&self, _sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
+        self.files.lock().unwrap().remove(path);
+        Ok(())
+    }
+
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
         self.destroyed.fetch_add(1, Ordering::SeqCst);
         Ok(())

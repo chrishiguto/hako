@@ -16,7 +16,7 @@ The vocabulary one kernel adds to the published language — its report shapes a
 _Avoid_: kernel types, kernel schema
 
 **Pipeline** (v1, specced):
-The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize each stage's prompt; stages communicate only through schema-validated stage reports.
+The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize executable stages' prompts; stages communicate only through schema-validated stage reports. The current implementation executes the four core stages; optional delivery remains deferred to #29 and its prompt slot is not yet published.
 
 **Fanout** (post-v1):
 The dispatcher kernel: its plan stage decomposes ready work into independent units and spawns one child Pipeline run per unit — one child, one branch, one PR. Parallelism composes at the run level, never inside a run.
@@ -34,7 +34,7 @@ One pass of a kernel's loop over its work. For the pipeline, one work unit drive
 _Avoid_: step, turn, cycle
 
 **Stage**:
-One step of a staged kernel's iteration — for the pipeline, plan, implement, review, or simplify (deliver optional). The kernel owns their order and gating in Rust; a flow customizes only each stage's prompt. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
+One step of a staged kernel's iteration — for the pipeline today, plan, implement, review, or simplify; the optional deliver stage is reserved for #29. The kernel owns their order and gating in Rust; a flow customizes only executable stages' prompts. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
 _Avoid_: phase, step
 
 ## Isolation & state

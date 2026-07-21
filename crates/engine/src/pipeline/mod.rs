@@ -31,6 +31,7 @@ use crate::preamble::{Feedback, repair};
 use crate::run::{PauseReason, RunOutcome};
 use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
+use crate::workspace::WorkspaceError;
 use proto::flow::{FailAction, KernelName};
 use proto::pipeline::{Stage, StageReport};
 use proto::report::ReportStatus;
@@ -142,17 +143,8 @@ async fn execute_stage(
     let mut feedback: Option<Feedback> = None;
     let mut verify_failures: u32 = 0;
     loop {
-        let domain_prompt = resolve_prompt(ctx, stage).await?;
-        let prompt = frame::compose(stage, handoff, feedback.as_ref(), &domain_prompt);
-        ctx.events
-            .emit(RunEvent::StageStarted {
-                iteration,
-                stage: stage.as_str().into(),
-            })
-            .await?;
-
         let StageDrive::Reported { report, verify } =
-            drive_stage(ctx, iteration, stage, &prompt).await?
+            drive_stage(ctx, iteration, stage, handoff, feedback.as_ref()).await?
         else {
             return Ok(StageEnd::Fail);
         };
@@ -200,10 +192,20 @@ async fn drive_stage(
     ctx: &KernelContext,
     iteration: u32,
     stage: Stage,
-    prompt: &str,
+    handoff: &[StageReport],
+    feedback: Option<&Feedback>,
 ) -> Result<StageDrive, KernelError> {
     invocation::in_fresh_sandbox(ctx, async |sandbox| {
-        let Some(report) = invoke_and_parse(ctx, iteration, stage, sandbox, prompt).await? else {
+        let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
+        let prompt = frame::compose(stage, handoff, feedback, &domain_prompt);
+        ctx.events
+            .emit(RunEvent::StageStarted {
+                iteration,
+                stage: stage.as_str().into(),
+            })
+            .await?;
+
+        let Some(report) = invoke_and_parse(ctx, iteration, stage, sandbox, &prompt).await? else {
             return Ok(StageDrive::Failed);
         };
 
@@ -306,10 +308,28 @@ fn parse(stage: Stage, end: InvocationEnd) -> Parsed {
 /// The stage's domain prompt: the flow's override for the slot, read
 /// fresh from the workspace, or the kernel-shipped default when the
 /// slot is unset.
-async fn resolve_prompt(ctx: &KernelContext, stage: Stage) -> Result<String, KernelError> {
+async fn resolve_prompt(
+    ctx: &KernelContext,
+    sandbox: &SandboxHandle,
+    stage: Stage,
+) -> Result<String, KernelError> {
     match ctx.prompts.get(stage.as_str()) {
-        Some(path) => Ok(ctx.workspace.read_file(path).await?),
-        None => Ok(contract::default_prompt(stage).to_owned()),
+        Some(path) => {
+            let guest_path = ctx.workspace.guest_path(path)?;
+            let raw = ctx.sandbox.get_file(sandbox, &guest_path).await?;
+            String::from_utf8(raw).map_err(|error| {
+                WorkspaceError(format!("prompt `{path}` is not UTF-8: {error}")).into()
+            })
+        }
+        None => contract::default_prompt(stage)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                WorkspaceError(format!(
+                    "stage `{}` has no default prompt and must be explicitly enabled",
+                    stage.as_str()
+                ))
+                .into()
+            }),
     }
 }
 

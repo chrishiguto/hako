@@ -1,9 +1,11 @@
 //! The pipeline kernel's shipped assets: a default prompt for every
-//! stage, and the report schema each stage's preamble quotes verbatim.
+//! active stage, and the report schema each dialect stage quotes.
 //!
-//! Both are compiled in. The default prompts fill any slot a flow
-//! leaves unset, so a minimal pipeline flow needs no prompt files. The
-//! schemas are the committed artifacts under `schemas/report/pipeline/`
+//! Both are compiled in. The default prompts fill any active slot a
+//! flow leaves unset, so a minimal pipeline flow needs no prompt files.
+//! `deliver` has a schema but no default prompt because its execution
+//! remains boarded up until #29. The schemas are the committed
+//! artifacts under `schemas/report/pipeline/`
 //! — generated from proto's report types and drift-checked in CI — so
 //! quoting them here cannot disagree with what the strict parse
 //! enforces, and the engine reads the published contract without
@@ -11,15 +13,16 @@
 
 use proto::pipeline::Stage;
 
-/// The kernel-shipped default prompt for a stage — used whenever the
-/// flow's `[prompts]` table leaves the slot unset.
-pub fn default_prompt(stage: Stage) -> &'static str {
+/// The kernel-shipped default prompt for an active stage. A dialect
+/// stage may be published before its execution policy and therefore
+/// have no default yet.
+pub fn default_prompt(stage: Stage) -> Option<&'static str> {
     match stage {
-        Stage::Plan => include_str!("prompts/plan.md"),
-        Stage::Implement => include_str!("prompts/implement.md"),
-        Stage::Review => include_str!("prompts/review.md"),
-        Stage::Simplify => include_str!("prompts/simplify.md"),
-        Stage::Deliver => include_str!("prompts/deliver.md"),
+        Stage::Plan => Some(include_str!("prompts/plan.md")),
+        Stage::Implement => Some(include_str!("prompts/implement.md")),
+        Stage::Review => Some(include_str!("prompts/review.md")),
+        Stage::Simplify => Some(include_str!("prompts/simplify.md")),
+        Stage::Deliver => None,
     }
 }
 
@@ -43,13 +46,18 @@ pub fn report_schema(stage: Stage) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Every stage has both assets — a non-empty default prompt and its
-    /// own report schema, titled by that stage's report type so the
-    /// preamble never quotes another stage's contract.
+    /// Active stages have defaults; every dialect stage has its own
+    /// report schema, including the reserved deliver stage.
     #[test]
-    fn every_stage_ships_a_default_prompt_and_a_report_schema() {
+    fn active_stages_ship_defaults_and_every_stage_ships_a_schema() {
         for stage in Stage::ALL {
-            assert!(!default_prompt(stage).trim().is_empty(), "{stage:?}");
+            match stage {
+                Stage::Deliver => assert_eq!(default_prompt(stage), None),
+                _ => assert!(
+                    !default_prompt(stage).unwrap().trim().is_empty(),
+                    "{stage:?}"
+                ),
+            }
             let schema = report_schema(stage);
             assert!(schema.contains("\"type\": \"object\""), "{stage:?}");
             let name = stage.as_str();

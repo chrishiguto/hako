@@ -75,14 +75,10 @@ impl Workspace {
         Path::new(GUEST_ROOT).join(REPORT_FILE)
     }
 
-    /// Reads a workspace-relative file host-side — how a kernel loads a
-    /// prompt slot's override, re-read each stage because the domain
-    /// prompts are agent-editable. The path is workspace-relative by
-    /// the flow contract; an absolute path or one climbing out with
-    /// `..` is refused rather than reaching past the run's workspace. A
-    /// prompt that cannot be read is run-fatal by design — a staged
-    /// loop must not run a stage without its domain rules.
-    pub async fn read_file(&self, relative: &str) -> Result<String, WorkspaceError> {
+    /// Resolves a workspace-relative path into the sandbox's guest view.
+    /// Agent-editable files are read through the sandbox seam so a
+    /// workspace symlink is followed inside the guest, never by the host.
+    pub fn guest_path(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
         let path = Path::new(relative);
         if path.is_absolute()
             || path
@@ -90,12 +86,10 @@ impl Workspace {
                 .any(|component| matches!(component, Component::ParentDir))
         {
             return Err(WorkspaceError(format!(
-                "prompt path escapes the workspace: {relative}"
+                "path escapes the workspace: {relative}"
             )));
         }
-        tokio::fs::read_to_string(self.root.join(path))
-            .await
-            .map_err(|error| WorkspaceError(format!("cannot read prompt `{relative}`: {error}")))
+        Ok(Path::new(GUEST_ROOT).join(path))
     }
 
     /// Commits everything the iteration changed and returns the commit
@@ -308,34 +302,25 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_workspace_relative_prompt_file_reads() {
-        let (dir, workspace) = seeded_repo();
-        std::fs::create_dir(dir.path().join("prompts")).unwrap();
-        std::fs::write(dir.path().join("prompts/plan.md"), "pick the work\n").unwrap();
+    #[test]
+    fn a_workspace_relative_path_resolves_inside_the_guest() {
+        let workspace = Workspace::at("/srv/runs/r1/workspace");
         assert_eq!(
-            workspace.read_file("prompts/plan.md").await.unwrap(),
-            "pick the work\n"
+            workspace.guest_path("prompts/plan.md").unwrap(),
+            PathBuf::from("/workspace/prompts/plan.md")
         );
     }
 
-    #[tokio::test]
-    async fn a_prompt_path_climbing_out_of_the_workspace_is_refused() {
-        let (_dir, workspace) = seeded_repo();
+    #[test]
+    fn a_path_climbing_out_of_the_workspace_is_refused() {
+        let workspace = Workspace::at("/srv/runs/r1/workspace");
         for escape in ["../secret", "prompts/../../secret", "/etc/passwd"] {
-            let error = workspace.read_file(escape).await.unwrap_err();
+            let error = workspace.guest_path(escape).unwrap_err();
             assert!(
                 error.to_string().contains("escapes the workspace"),
                 "{escape}: {error}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn a_missing_prompt_file_is_a_workspace_error() {
-        let (_dir, workspace) = seeded_repo();
-        let error = workspace.read_file("prompts/absent.md").await.unwrap_err();
-        assert!(error.to_string().contains("absent.md"), "{error}");
     }
 
     #[tokio::test]

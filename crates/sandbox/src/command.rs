@@ -137,6 +137,20 @@ pub(crate) fn get_args(name: &str, path: &Path) -> Vec<String> {
     args
 }
 
+/// Removes a guest file without a shell. `-f` makes absence success,
+/// which is the idempotent contract callers need when clearing scratch.
+pub(crate) fn remove_args(name: &str, path: &Path) -> Vec<String> {
+    let mut args = machine_command("exec", name);
+    args.extend([
+        "--".into(),
+        "rm".into(),
+        "-f".into(),
+        "--".into(),
+        path.display().to_string(),
+    ]);
+    args
+}
+
 /// `--force` skips the confirmation prompt; delete stops a running
 /// machine itself, so destroy is one call.
 pub(crate) fn delete_args(name: &str) -> Vec<String> {
@@ -286,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn files_move_through_exec_tee_and_cat_not_machine_cp() {
+    fn files_move_through_guest_commands_not_machine_cp() {
         assert_eq!(
             put_args("hako-1", Path::new("/workspace/PROMPT.md")),
             [
@@ -309,6 +323,20 @@ mod tests {
                 "hako-1",
                 "--",
                 "cat",
+                "/workspace/.hako/report.json",
+            ]
+        );
+        assert_eq!(
+            remove_args("hako-1", Path::new("/workspace/.hako/report.json")),
+            [
+                "machine",
+                "exec",
+                "--name",
+                "hako-1",
+                "--",
+                "rm",
+                "-f",
+                "--",
                 "/workspace/.hako/report.json",
             ]
         );

@@ -139,6 +139,14 @@ async fn a_full_iteration_lifecycle_against_real_smolvm() {
             .unwrap(),
         contents
     );
+    adapter
+        .remove_file(&vm, Path::new("/workspace/put.bin"))
+        .await
+        .unwrap();
+    adapter
+        .get_file(&vm, Path::new("/workspace/put.bin"))
+        .await
+        .unwrap_err();
 
     // Reading a file that is not there is an error, not empty bytes.
     adapter

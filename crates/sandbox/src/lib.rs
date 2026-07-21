@@ -293,6 +293,14 @@ impl Sandbox for SmolvmSandbox {
         Ok(output.stdout)
     }
 
+    async fn remove_file(&self, sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
+        self.machine(sandbox)?;
+        command::validate_guest_path(path)?;
+        self.run_checked(&command::remove_args(sandbox.as_str(), path))
+            .await?;
+        Ok(())
+    }
+
     async fn destroy(&self, sandbox: SandboxHandle) -> Result<(), SandboxError> {
         // Forget the machine before deleting: the handle is consumed
         // either way, so nothing may address it again even if smolvm

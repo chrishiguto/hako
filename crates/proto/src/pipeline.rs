@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::report::{Question, ReportStatus};
 
-/// The pipeline kernel's stages, in the order one iteration drives a
-/// work unit through them. Deliver is optional — a flow without a
-/// deliver prompt skips the stage.
+/// The pipeline kernel's report-stage vocabulary, in intended order.
+/// The four core stages execute today; `deliver` is reserved in the
+/// published report dialect for the optional stage tracked by #29.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
@@ -58,21 +58,17 @@ impl Stage {
     }
 }
 
-/// The prompt slots the pipeline kernel publishes — the legal
-/// `[prompts]` keys for a pipeline flow, one per stage, named by the
-/// stage's wire string and derived from it so the two can never
-/// disagree. An absent slot falls back to the kernel-shipped default
-/// prompt; flow validation dispatches here through
-/// [`crate::flow::KernelName::prompt_slots`].
-pub const PROMPT_SLOTS: [&str; Stage::ALL.len()] = {
-    let mut slots = [""; Stage::ALL.len()];
-    let mut index = 0;
-    while index < slots.len() {
-        slots[index] = Stage::ALL[index].as_str();
-        index += 1;
-    }
-    slots
-};
+/// The prompt slots the pipeline kernel currently executes — the
+/// legal `[prompts]` keys for a pipeline flow. `deliver` deliberately
+/// remains unpublished until #29 adds the stage's control flow; this
+/// prevents a valid-looking configuration from being silently ignored.
+/// An absent published slot falls back to its kernel-shipped default.
+pub const PROMPT_SLOTS: [&str; 4] = [
+    Stage::Plan.as_str(),
+    Stage::Implement.as_str(),
+    Stage::Review.as_str(),
+    Stage::Simplify.as_str(),
+];
 
 /// What the plan stage leaves behind: the work unit this iteration
 /// drives and the intended route through it.

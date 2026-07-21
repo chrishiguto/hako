@@ -57,6 +57,12 @@ pub async fn invoke(
     sandbox: &SandboxHandle,
     prompt: &str,
 ) -> Result<InvocationEnd, KernelError> {
+    // The report path survives sandbox lifetimes with the workspace. Clear
+    // it before every exec so a successful agent that forgets to report
+    // cannot inherit another invocation's valid bytes.
+    let report_path = ctx.workspace.guest_report_path();
+    ctx.sandbox.remove_file(sandbox, &report_path).await?;
+
     let invocation = ctx.agent.invocation(prompt);
     let mut output = ctx.sandbox.exec_stream(sandbox, &invocation).await?;
     let mut stdout = String::new();
@@ -97,7 +103,6 @@ pub async fn invoke(
         return Ok(InvocationEnd::Crashed);
     }
 
-    let report_path = ctx.workspace.guest_report_path();
     match ctx.sandbox.get_file(sandbox, &report_path).await {
         Ok(raw) => Ok(InvocationEnd::Reported(raw)),
         Err(error) => Ok(InvocationEnd::MissingReport(format!(

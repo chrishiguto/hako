@@ -10,7 +10,7 @@
 //! checkpoint). Verify checks are separate execs, distinguished from
 //! the agent by their argv.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -73,6 +73,15 @@ fn crashes() -> AgentStep {
     }
 }
 
+/// A clean agent exit that does not touch the shared report path.
+fn omits_report() -> AgentStep {
+    AgentStep {
+        stdout: "forgot to report\n".into(),
+        code: 0,
+        report: None,
+    }
+}
+
 fn report_json(status: &str, summary: &str) -> String {
     serde_json::json!({"status": status, "summary": summary}).to_string()
 }
@@ -87,6 +96,7 @@ struct FakeSandbox {
     agent_steps: Mutex<VecDeque<AgentStep>>,
     checks: Mutex<VecDeque<i32>>,
     agent_prompts: Mutex<Vec<String>>,
+    guest_files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     created: AtomicU32,
     destroyed: AtomicU32,
     work_files: AtomicU32,
@@ -99,6 +109,7 @@ impl FakeSandbox {
             agent_steps: Mutex::new(agent_steps.into()),
             checks: Mutex::new(checks.into()),
             agent_prompts: Mutex::new(Vec::new()),
+            guest_files: Mutex::new(BTreeMap::new()),
             created: AtomicU32::new(0),
             destroyed: AtomicU32::new(0),
             work_files: AtomicU32::new(0),
@@ -107,6 +118,13 @@ impl FakeSandbox {
 
     fn agent_prompts(&self) -> Vec<String> {
         self.agent_prompts.lock().unwrap().clone()
+    }
+
+    fn seed_guest_file(&self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) {
+        self.guest_files
+            .lock()
+            .unwrap()
+            .insert(path.into(), contents.into());
     }
 
     /// Maps a guest path back to the real host workspace — the fake's
@@ -135,14 +153,11 @@ impl FakeSandbox {
         std::fs::write(self.workspace_root.join(format!("work-{n}.txt")), "work\n").unwrap();
 
         let report_path = self.workspace_root.join(".hako/report.json");
-        match &step.report {
-            Some(report) => {
-                std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
-                std::fs::write(&report_path, report).unwrap();
-            }
-            None => {
-                let _ = std::fs::remove_file(&report_path);
-            }
+        // Leave a previous report untouched when the agent omits one:
+        // freshness belongs to the invocation executor, not this fake.
+        if let Some(report) = &step.report {
+            std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+            std::fs::write(&report_path, report).unwrap();
         }
         vec![
             Ok(ExecEvent::Stdout(step.stdout.into_bytes())),
@@ -204,8 +219,22 @@ impl Sandbox for FakeSandbox {
         _sandbox: &SandboxHandle,
         path: &Path,
     ) -> Result<Vec<u8>, SandboxError> {
+        if let Some(contents) = self.guest_files.lock().unwrap().get(path).cloned() {
+            return Ok(contents);
+        }
         std::fs::read(self.host_path(path))
             .map_err(|error| SandboxError(format!("no such file {}: {error}", path.display())))
+    }
+
+    async fn remove_file(&self, _sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
+        match std::fs::remove_file(self.host_path(path)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(SandboxError(format!(
+                "cannot remove {}: {error}",
+                path.display()
+            ))),
+        }
     }
 
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
@@ -344,6 +373,28 @@ fn verifying(checks: &[&str], retries: u32, then: FailAction) -> VerifyConfig {
     }
 }
 
+fn context(
+    workspace: &Path,
+    sandbox: Arc<FakeSandbox>,
+    verify: VerifyConfig,
+    prompts: PromptsConfig,
+) -> (KernelContext, Arc<RecordingSink>) {
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = KernelContext {
+        run_id: RunId::new("r1"),
+        budgets: Budgets::default(),
+        verify,
+        prompts,
+        workspace: Workspace::at(workspace),
+        sandbox,
+        agent: Arc::new(ScriptedAgent),
+        events: sink.clone(),
+        notifier: Arc::new(StubNotifier),
+        secrets: Arc::new(NoSecrets),
+    };
+    (ctx, sink)
+}
+
 /// Runs the pipeline kernel over a fresh seeded repo with the given
 /// flow verify config and prompt overrides, serving `agent_steps` and
 /// `checks` from the fake.
@@ -355,19 +406,7 @@ async fn run_pipeline(
 ) -> Ran {
     let workspace = seeded_repo();
     let sandbox = FakeSandbox::new(workspace.path().to_path_buf(), agent_steps, checks);
-    let sink = Arc::new(RecordingSink::default());
-    let ctx = KernelContext {
-        run_id: RunId::new("r1"),
-        budgets: Budgets::default(),
-        verify,
-        prompts,
-        workspace: Workspace::at(workspace.path()),
-        sandbox: sandbox.clone(),
-        agent: Arc::new(ScriptedAgent),
-        events: sink.clone(),
-        notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
-    };
+    let (ctx, sink) = context(workspace.path(), sandbox.clone(), verify, prompts);
     let outcome = PipelineKernel.run(ctx).await.unwrap();
     Ran {
         outcome,
@@ -531,26 +570,68 @@ async fn a_prompt_override_replaces_the_shipped_default() {
         vec![reports("done", "done")],
         vec![],
     );
-    let sink = Arc::new(RecordingSink::default());
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
-    let ctx = KernelContext {
-        run_id: RunId::new("r1"),
-        budgets: Budgets::default(),
-        verify: VerifyConfig::default(),
+    let (ctx, _) = context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
         prompts,
-        workspace: Workspace::at(workspace.path()),
-        sandbox: sandbox.clone(),
-        agent: Arc::new(ScriptedAgent),
-        events: sink.clone(),
-        notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
-    };
+    );
     let outcome = PipelineKernel.run(ctx).await.unwrap();
 
     assert_eq!(outcome, RunOutcome::Done);
     let plan = &sandbox.agent_prompts()[0];
     assert!(plan.contains("CUSTOM PLAN RULES"), "{plan}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = seeded_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let host_secret = outside.path().join("host-secret");
+    std::fs::write(&host_secret, "HOST SECRET\n").unwrap();
+    std::fs::create_dir(workspace.path().join("prompts")).unwrap();
+    symlink(&host_secret, workspace.path().join("prompts/plan.md")).unwrap();
+
+    let sandbox = FakeSandbox::new(
+        workspace.path().to_path_buf(),
+        vec![reports("done", "done")],
+        vec![],
+    );
+    sandbox.seed_guest_file(
+        "/workspace/prompts/plan.md",
+        b"GUEST PROMPT CONTENT\n".to_vec(),
+    );
+    let prompts: PromptsConfig =
+        serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
+    let (ctx, _) = context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        prompts,
+    );
+
+    assert_eq!(PipelineKernel.run(ctx).await.unwrap(), RunOutcome::Done);
+    let prompt = &sandbox.agent_prompts()[0];
+    assert!(prompt.contains("GUEST PROMPT CONTENT"), "{prompt}");
+    assert!(!prompt.contains("HOST SECRET"), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_non_utf8_override_prompt_is_run_fatal() {
+    let workspace = seeded_repo();
+    let sandbox = FakeSandbox::new(workspace.path().to_path_buf(), vec![], vec![]);
+    sandbox.seed_guest_file("/workspace/prompts/plan.md", vec![0xff]);
+    let prompts: PromptsConfig =
+        serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
+    let (ctx, _) = context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
+
+    let error = PipelineKernel.run(ctx).await.unwrap_err();
+    assert!(error.to_string().contains("not UTF-8"), "{error}");
 }
 
 #[tokio::test]
@@ -563,18 +644,7 @@ async fn a_missing_override_prompt_is_run_fatal() {
     );
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/absent.md"})).unwrap();
-    let ctx = KernelContext {
-        run_id: RunId::new("r1"),
-        budgets: Budgets::default(),
-        verify: VerifyConfig::default(),
-        prompts,
-        workspace: Workspace::at(workspace.path()),
-        sandbox: sandbox.clone(),
-        agent: Arc::new(ScriptedAgent),
-        events: Arc::new(RecordingSink::default()),
-        notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
-    };
+    let (ctx, _) = context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
     let error = PipelineKernel.run(ctx).await.unwrap_err();
     assert!(error.to_string().contains("absent.md"), "{error}");
 }
@@ -850,6 +920,36 @@ async fn a_crashed_agent_fails_the_iteration_and_the_run() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn a_stage_cannot_reuse_the_previous_stages_report() {
+    let ran = run_default(
+        vec![
+            reports("continue", "planned"),
+            omits_report(),
+            omits_report(),
+        ],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Failed);
+    assert_eq!(
+        kinds(&ran.events)
+            .into_iter()
+            .filter(|kind| kind == "report_rejected")
+            .count(),
+        2
+    );
+    assert_eq!(
+        stage_events(&ran.events),
+        [
+            ("stage_started".into(), "plan".into()),
+            ("stage_reported".into(), "plan".into()),
+            ("stage_started".into(), "implement".into()),
+        ]
+    );
 }
 
 /// The run's very first event names the kernel and the agent, so a

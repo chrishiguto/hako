@@ -184,9 +184,6 @@
       "description": "Per-slot prompt overrides: slot name → workspace-relative prompt file. The legal slots are the ones the selected kernel publishes; every absent slot falls back to the kernel-shipped default prompt, so an empty or missing table is a complete flow.",
       "type": "object",
       "properties": {
-        "deliver": {
-          "type": "string"
-        },
         "implement": {
           "type": "string"
         },

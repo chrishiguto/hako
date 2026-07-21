@@ -70,6 +70,14 @@ impl Sandbox for NoSandbox {
         unreachable!("the scripted kernel reads nothing");
     }
 
+    async fn remove_file(
+        &self,
+        _sandbox: &SandboxHandle,
+        _path: &Path,
+    ) -> Result<(), SandboxError> {
+        unreachable!("the scripted kernel removes nothing");
+    }
+
     async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
         unreachable!("the scripted kernel boots no sandbox");
     }

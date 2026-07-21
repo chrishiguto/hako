@@ -109,6 +109,11 @@ fn schema_and_serde_agree_on_the_corpus() {
             false,
         ),
         (
+            "the deferred deliver prompt slot",
+            &format!("{MINIMAL_FLOW}\n[prompts]\ndeliver = \"prompts/deliver.md\"\n"),
+            false,
+        ),
+        (
             "the reserved stages namespace",
             &format!("{MINIMAL_FLOW}\n[stages.review]\nagent = \"codex\"\n"),
             false,
