@@ -10,7 +10,5 @@ tracker the project uses.
 - Use only the credentials the run was given; if a push or an API call
   is refused, report it rather than working around it.
 
-Report `continue` or `done` with a summary and the URLs everything
-landed at — the pull request, closed issues, comments. Report
-`blocked` if publishing cannot proceed, or `needs_input` with
-questions only a human can answer.
+Report a summary and the URLs everything landed at — the pull request,
+closed issues, comments.

@@ -11,7 +11,6 @@ does.
 - If the change is already as simple as it should be, say so — doing
   nothing is a valid outcome here.
 
-Report `continue` with what you simplified, or why nothing needed it.
-Report `done` only if this completes the whole objective. Report
-`blocked` if you cannot proceed, or `needs_input` with questions only a
-human can answer.
+Report what you simplified, or why nothing needed it — doing nothing is
+a valid outcome here. The whole objective is complete only when the
+change finishes it, not merely because the cleanup is done.

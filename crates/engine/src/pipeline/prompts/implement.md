@@ -10,7 +10,6 @@ out the plan above: make the change in the workspace.
 - Leave the workspace building and its tests passing if you can; the
   verify checks run after you stop.
 
-Report `continue` with a summary of what you built and anything you
-knowingly left open for a later iteration. Report `done` only if this
-completes the whole objective. Report `blocked` if you cannot proceed,
-or `needs_input` with questions only a human can answer.
+Report a summary of what you built and anything you knowingly left open
+for a later iteration. The whole objective is complete only when this
+change finishes it — one iteration rarely does.

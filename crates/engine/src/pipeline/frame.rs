@@ -10,9 +10,15 @@
 //! 3. a verify failure to fix, when this stage is being re-run,
 //! 4. the stage's domain prompt — the flow's override or the shipped
 //!    default,
-//! 5. the report contract: the fixed scratch path and the stage's
-//!    schema, quoted verbatim so the output is constrained and
-//!    self-repairable.
+//! 5. the report contract: the status semantics the loop branches on,
+//!    the fixed scratch path, and the stage's schema quoted verbatim,
+//!    so the output is constrained and self-repairable.
+//!
+//! Section 5 is the kernel's, always appended after the domain prompt
+//! (section 4, the flow's override or the shipped default). What the
+//! status means and how the loop acts on it lives here, never in the
+//! overridable domain prompt — an edited prompt can shape the work but
+//! can never reach the control flow (ADR 0011).
 
 use crate::pipeline::contract;
 use crate::preamble::{self, Feedback};
@@ -78,7 +84,17 @@ fn report_contract(stage: Stage) -> String {
     format!(
         "## Your report\n\n\
          End this stage by writing `{REPORT_FILE}` in the workspace — nothing \
-         else concludes it. The report must match this schema exactly:\n\n\
+         else concludes it. Set `status` to say where the run stands; the loop \
+         acts on it, so it is the one field you cannot get wrong:\n\n\
+         - `continue` — this stage advanced the work and the run proceeds.\n\
+         - `done` — the whole objective is complete. A claim, not a verdict: it \
+         is accepted only after the verify checks pass and a skeptic fails to \
+         refute it.\n\
+         - `blocked` — something outside your control stops all progress; the \
+         run pauses here.\n\
+         - `needs_input` — only a human can answer; the run pauses and puts \
+         your questions to them.\n\n\
+         The report must match this schema exactly:\n\n\
          ```json\n{}\n```",
         contract::report_schema(stage).trim_end(),
     )
@@ -113,6 +129,20 @@ mod tests {
         // stage's.
         assert!(text.contains("\"title\": \"ImplementReport\""), "{text}");
         assert!(text.contains(REPORT_FILE), "{text}");
+    }
+
+    /// The contract section — not the overridable domain prompt — is
+    /// where the loop's status vocabulary and its consequences are
+    /// stated, so a custom prompt that says nothing about status still
+    /// yields the four values and what each does to the run.
+    #[test]
+    fn the_contract_states_the_status_semantics() {
+        let text = compose(Stage::Plan, &[], None, "pick the work");
+        for status in ["continue", "done", "blocked", "needs_input"] {
+            assert!(text.contains(&format!("`{status}`")), "{status}: {text}");
+        }
+        assert!(text.contains("the run pauses"), "{text}");
+        assert!(text.contains("skeptic"), "{text}");
     }
 
     #[test]

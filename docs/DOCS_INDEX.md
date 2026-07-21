@@ -18,10 +18,11 @@ Check here first to find the right document, then open that file directly. `/dom
 - `docs/adr/0008-shared-proto-crate.md` — ADR (Accepted) — Wire types defined once in leaf crate `proto`, shared by engine and api; replaces mirrored types + golden fixture; amends 0006's client rule. Topics: proto, wire contract, published language, crates, dependencies.
 - `docs/adr/0009-flow-language-in-proto.md` — ADR (Accepted) — Flow config types live in proto; every Rust consumer shares one strict parser; the JSON Schema is generated for editors/LLMs only. Topics: flow, config, proto, schema, validate, published language.
 - `docs/adr/0010-kernel-dialects-in-proto-closed-set.md` — ADR (Accepted) — Each kernel's wire vocabulary is a named dialect module in proto (proto::pipeline), never mixed into the shared core; kernel set closed in v1, third-party kernels post-v1. Topics: kernel dialect, proto, stage reports, published language, extension.
+- `docs/adr/0011-kernel-owned-status-parse-and-repair.md` — ADR (Accepted) — Status semantics and the report contract are kernel-owned, injected around the overridable domain prompt; structured output is quote-schema + strict-parse + one repair, not provider-native constrained decoding, because the agent is a black-box CLI. Topics: report contract, status, prompts, structured output, parse-and-repair, agent boundary.
 
 ## Domain
 
-- `docs/GLOSSARY.md` — Glossary (Living) — Ubiquitous language for hako: kernel, kernel dialect, flow, run, iteration, sandbox, workspace, prompt slot, report, verified done, pause, drift, budget, daemon, client. Topics: terminology, domain language.
+- `docs/GLOSSARY.md` — Glossary (Living) — Ubiquitous language for hako: kernel, kernel dialect, flow, run, iteration, sandbox, workspace, prompt slot, report, status, verified done, pause, drift, budget, daemon, client. Topics: terminology, domain language.
 
 ## Specs / PRDs
 

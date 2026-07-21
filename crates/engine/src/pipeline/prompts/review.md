@@ -11,7 +11,6 @@ can in place.
 - What you cannot fix in this pass, report as a finding — it feeds the
   next iteration's plan rather than blocking here.
 
-Report `continue` with your verdict and the findings you could not
-patch. Report `done` only if the work is complete and sound. Report
-`blocked` if you cannot proceed, or `needs_input` with questions only a
-human can answer.
+Report your verdict and the findings you could not patch — they feed
+the next iteration's plan. The work is complete only when it is sound
+with nothing left to flag.

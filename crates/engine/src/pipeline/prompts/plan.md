@@ -13,7 +13,6 @@ lay out how to carry it out — not to write the code yet.
 - Keep the unit small enough to implement, review, and simplify in one
   pass.
 
-Report `continue` with the chosen work unit and the ordered steps the
-implement stage should follow. Report `done` only if nothing remains
-to do. Report `blocked` if something outside your control stops all
-progress, or `needs_input` with questions only a human can answer.
+Report the chosen work unit and the ordered steps the implement stage
+should follow. For this stage the objective is complete only when
+nothing is left to do — otherwise there is always a next unit to pick.
