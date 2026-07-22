@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use api::{RunStatusResponse, RunSummary};
+use api::{Question, RunStatusResponse, RunSummary};
 use engine::{RunDir, RunEvent, RunId, RunState};
 use tokio::sync::RwLock;
 
@@ -15,11 +15,13 @@ pub(crate) struct RunRegistry {
     runs: Arc<RwLock<BTreeMap<RunId, RunRecord>>>,
 }
 
-/// One registry entry. Reloaded runs have no execution; newly
-/// submitted runs keep their task here until it finishes, giving the
-/// daemon one ownership point for later cancellation and resumption.
+/// One registry entry. The task handle is retained so #14 can cancel
+/// or resume the run through it; nothing reads it yet — published
+/// status is reduced from the event log, never from the handle — but
+/// dropping it would detach its task beyond recall, so it is kept.
 struct RunRecord {
     dir: RunDir,
+    #[allow(dead_code)]
     execution: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -36,20 +38,6 @@ impl RunRecord {
             dir,
             execution: Some(execution),
         }
-    }
-
-    /// Finished tasks have already translated their outcome into the
-    /// event log. Reaping their handles makes the in-memory lifecycle
-    /// match the durable one: no execution remains attached.
-    fn dir(&mut self) -> RunDir {
-        if self
-            .execution
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
-            self.execution = None;
-        }
-        self.dir.clone()
     }
 }
 
@@ -93,8 +81,17 @@ impl RunRegistry {
         })
     }
 
-    pub(crate) fn runs_root(&self) -> &std::path::Path {
-        &self.runs_root
+    /// Lays down the on-disk directory for a new run. The registry
+    /// owns where runs live, so creation sits beside `load`; the caller
+    /// attaches the live task with [`insert_live`] once the engine is
+    /// driving it.
+    pub(crate) async fn create_dir(
+        &self,
+        run_id: RunId,
+        kernel: &str,
+        agent: &str,
+    ) -> Result<RunDir, engine::StoreError> {
+        RunDir::create(&self.runs_root, run_id, kernel, agent).await
     }
 
     pub(crate) async fn insert_live(
@@ -110,16 +107,20 @@ impl RunRegistry {
     }
 
     pub(crate) async fn get(&self, run_id: &RunId) -> Option<RunDir> {
-        self.runs.write().await.get_mut(run_id).map(RunRecord::dir)
+        self.runs
+            .read()
+            .await
+            .get(run_id)
+            .map(|record| record.dir.clone())
     }
 
     pub(crate) async fn list(&self) -> Result<Vec<RunSummary>, engine::StoreError> {
         let dirs: Vec<RunDir> = self
             .runs
-            .write()
+            .read()
             .await
-            .values_mut()
-            .map(RunRecord::dir)
+            .values()
+            .map(|record| record.dir.clone())
             .collect();
         let mut summaries = Vec::with_capacity(dirs.len());
         for dir in dirs {
@@ -135,17 +136,20 @@ impl RunRegistry {
     }
 }
 
+/// The stage-report fields the daemon surfaces, as one typed view.
+/// Lenient by design: every kernel dialect's report carries `summary`
+/// and `questions`, and each stage's own fields are ignored here.
+#[derive(serde::Deserialize)]
+struct ReportView {
+    summary: Option<String>,
+    #[serde(default)]
+    questions: Vec<Question>,
+}
+
 pub(crate) async fn status(dir: &RunDir) -> Result<RunStatusResponse, engine::StoreError> {
     let meta = dir.meta();
     let events = dir.events().await?;
-    let state = events
-        .iter()
-        .rev()
-        .find_map(|envelope| match envelope.event {
-            RunEvent::StateChanged { state } => Some(state),
-            _ => None,
-        })
-        .unwrap_or(RunState::Running);
+    let state = engine::reduce_state(&events);
     let updated_at = events
         .last()
         .map_or_else(|| meta.created_at.clone(), |event| event.at.clone());
@@ -155,29 +159,19 @@ pub(crate) async fn status(dir: &RunDir) -> Result<RunStatusResponse, engine::St
         .find_map(|envelope| match &envelope.event {
             RunEvent::StageReported { report, .. } => Some(report),
             _ => None,
-        });
-    let last_summary = last_report
-        .and_then(|report| report.get("summary"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let pending_questions = if matches!(
-        state,
+        })
+        .map(|report| serde_json::from_value::<ReportView>(report.clone()))
+        .transpose()
+        .map_err(|error| engine::StoreError::Corrupt {
+            path: dir.path().to_path_buf(),
+            detail: format!("last stage report is malformed: {error}"),
+        })?;
+    let last_summary = last_report.as_ref().and_then(|view| view.summary.clone());
+    let pending_questions = match state {
         RunState::Paused {
-            reason: engine::PauseReason::AwaitingHuman
-        }
-    ) {
-        last_report
-            .and_then(|report| report.get("questions"))
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| engine::StoreError::Corrupt {
-                path: dir.path().to_path_buf(),
-                detail: format!("last stage report carries invalid questions: {error}"),
-            })?
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+            reason: engine::PauseReason::AwaitingHuman,
+        } => last_report.map(|view| view.questions).unwrap_or_default(),
+        _ => Vec::new(),
     };
     let iterations_completed = events
         .iter()

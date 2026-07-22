@@ -9,7 +9,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use engine::{RunDir, RunId};
+use engine::RunId;
 use uuid::Uuid;
 
 use crate::registry::{RunRegistry, status};
@@ -97,14 +97,15 @@ async fn submit_run(
         .resolve(&flow)
         .map_err(|error| HttpError::UnrunnableFlow(error.to_string()))?;
     let run_id = RunId::new(Uuid::now_v7().to_string());
-    let dir = RunDir::create(
-        state.registry.runs_root(),
-        run_id.clone(),
-        flow.r#loop.kernel.as_str(),
-        &flow.agent.engine,
-    )
-    .await
-    .map_err(HttpError::store)?;
+    let dir = state
+        .registry
+        .create_dir(
+            run_id.clone(),
+            flow.r#loop.kernel.as_str(),
+            &flow.agent.engine,
+        )
+        .await
+        .map_err(HttpError::store)?;
     let execution = state
         .runtime
         .launch(dir.clone(), flow, resolved)

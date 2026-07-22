@@ -16,6 +16,7 @@ axum.workspace = true
 engine.workspace = true
 futures-util.workspace = true
 sandbox.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -23,6 +24,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-serde.workspace = true
 tempfile.workspace = true
 tower.workspace = true
