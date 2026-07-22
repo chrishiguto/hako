@@ -4,11 +4,15 @@ use api::proto::flow::FlowConfig;
 use api::{ApiError, ListRunsResponse, SubmitRunRequest, SubmitRunResponse};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Request, State};
-use axum::http::{Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::TypedHeader;
+use axum_extra::headers::{Authorization, authorization::Bearer};
+use axum_extra::typed_header::TypedHeaderRejection;
+use constant_time_eq::constant_time_eq;
 use engine::RunId;
 use uuid::Uuid;
 
@@ -56,33 +60,15 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
 
 async fn authenticate(
     State(state): State<Arc<AppState>>,
+    credentials: Result<TypedHeader<Authorization<Bearer>>, TypedHeaderRejection>,
     request: Request,
     next: Next,
 ) -> Result<Response, HttpError> {
-    let authorized = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split_once(' '))
-        .is_some_and(|(scheme, token)| {
-            scheme.eq_ignore_ascii_case("bearer") && constant_time_eq(token, &state.token)
-        });
-    if !authorized {
+    let TypedHeader(credentials) = credentials.map_err(|_| HttpError::Unauthorized)?;
+    if !constant_time_eq(credentials.token().as_bytes(), state.token.as_bytes()) {
         return Err(HttpError::Unauthorized);
     }
     Ok(next.run(request).await)
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    let left = left.as_bytes();
-    let right = right.as_bytes();
-    let mut difference = left.len() ^ right.len();
-    let width = left.len().max(right.len());
-    for index in 0..width {
-        difference |= usize::from(left.get(index).copied().unwrap_or_default())
-            ^ usize::from(right.get(index).copied().unwrap_or_default());
-    }
-    difference == 0
 }
 
 async fn submit_run(
@@ -161,6 +147,7 @@ impl HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
+        let unauthorized = matches!(&self, Self::Unauthorized);
         let (status, code, message) = match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -183,26 +170,19 @@ impl IntoResponse for HttpError {
                 "internal daemon error".to_owned(),
             ),
         };
-        (
+        let mut response = (
             status,
             Json(ApiError {
                 code: code.to_owned(),
                 message,
             }),
         )
-            .into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn token_comparison_covers_different_lengths_without_accepting_prefixes() {
-        assert!(constant_time_eq("token", "token"));
-        assert!(!constant_time_eq("token", "token-long"));
-        assert!(!constant_time_eq("token-long", "token"));
-        assert!(!constant_time_eq("taken", "token"));
+            .into_response();
+        if unauthorized {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        response
     }
 }

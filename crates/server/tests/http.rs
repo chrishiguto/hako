@@ -104,6 +104,11 @@ async fn every_served_endpoint_requires_the_configured_bearer_token() {
             )
             .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{route:?}");
+            assert_eq!(
+                response.headers().get(header::WWW_AUTHENTICATE),
+                Some(&header::HeaderValue::from_static("Bearer")),
+                "{route:?}"
+            );
             let error: ApiError = body(response).await;
             assert_eq!(error.code, "unauthorized");
         }
@@ -111,6 +116,41 @@ async fn every_served_endpoint_requires_the_configured_bearer_token() {
 
     let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive_and_allows_extra_whitespace() {
+    let host = TestHost::new(done_report()).await;
+    for authorization in [format!("bearer {TOKEN}"), format!("Bearer   {TOKEN}")] {
+        let response = raw_request(&host.app, Method::GET, "/v1/runs", Some(&authorization)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{authorization}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_authorization_is_a_structured_unauthorized_response() {
+    let host = TestHost::new(done_report()).await;
+    for authorization in ["Basic credentials", "Bearer", "Bearer "] {
+        let response = raw_request(&host.app, Method::GET, "/v1/runs", Some(authorization)).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{authorization}"
+        );
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE),
+            Some(&header::HeaderValue::from_static("Bearer"))
+        );
+        let error: ApiError = body(response).await;
+        assert_eq!(error.code, "unauthorized");
+    }
+}
+
+#[tokio::test]
+async fn authentication_does_not_hide_unknown_routes() {
+    let host = TestHost::new(done_report()).await;
+    let response = raw_request(&host.app, Method::GET, "/missing", None).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -285,6 +325,22 @@ async fn request(
     };
     app.clone()
         .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn raw_request(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    authorization: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    app.clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
         .await
         .unwrap()
 }
