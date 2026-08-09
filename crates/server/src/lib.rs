@@ -18,7 +18,7 @@ pub use runtime::EngineRuntime;
 use http::AppState;
 use registry::RunRegistry;
 
-/// The daemon settings needed by the first API slice.
+/// The settings a daemon host must supply.
 #[derive(Clone)]
 pub struct DaemonConfig {
     token: String,

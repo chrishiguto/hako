@@ -22,8 +22,8 @@ pub struct EngineRuntime {
 
 impl EngineRuntime {
     /// The host-side collaborators used by the daemon binary. The
-    /// notifier and secrets store gain their real implementations in
-    /// their dedicated slices; no kernel exercises either until then.
+    /// notifier and secrets store are inert stubs: no kernel exercises
+    /// either yet, so a real implementation would go unobserved.
     pub fn production() -> Self {
         Self::new(
             Arc::new(sandbox::SmolvmSandbox::new(sandbox::SmolvmConfig::default())),
