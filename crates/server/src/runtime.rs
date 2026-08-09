@@ -79,7 +79,7 @@ impl EngineRuntime {
                 Err(_) => Some("engine task panicked".to_owned()),
             };
             if let Some(failure) = failure {
-                eprintln!("run {} failed: {failure}", dir.meta().run_id);
+                tracing::error!(run_id = %dir.meta().run_id, %failure, "run failed");
                 let _ = events
                     .emit(RunEvent::StateChanged {
                         state: RunState::Failed,

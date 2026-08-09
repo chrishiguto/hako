@@ -11,6 +11,14 @@ const DEFAULT_RUNS_ROOT: &str = ".hako/runs";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `RUST_LOG` filters as usual; `info` when unset.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let token = std::env::var("HAKO_TOKEN")
         .map_err(|_| "HAKO_TOKEN must contain the daemon bearer token")?;
     let address: SocketAddr = std::env::var("HAKO_ADDR")
@@ -26,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
-    println!("hakod {} listening on {address}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("hakod {} listening on {address}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, daemon.router())
         .with_graceful_shutdown(shutdown_signal())
         .await?;

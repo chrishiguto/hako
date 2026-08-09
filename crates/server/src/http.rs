@@ -128,7 +128,7 @@ enum HttpError {
 
 impl HttpError {
     fn store(error: engine::StoreError) -> Self {
-        eprintln!("daemon run-store failure: {error}");
+        tracing::error!(%error, "daemon run-store failure");
         Self::Internal
     }
 }
