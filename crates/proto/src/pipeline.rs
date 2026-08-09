@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::report::{Question, ReportStatus};
+use crate::report::{Question, ReportCore, ReportStatus};
 
 /// The pipeline kernel's report-stage vocabulary, in intended order.
 /// The four core stages execute today; `deliver` is reserved in the
@@ -259,15 +259,25 @@ impl StageReport {
         serde_json::to_string_pretty(&self.to_json_value()).expect("stage reports serialize")
     }
 
-    /// The questions a `needs_input` report asks — uniform across
-    /// stages, so pausing surfaces them the same wherever they arose.
-    pub fn questions(&self) -> &[Question] {
+    /// The shared [`ReportCore`] this report carries, whichever stage
+    /// wrote it — the dialect's side of the flattening contract: a
+    /// report's wire shape must deserialize into the core with exactly
+    /// these fields, so a dialect-blind reader and this accessor can
+    /// never disagree. The agreement test below pins it.
+    pub fn core(&self) -> ReportCore {
+        fn core(status: ReportStatus, summary: &str, questions: &[Question]) -> ReportCore {
+            ReportCore {
+                status,
+                summary: summary.to_owned(),
+                questions: questions.to_vec(),
+            }
+        }
         match self {
-            Self::Plan(report) => &report.questions,
-            Self::Implement(report) => &report.questions,
-            Self::Review(report) => &report.questions,
-            Self::Simplify(report) => &report.questions,
-            Self::Deliver(report) => &report.questions,
+            Self::Plan(r) => core(r.status, &r.summary, &r.questions),
+            Self::Implement(r) => core(r.status, &r.summary, &r.questions),
+            Self::Review(r) => core(r.status, &r.summary, &r.questions),
+            Self::Simplify(r) => core(r.status, &r.summary, &r.questions),
+            Self::Deliver(r) => core(r.status, &r.summary, &r.questions),
         }
     }
 }
@@ -296,6 +306,53 @@ mod tests {
     /// plus the summary; all payloads default.
     fn minimal(status: &str) -> String {
         json!({"status": status, "summary": "did the thing"}).to_string()
+    }
+
+    /// One report per stage with every payload field populated — the
+    /// fixtures the round-trip and core-agreement tests share.
+    fn populated_reports() -> [StageReport; 5] {
+        let question = Question {
+            id: "q1".into(),
+            text: "which way?".into(),
+            options: vec![],
+        };
+        [
+            StageReport::Plan(PlanReport {
+                status: ReportStatus::Continue,
+                summary: "drive issue #7".into(),
+                work_unit: Some("issue #7".into()),
+                steps: vec!["add the type".into(), "wire the schema".into()],
+                blockers: vec![],
+                questions: vec![question],
+            }),
+            StageReport::Implement(ImplementReport {
+                status: ReportStatus::Continue,
+                summary: "added the type".into(),
+                remaining: vec!["wire the schema".into()],
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Review(ReviewReport {
+                status: ReportStatus::Continue,
+                summary: "patched naming".into(),
+                findings: vec!["error paths untested".into()],
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Simplify(SimplifyReport {
+                status: ReportStatus::Done,
+                summary: "folded the twins".into(),
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Deliver(DeliverReport {
+                status: ReportStatus::Blocked,
+                summary: "push rejected".into(),
+                links: vec!["https://example.com/pr/1".into()],
+                blockers: vec!["no push credential".into()],
+                questions: vec![],
+            }),
+        ]
     }
 
     #[test]
@@ -333,49 +390,7 @@ mod tests {
 
     #[test]
     fn each_stage_report_round_trips_with_its_payload() {
-        let question = Question {
-            id: "q1".into(),
-            text: "which way?".into(),
-            options: vec![],
-        };
-        let reports = [
-            StageReport::Plan(PlanReport {
-                status: ReportStatus::Continue,
-                summary: "drive issue #7".into(),
-                work_unit: Some("issue #7".into()),
-                steps: vec!["add the type".into(), "wire the schema".into()],
-                blockers: vec![],
-                questions: vec![question.clone()],
-            }),
-            StageReport::Implement(ImplementReport {
-                status: ReportStatus::Continue,
-                summary: "added the type".into(),
-                remaining: vec!["wire the schema".into()],
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Review(ReviewReport {
-                status: ReportStatus::Continue,
-                summary: "patched naming".into(),
-                findings: vec!["error paths untested".into()],
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Simplify(SimplifyReport {
-                status: ReportStatus::Done,
-                summary: "folded the twins".into(),
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Deliver(DeliverReport {
-                status: ReportStatus::Blocked,
-                summary: "push rejected".into(),
-                links: vec!["https://example.com/pr/1".into()],
-                blockers: vec!["no push credential".into()],
-                questions: vec![],
-            }),
-        ];
-        for report in reports {
+        for report in populated_reports() {
             let wire = match &report {
                 StageReport::Plan(r) => serde_json::to_string(r).unwrap(),
                 StageReport::Implement(r) => serde_json::to_string(r).unwrap(),
@@ -394,7 +409,7 @@ mod tests {
             let report = StageReport::from_stage_json(stage, &minimal("continue")).unwrap();
             assert_eq!(report.stage(), stage);
             assert_eq!(report.status(), ReportStatus::Continue, "{stage:?}");
-            assert!(report.questions().is_empty(), "{stage:?}");
+            assert!(report.core().questions.is_empty(), "{stage:?}");
         }
     }
 
@@ -460,11 +475,25 @@ mod tests {
             .to_string();
             let report = StageReport::from_stage_json(stage, &report).unwrap();
             assert_eq!(report.status(), ReportStatus::NeedsInput);
-            let [question] = report.questions() else {
+            let core = report.core();
+            let [question] = core.questions.as_slice() else {
                 panic!("{stage:?}: expected one question");
             };
             assert_eq!(question.id, "q1");
             assert_eq!(question.options, ["a", "b"]);
+        }
+    }
+
+    /// The flattening contract [`ReportCore`] documents: every stage's
+    /// wire shape deserializes into the shared core, and what lands
+    /// there is exactly what `core()` reports. This agreement is what
+    /// lets a dialect-blind reader — the engine's run projection —
+    /// read any logged report without importing this dialect.
+    #[test]
+    fn every_stage_report_flattens_into_the_shared_core() {
+        for report in populated_reports() {
+            let read: ReportCore = serde_json::from_value(report.to_json_value()).unwrap();
+            assert_eq!(read, report.core(), "{:?}", report.stage());
         }
     }
 }

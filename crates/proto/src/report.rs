@@ -11,7 +11,9 @@
 //! mistyped key must fail the report and feed the repair re-prompt,
 //! and the schemas must promise exactly what serde enforces), and
 //! both ends of the wire ship from this workspace in lockstep, so
-//! leniency would only let a contract drift land silently.
+//! leniency would only let a contract drift land silently. The one
+//! deliberate exception is [`ReportCore`], the read-side view over a
+//! report that was already strict-parsed at that boundary.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,29 @@ pub struct Question {
     /// Suggested answers; free-text is always allowed.
     #[serde(default)]
     pub options: Vec<String>,
+}
+
+/// The uniform slice every stage report carries — the status the
+/// kernel gates on, the summary a human reads, the questions a pause
+/// surfaces. What dialect-blind machinery (the engine's run
+/// projection, the daemon's status endpoint) reads from any kernel's
+/// report without importing its dialect; everything else in a report
+/// is dialect payload.
+///
+/// Deserializes leniently by design — the payload fields it skips
+/// belong to whichever dialect wrote the report, and the full shape
+/// was strict-parsed at the agent boundary before it was ever logged.
+/// Each dialect's agreement suite pins that its wire shape flattens
+/// into this core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportCore {
+    pub status: ReportStatus,
+    /// What happened, in the agent's words.
+    pub summary: String,
+    /// Questions only a human can answer; expected when the status is
+    /// `needs_input`.
+    #[serde(default)]
+    pub questions: Vec<Question>,
 }
 
 /// A human's answer to one question a paused run asked, addressed by
@@ -88,6 +113,38 @@ mod tests {
         assert_eq!(serde_json::from_str::<Question>(&wire).unwrap(), question);
         let wire = serde_json::to_string(&answer).unwrap();
         assert_eq!(serde_json::from_str::<Answer>(&wire).unwrap(), answer);
+    }
+
+    /// The core reads a dialect's full wire shape — here a plan-like
+    /// report — keeping the uniform fields and skipping the payload.
+    #[test]
+    fn the_core_reads_any_dialect_report_ignoring_its_payload() {
+        let core: ReportCore = serde_json::from_value(json!({
+            "status": "needs_input",
+            "summary": "picked the unit",
+            "work_unit": "issue #7",
+            "steps": ["add the type"],
+            "blockers": [],
+            "questions": [{"id": "q1", "text": "which way?"}],
+        }))
+        .unwrap();
+        assert_eq!(core.status, ReportStatus::NeedsInput);
+        assert_eq!(core.summary, "picked the unit");
+        assert_eq!(core.questions.len(), 1);
+        assert_eq!(core.questions[0].id, "q1");
+    }
+
+    /// Lenient about the payload, never about the core itself: the
+    /// uniform fields must be there, questions merely default.
+    #[test]
+    fn a_report_missing_the_core_fields_is_rejected_naming_them() {
+        let err = serde_json::from_value::<ReportCore>(json!({"summary": "s"})).unwrap_err();
+        assert!(err.to_string().contains("status"), "{err}");
+        let err = serde_json::from_value::<ReportCore>(json!({"status": "done"})).unwrap_err();
+        assert!(err.to_string().contains("summary"), "{err}");
+        let core: ReportCore =
+            serde_json::from_value(json!({"status": "done", "summary": "s"})).unwrap();
+        assert!(core.questions.is_empty());
     }
 
     #[test]
