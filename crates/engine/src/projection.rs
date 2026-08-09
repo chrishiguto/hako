@@ -11,6 +11,8 @@
 //! kernel's dialect flattens into. A typed dialect read is the owning
 //! kernel's business, done by replaying the raw events itself.
 
+use serde::Deserialize;
+
 use proto::event::{EventEnvelope, RunEvent};
 use proto::report::ReportCore;
 
@@ -64,7 +66,7 @@ impl RunProjection {
         }
         let last_report = last_report
             .map(|(seq, raw)| {
-                serde_json::from_value::<ReportCore>(raw.clone()).map_err(|error| ProjectionError {
+                ReportCore::deserialize(raw).map_err(|error| ProjectionError {
                     seq,
                     detail: error.to_string(),
                 })
