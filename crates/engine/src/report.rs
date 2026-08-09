@@ -5,4 +5,4 @@
 //! the pipeline kernel) and are imported by that kernel alone — the
 //! engine's shared machinery never speaks them.
 
-pub use proto::report::{Answer, Question, ReportStatus};
+pub use proto::report::{Answer, Question, ReportCore, ReportStatus};

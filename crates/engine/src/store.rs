@@ -23,18 +23,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::event::{EventSink, EventSinkError};
+use crate::projection::{INITIAL_STATE, RunProjection};
 use crate::run::{RunId, RunState};
 use proto::event::{EventEnvelope, RunEvent};
 
 const EVENT_LOG_FILE: &str = "events.jsonl";
 const STATE_FILE: &str = "state.json";
 const META_FILE: &str = "meta.json";
-
-/// The state a run is born in — what `create` seeds the mirror with
-/// and what `state()` reports while the log holds no `state_changed`
-/// yet. One definition, so the two can never disagree about a fresh
-/// run.
-const INITIAL_STATE: RunState = RunState::Running;
 
 /// What identifies a run beyond its log: written once at creation,
 /// immutable after. The one file a registry can read without touching
@@ -188,12 +183,22 @@ impl RunDir {
         Ok((events, terminated as u64))
     }
 
+    /// Where the run stands per the log, in one pass: state, last
+    /// report core, counters, and the resume cursor — the
+    /// [`RunProjection`] fold applied to this run's events. A report
+    /// that cannot yield its core is corruption: every logged report
+    /// was strict-parsed against its dialect before it was appended.
+    pub async fn project(&self) -> Result<RunProjection, StoreError> {
+        let events = self.events().await?;
+        RunProjection::of(&events).map_err(|error| StoreError::corrupt(&self.log_path(), error))
+    }
+
     /// Where the run stands according to the log: the last
     /// `state_changed`, or `running` while none has landed. A run that
     /// reads `running` after a restart simply never got further — what
     /// to do about its dead kernel is the host's call.
     pub async fn state(&self) -> Result<RunState, StoreError> {
-        Ok(reduce_state(&self.events().await?))
+        Ok(self.project().await?.state)
     }
 
     /// The sink a kernel appends this run's events through. Continues
@@ -234,22 +239,6 @@ impl RunDir {
     fn meta_path(&self) -> PathBuf {
         self.root.join(META_FILE)
     }
-}
-
-/// The state a run's log reduces to: the last `state_changed` it
-/// carries, or [`INITIAL_STATE`] while none has landed. The single
-/// definition of how a run's state is read back — shared by
-/// [`RunDir::state`] and the daemon's status projection, so a run
-/// cannot read one state through the store and another through the API.
-pub fn reduce_state(events: &[EventEnvelope]) -> RunState {
-    events
-        .iter()
-        .rev()
-        .find_map(|envelope| match envelope.event {
-            RunEvent::StateChanged { state } => Some(state),
-            _ => None,
-        })
-        .unwrap_or(INITIAL_STATE)
 }
 
 /// The file-backed [`EventSink`]: each event becomes one enveloped
@@ -549,6 +538,68 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(events[2].seq, 2);
         assert_eq!(events[2].event, RunEvent::RunResumed { note: None });
+    }
+
+    /// The store's side of the projection: `project()` is the pure
+    /// fold applied to the log this directory holds.
+    #[tokio::test]
+    async fn a_run_directory_projects_its_own_log() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+        sink.emit(started()).await.unwrap();
+        sink.emit(RunEvent::StageReported {
+            iteration: 1,
+            stage: "plan".into(),
+            report: json!({"status": "continue", "summary": "picked issue #7"}),
+        })
+        .await
+        .unwrap();
+        sink.emit(RunEvent::IterationFinished {
+            iteration: 1,
+            outcome: proto::event::IterationOutcome::Completed,
+        })
+        .await
+        .unwrap();
+        sink.emit(paused()).await.unwrap();
+
+        let projection = dir.project().await.unwrap();
+        assert_eq!(
+            projection.state,
+            RunState::Paused {
+                reason: PauseReason::Drift
+            }
+        );
+        assert_eq!(projection.iterations_completed, 1);
+        assert_eq!(projection.last_seq, Some(3));
+        let events = dir.events().await.unwrap();
+        assert_eq!(
+            projection.updated_at.as_deref(),
+            Some(events[3].at.as_str())
+        );
+        assert_eq!(projection.last_report.unwrap().summary, "picked issue #7");
+    }
+
+    /// A logged report that cannot yield the shared core never came
+    /// from a kernel — the projection reports it as corruption naming
+    /// the log file.
+    #[tokio::test]
+    async fn a_report_without_its_core_is_corrupt() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+        sink.emit(RunEvent::StageReported {
+            iteration: 1,
+            stage: "plan".into(),
+            report: json!({"weird": true}),
+        })
+        .await
+        .unwrap();
+
+        let error = dir.project().await.unwrap_err();
+        assert!(matches!(error, StoreError::Corrupt { .. }));
+        assert!(error.to_string().contains(EVENT_LOG_FILE), "{error}");
+        assert!(error.to_string().contains("seq 0"), "{error}");
     }
 
     #[tokio::test]
