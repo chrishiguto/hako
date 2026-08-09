@@ -197,6 +197,93 @@ async fn the_bracket_destroys_the_sandbox_when_the_work_fails() {
     assert_eq!(sandbox.destroyed(), 1);
 }
 
+/// A minimal report contract for the parse-and-repair loop: accepts
+/// only the literal `ok`. The shape itself is kernel property; the
+/// loop under test must work for any of them.
+struct OkContract;
+
+impl invocation::ReportContract for OkContract {
+    type Report = String;
+
+    fn schema(&self) -> &str {
+        r#"{"const": "ok"}"#
+    }
+
+    fn parse(&self, text: &str) -> Result<String, String> {
+        if text == "ok" {
+            Ok(text.into())
+        } else {
+            Err(format!("not ok: {text}"))
+        }
+    }
+}
+
+fn rejections(events: &[RunEvent]) -> Vec<Vec<String>> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::ReportRejected { errors, .. } => Some(errors.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_parsed_report_needs_no_repair() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec("working\n", 0)]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
+    sandbox.write_report_on_exec(b"ok".as_slice());
+    let handle = SandboxHandle::new("vm-0");
+
+    let report = invocation::invoke_to_report(&ctx, 1, &handle, "work", &OkContract)
+        .await
+        .unwrap();
+
+    assert_eq!(report.as_deref(), Some("ok"));
+    assert_eq!(sandbox.execs().len(), 1, "no repair was spent");
+    assert!(rejections(&sink.events()).is_empty());
+}
+
+/// The one-repair budget of ADR 0011: a rejected report earns exactly
+/// one re-prompt — the errors and the schema quoted back, in the same
+/// sandbox — and a second rejection ends the invocation with nothing.
+#[tokio::test]
+async fn a_rejected_report_earns_one_logged_repair_then_fails() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        exec("working\n", 0),
+        exec("repairing\n", 0),
+    ]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
+    sandbox.write_report_on_exec(b"nope".as_slice());
+    let handle = SandboxHandle::new("vm-0");
+
+    let report = invocation::invoke_to_report(&ctx, 1, &handle, "work", &OkContract)
+        .await
+        .unwrap();
+
+    assert_eq!(report, None);
+    // Both rejections reached the log with the contract's own error.
+    assert_eq!(
+        rejections(&sink.events()),
+        [
+            vec!["not ok: nope".to_string()],
+            vec!["not ok: nope".to_string()],
+        ]
+    );
+    // The second exec was the repair re-prompt, carrying the errors
+    // and the schema for the agent to answer.
+    let execs = sandbox.execs();
+    assert_eq!(execs.len(), 2);
+    let repair_prompt = &execs[1].argv[2];
+    assert!(repair_prompt.contains("not ok: nope"), "{repair_prompt}");
+    assert!(
+        repair_prompt.contains(r#"{"const": "ok"}"#),
+        "{repair_prompt}"
+    );
+}
+
 /// A verify section with the given checks; retries and on_fail stay
 /// out of scope — they are kernel policy, not check mechanism.
 fn verifying(checks: &[&str]) -> VerifyConfig {
