@@ -15,7 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "process", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
 
 [features]
 # The seam fakes, defaulted KernelContext, and real-git fixtures under
@@ -29,4 +29,7 @@ testkit = ["dep:tempfile"]
 # builds.
 engine = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+# `test-util` gives the pausable clock: per ADR 0006 time is
+# deliberately not a seam, so timeout tests pause tokio's clock
+# instead of faking a collaborator.
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
