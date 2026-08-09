@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::Barrier;
 
-use super::fakes::{AGENT_BIN, Transcript};
+use super::fakes::{AGENT_BIN, Transcript, prompt_from};
 use crate::sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
 };
@@ -337,12 +337,8 @@ pub struct StagedSandbox {
 }
 
 impl StagedSandbox {
-    pub fn new(
-        workspace_root: PathBuf,
-        agent_steps: Vec<AgentStep>,
-        checks: Vec<i32>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(workspace_root: PathBuf, agent_steps: Vec<AgentStep>, checks: Vec<i32>) -> Self {
+        Self {
             workspace_root,
             agent_steps: Mutex::new(agent_steps.into()),
             checks: Mutex::new(checks.into()),
@@ -351,7 +347,7 @@ impl StagedSandbox {
             created: AtomicU32::new(0),
             destroyed: AtomicU32::new(0),
             work_files: AtomicU32::new(0),
-        })
+        }
     }
 
     /// Every prompt the agent was invoked with, in order.
@@ -396,7 +392,7 @@ impl StagedSandbox {
         self.agent_prompts
             .lock()
             .unwrap()
-            .push(command.argv.get(2).cloned().unwrap_or_default());
+            .push(prompt_from(&command.argv).unwrap_or_default().to_owned());
 
         let n = self.work_files.fetch_add(1, Ordering::SeqCst);
         std::fs::write(self.workspace_root.join(format!("work-{n}.txt")), "work\n").unwrap();

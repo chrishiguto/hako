@@ -29,6 +29,15 @@ pub fn exec(stdout: &str, code: i32) -> Transcript {
 /// agent exec from a verify check.
 pub const AGENT_BIN: &str = "scripted-agent";
 
+/// Recovers the prompt from an invocation [`ScriptedAgent`] built —
+/// the argv layout's one decoder, kept beside its encoder.
+pub(super) fn prompt_from(argv: &[String]) -> Option<&str> {
+    match argv {
+        [bin, flag, prompt] if bin == AGENT_BIN && flag == "--prompt" => Some(prompt),
+        _ => None,
+    }
+}
+
 /// A pure translator, like every real adapter: prompt in, argv out.
 /// By default it requires no secrets and reports no usage; a test that
 /// cares opts in.

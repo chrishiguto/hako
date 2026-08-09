@@ -62,7 +62,11 @@ async fn run_pipeline(
     checks: Vec<i32>,
 ) -> Ran {
     let workspace = seeded_repo();
-    let sandbox = StagedSandbox::new(workspace.path().to_path_buf(), agent_steps, checks);
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        agent_steps,
+        checks,
+    ));
     let (ctx, sink) = context(workspace.path(), sandbox.clone(), verify, prompts);
     let outcome = PipelineKernel.run(ctx).await.unwrap();
     Ran {
@@ -219,11 +223,11 @@ async fn a_prompt_override_replaces_the_shipped_default() {
         "CUSTOM PLAN RULES\n",
     )
     .unwrap();
-    let sandbox = StagedSandbox::new(
+    let sandbox = Arc::new(StagedSandbox::new(
         workspace.path().to_path_buf(),
         vec![reports("done", "done")],
         vec![],
-    );
+    ));
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
     let (ctx, _) = context(
@@ -251,11 +255,11 @@ async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {
     std::fs::create_dir(workspace.path().join("prompts")).unwrap();
     symlink(&host_secret, workspace.path().join("prompts/plan.md")).unwrap();
 
-    let sandbox = StagedSandbox::new(
+    let sandbox = Arc::new(StagedSandbox::new(
         workspace.path().to_path_buf(),
         vec![reports("done", "done")],
         vec![],
-    );
+    ));
     sandbox.seed_guest_file(
         "/workspace/prompts/plan.md",
         b"GUEST PROMPT CONTENT\n".to_vec(),
@@ -278,7 +282,11 @@ async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {
 #[tokio::test]
 async fn a_non_utf8_override_prompt_is_run_fatal() {
     let workspace = seeded_repo();
-    let sandbox = StagedSandbox::new(workspace.path().to_path_buf(), vec![], vec![]);
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        vec![],
+        vec![],
+    ));
     sandbox.seed_guest_file("/workspace/prompts/plan.md", vec![0xff]);
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
@@ -291,11 +299,11 @@ async fn a_non_utf8_override_prompt_is_run_fatal() {
 #[tokio::test]
 async fn a_missing_override_prompt_is_run_fatal() {
     let workspace = seeded_repo();
-    let sandbox = StagedSandbox::new(
+    let sandbox = Arc::new(StagedSandbox::new(
         workspace.path().to_path_buf(),
         vec![reports("continue", "planned")],
         vec![],
-    );
+    ));
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/absent.md"})).unwrap();
     let (ctx, _) = context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
