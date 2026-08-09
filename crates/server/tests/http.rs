@@ -30,7 +30,7 @@ fn fake_sandbox(report: Value, barrier: Option<Arc<Barrier>>) -> ScriptedSandbox
 }
 
 struct TestHost {
-    _runs: tempfile::TempDir,
+    runs: tempfile::TempDir,
     repo: tempfile::TempDir,
     app: Router,
     sandbox: Arc<ScriptedSandbox>,
@@ -62,7 +62,7 @@ impl TestHost {
             .await
             .unwrap();
         Self {
-            _runs: runs,
+            runs,
             repo,
             app: daemon.router(),
             sandbox,
@@ -248,6 +248,36 @@ async fn concurrent_runs_have_independent_ids_directories_and_histories() {
     assert_eq!(first_status.run.run_id, first.run_id);
     assert_eq!(second_status.run.run_id, second.run_id);
     assert!(host.sandbox.max_active() >= 2);
+}
+
+/// Disk is the source of truth: a run directory deleted under a live
+/// daemon answers exactly as it would after a restart — status 404s,
+/// and the list simply no longer carries the run.
+#[tokio::test]
+async fn a_run_whose_directory_vanished_is_missing_not_a_daemon_fault() {
+    let host = TestHost::new(done_report()).await;
+    let submitted = host.submit().await;
+    host.wait_for_state(&submitted.run_id, "done").await;
+    tokio::fs::remove_dir_all(host.runs.path().join(&submitted.run_id))
+        .await
+        .unwrap();
+
+    let response = request(
+        &host.app,
+        Method::GET,
+        &format!("/v1/runs/{}", submitted.run_id),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let error: ApiError = body(response).await;
+    assert_eq!(error.code, ErrorCode::RunNotFound);
+
+    let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed: ListRunsResponse = body(response).await;
+    assert!(listed.runs.is_empty());
 }
 
 #[tokio::test]
