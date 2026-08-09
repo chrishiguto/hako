@@ -13,10 +13,8 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::Barrier;
 
-use super::fakes::{AGENT_BIN, Transcript, prompt_from};
-use crate::sandbox::{
-    ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
-};
+use super::fakes::{AGENT_BIN, Transcript, exec, prompt_from};
+use crate::sandbox::{ExecSpec, ExecStream, Sandbox, SandboxError, SandboxHandle, SandboxSpec};
 use crate::workspace::{GUEST_ROOT, REPORT_FILE};
 
 /// A sandbox that must never be touched — for tests whose kernel boots
@@ -176,18 +174,6 @@ impl ScriptedSandbox {
     }
 }
 
-/// By hand because [`SandboxError`] is not `Clone` — a fake replaying
-/// a transcript is the one place cloning one makes sense.
-fn clone_transcript(transcript: &Transcript) -> Transcript {
-    transcript
-        .iter()
-        .map(|event| match event {
-            Ok(event) => Ok(event.clone()),
-            Err(error) => Err(SandboxError(error.0.clone())),
-        })
-        .collect()
-}
-
 #[async_trait]
 impl Sandbox for ScriptedSandbox {
     async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
@@ -211,7 +197,7 @@ impl Sandbox for ScriptedSandbox {
             let mut script = self.script.lock().unwrap();
             script
                 .pop_front()
-                .or_else(|| self.fallback.as_ref().map(clone_transcript))
+                .or_else(|| self.fallback.clone())
                 .expect("an exec ran beyond its script")
         };
         if let Some(barrier) = &self.barrier {
@@ -327,17 +313,24 @@ pub struct StagedSandbox {
 }
 
 impl StagedSandbox {
-    pub fn new(workspace_root: PathBuf, agent_steps: Vec<AgentStep>, checks: Vec<i32>) -> Self {
+    pub fn new(workspace_root: PathBuf, agent_steps: Vec<AgentStep>) -> Self {
         Self {
             workspace_root,
             agent_steps: Mutex::new(agent_steps.into()),
-            checks: Mutex::new(checks.into()),
+            checks: Mutex::new(VecDeque::new()),
             agent_prompts: Mutex::new(Vec::new()),
             guest_files: Mutex::new(BTreeMap::new()),
             created: AtomicU32::new(0),
             destroyed: AtomicU32::new(0),
             work_files: AtomicU32::new(0),
         }
+    }
+
+    /// Scripts the verify-check exit codes; without this every check
+    /// passes.
+    pub fn with_checks(self, checks: Vec<i32>) -> Self {
+        *self.checks.lock().unwrap() = checks.into();
+        self
     }
 
     /// Every prompt the agent was invoked with, in order.
@@ -379,10 +372,11 @@ impl StagedSandbox {
             .unwrap()
             .pop_front()
             .expect("an agent exec ran beyond its script");
-        self.agent_prompts
-            .lock()
-            .unwrap()
-            .push(prompt_from(&command.argv).unwrap_or_default().to_owned());
+        self.agent_prompts.lock().unwrap().push(
+            prompt_from(&command.argv)
+                .expect("agent exec argv does not match ScriptedAgent's encoding")
+                .to_owned(),
+        );
 
         let n = self.work_files.fetch_add(1, Ordering::SeqCst);
         std::fs::write(self.workspace_root.join(format!("work-{n}.txt")), "work\n").unwrap();
@@ -394,12 +388,7 @@ impl StagedSandbox {
             std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
             std::fs::write(&report_path, report).unwrap();
         }
-        vec![
-            Ok(ExecEvent::Stdout(step.stdout.into_bytes())),
-            Ok(ExecEvent::Exited(ExitStatus {
-                code: Some(step.code),
-            })),
-        ]
+        exec(&step.stdout, step.code)
     }
 
     /// Serves one verify check: its scripted exit code, or a pass when
@@ -411,10 +400,7 @@ impl StagedSandbox {
         } else {
             "assertion failed: boom\n"
         };
-        vec![
-            Ok(ExecEvent::Stdout(line.as_bytes().to_vec())),
-            Ok(ExecEvent::Exited(ExitStatus { code: Some(code) })),
-        ]
+        exec(line, code)
     }
 }
 
