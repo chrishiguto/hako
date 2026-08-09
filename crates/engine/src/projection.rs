@@ -25,6 +25,8 @@ pub(crate) const INITIAL_STATE: RunState = RunState::Running;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunProjection {
     /// The last `state_changed`, or `running` while none has landed.
+    /// A run that projects `running` after a restart simply never got
+    /// further — what to do about its dead kernel is the host's call.
     pub state: RunState,
     /// The last event's timestamp; `None` while the log is empty — a
     /// host falls back to the run's `created_at` from its metadata.

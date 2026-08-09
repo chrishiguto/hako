@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 use crate::event::{EventSink, EventSinkError};
 use crate::projection::{INITIAL_STATE, RunProjection};
-use crate::run::{RunId, RunState};
+use crate::run::RunId;
 use proto::event::{EventEnvelope, RunEvent};
 
 const EVENT_LOG_FILE: &str = "events.jsonl";
@@ -191,14 +191,6 @@ impl RunDir {
     pub async fn project(&self) -> Result<RunProjection, StoreError> {
         let events = self.events().await?;
         RunProjection::of(&events).map_err(|error| StoreError::corrupt(&self.log_path(), error))
-    }
-
-    /// Where the run stands according to the log: the last
-    /// `state_changed`, or `running` while none has landed. A run that
-    /// reads `running` after a restart simply never got further — what
-    /// to do about its dead kernel is the host's call.
-    pub async fn state(&self) -> Result<RunState, StoreError> {
-        Ok(self.project().await?.state)
     }
 
     /// The sink a kernel appends this run's events through. Continues
@@ -368,7 +360,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::run::PauseReason;
+    use crate::run::{PauseReason, RunState};
 
     async fn created(runs_root: &Path) -> RunDir {
         RunDir::create(runs_root, RunId::new("r1"), "pipeline", "claude")
@@ -510,7 +502,7 @@ mod tests {
         assert_eq!(events[2].event, paused());
 
         assert_eq!(
-            dir.state().await.unwrap(),
+            dir.project().await.unwrap().state,
             RunState::Paused {
                 reason: PauseReason::Drift
             }
@@ -609,7 +601,7 @@ mod tests {
         let sink = dir.event_sink().await.unwrap();
         sink.emit(started()).await.unwrap();
 
-        assert_eq!(dir.state().await.unwrap(), RunState::Running);
+        assert_eq!(dir.project().await.unwrap().state, RunState::Running);
     }
 
     /// An append cut short by a crash or a full disk leaves a torn
@@ -630,7 +622,7 @@ mod tests {
         let events = dir.events().await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, started());
-        assert_eq!(dir.state().await.unwrap(), RunState::Running);
+        assert_eq!(dir.project().await.unwrap().state, RunState::Running);
     }
 
     #[tokio::test]
