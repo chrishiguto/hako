@@ -21,6 +21,8 @@ pub mod run;
 pub mod sandbox;
 pub mod secrets;
 pub mod store;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 pub mod verify;
 pub mod workspace;
 

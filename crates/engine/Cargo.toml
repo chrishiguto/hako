@@ -13,9 +13,20 @@ jiff.workspace = true
 proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync"] }
 
+[features]
+# The seam fakes, defaulted KernelContext, and real-git fixtures under
+# `engine::testkit`. Test-only, like proto's `schema`: product crates
+# build without it; consumers enable it from their dev-dependencies.
+testkit = ["dep:tempfile"]
+
 [dev-dependencies]
+# The crate dev-depends on itself so its own unit and integration
+# tests see the testkit without the feature leaking into product
+# builds.
+engine = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }

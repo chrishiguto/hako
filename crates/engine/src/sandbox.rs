@@ -136,7 +136,7 @@ pub(crate) fn into_text(bytes: Vec<u8>) -> String {
 
 /// A sandbox operation that failed. Opaque by design: kernels react to
 /// sandbox failure uniformly (fail the iteration), never to its cause.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("sandbox failure: {0}")]
 pub struct SandboxError(pub String);
 

@@ -23,7 +23,7 @@ pub use prepare::prepare;
 
 /// Where the workspace lands inside every sandbox. Fixed so domain
 /// prompts and agent muscle memory transfer between flows.
-const GUEST_ROOT: &str = "/workspace";
+pub(crate) const GUEST_ROOT: &str = "/workspace";
 
 /// The engine's scratch directory inside the workspace — the agent
 /// drops its report here, so checkpoints must never commit it:
@@ -171,72 +171,12 @@ fn git_failure(command: &str, output: &Output) -> WorkspaceError {
 #[error("workspace failure: {0}")]
 pub struct WorkspaceError(pub String);
 
-/// Real-git fixtures shared by this module's tests and preparation's:
-/// the workspace is asserted through git effects, so every suite
-/// builds the same kind of throwaway repositories.
-#[cfg(test)]
-pub(crate) mod testkit {
-    use std::path::Path;
-
-    /// The one committed file every seeded repository starts with — a
-    /// stand-in for whatever a real repo holds.
-    pub const SEED_FILE: &str = "README.md";
-
-    /// A repository on branch `main` holding one committed file.
-    pub fn seeded_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        git(dir.path(), &["init", "-q", "-b", "main"]);
-        std::fs::write(dir.path().join(SEED_FILE), "seed\n").unwrap();
-        git(dir.path(), &["add", "-A"]);
-        commit(dir.path(), "seed");
-        dir
-    }
-
-    pub fn git(dir: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?}");
-    }
-
-    pub fn commit(dir: &Path, message: &str) {
-        git(
-            dir,
-            &[
-                "-c",
-                "user.name=test",
-                "-c",
-                "user.email=test@localhost",
-                "commit",
-                "-qm",
-                message,
-            ],
-        );
-    }
-
-    /// A git query's stdout, trimmed — `head` and friends.
-    pub fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?}");
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    }
-
-    pub fn head(dir: &Path) -> String {
-        git_stdout(dir, &["rev-parse", "HEAD"])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::testkit::{head, seeded_repo as seeded_dir};
+    use crate::testkit::{head, seeded_repo as seeded_dir};
+
     use super::*;
 
     fn seeded_repo() -> (tempfile::TempDir, Workspace) {

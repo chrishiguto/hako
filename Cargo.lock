@@ -457,6 +457,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "engine",
  "futures-core",
  "futures-util",
  "jiff",

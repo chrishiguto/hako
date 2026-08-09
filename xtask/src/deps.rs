@@ -192,7 +192,9 @@ mod tests {
     /// new edge gets added; the closure test derives from it.
     fn intended_shape() -> Graph {
         graph(&[
-            ("engine", &["proto"]),
+            // The self-edge is engine's dev-dependency on itself,
+            // which turns its `testkit` feature on for its own tests.
+            ("engine", &["engine", "proto"]),
             ("api", &["proto"]),
             ("sandbox", &["engine"]),
             ("server", &["engine", "api", "sandbox"]),
