@@ -1,20 +1,13 @@
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use api::{ApiError, ListRunsResponse, RunStatusResponse, SubmitRunResponse};
-use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use engine::{
-    ExecEvent, ExecSpec, ExecStream, ExitStatus, Notification, Notifier, NotifierError, Sandbox,
-    SandboxError, SandboxHandle, SandboxSpec, SecretName, SecretValue, SecretsError,
-    SecretsProvider,
-};
-use futures_util::{StreamExt, stream};
+use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
+use engine::{ExecEvent, ExitStatus};
 use http_body_util::BodyExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -24,11 +17,23 @@ use tower::ServiceExt;
 
 const TOKEN: &str = "test-bearer-token";
 
+/// A sandbox whose every exec succeeds silently and "writes" the given
+/// report — the shortest path from a submitted flow to a finished run.
+fn fake_sandbox(report: Value, barrier: Option<Arc<Barrier>>) -> ScriptedSandbox {
+    let mut sandbox =
+        ScriptedSandbox::repeating(vec![Ok(ExecEvent::Exited(ExitStatus { code: Some(0) }))]);
+    if let Some(barrier) = barrier {
+        sandbox = sandbox.with_barrier(barrier);
+    }
+    sandbox.serve_report(serde_json::to_vec(&report).unwrap());
+    sandbox
+}
+
 struct TestHost {
     _runs: tempfile::TempDir,
     repo: tempfile::TempDir,
     app: Router,
-    sandbox: Arc<FakeSandbox>,
+    sandbox: Arc<ScriptedSandbox>,
 }
 
 impl TestHost {
@@ -39,18 +44,18 @@ impl TestHost {
     async fn with_barrier(report: Value, barrier: Option<Arc<Barrier>>) -> Self {
         let runs = tempfile::tempdir().unwrap();
         let repo = seeded_repo();
-        let sandbox = Arc::new(FakeSandbox::new(report, barrier));
+        let sandbox = Arc::new(fake_sandbox(report, barrier));
         Self::with_parts(runs, repo, sandbox).await
     }
 
     async fn with_parts(
         runs: tempfile::TempDir,
         repo: tempfile::TempDir,
-        sandbox: Arc<FakeSandbox>,
+        sandbox: Arc<ScriptedSandbox>,
     ) -> Self {
         let runtime = Arc::new(EngineRuntime::new(
             sandbox.clone(),
-            Arc::new(QuietNotifier),
+            Arc::new(StubNotifier),
             Arc::new(NoSecrets),
         ));
         let daemon = Daemon::load(DaemonConfig::new(TOKEN, runs.path()), runtime)
@@ -203,7 +208,7 @@ async fn submit_distinguishes_well_formed_flows_the_engine_cannot_run() {
 async fn a_panicking_execution_is_recorded_as_failed() {
     let runs = tempfile::tempdir().unwrap();
     let repo = seeded_repo();
-    let sandbox = Arc::new(FakeSandbox::panicking());
+    let sandbox = Arc::new(fake_sandbox(done_report(), None).panicking());
     let host = TestHost::with_parts(runs, repo, sandbox).await;
     let submitted = host.submit().await;
     host.wait_for_state(&submitted.run_id, "failed").await;
@@ -242,7 +247,7 @@ async fn concurrent_runs_have_independent_ids_directories_and_histories() {
     );
     assert_eq!(first_status.run.run_id, first.run_id);
     assert_eq!(second_status.run.run_id, second.run_id);
-    assert!(host.sandbox.max_active.load(Ordering::SeqCst) >= 2);
+    assert!(host.sandbox.max_active() >= 2);
 }
 
 #[tokio::test]
@@ -251,7 +256,7 @@ async fn startup_ignores_entries_that_are_not_run_directories() {
     std::fs::create_dir(runs.path().join("not-a-run")).unwrap();
     std::fs::write(runs.path().join("stray-file"), b"junk").unwrap();
     let repo = seeded_repo();
-    let sandbox = Arc::new(FakeSandbox::new(done_report(), None));
+    let sandbox = Arc::new(fake_sandbox(done_report(), None));
     let host = TestHost::with_parts(runs, repo, sandbox).await;
 
     let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
@@ -266,8 +271,8 @@ async fn restart_reloads_runs_and_reduces_status_from_their_event_logs() {
     let repo = seeded_repo();
     let runtime = || {
         Arc::new(EngineRuntime::new(
-            Arc::new(FakeSandbox::new(done_report(), None)),
-            Arc::new(QuietNotifier),
+            Arc::new(fake_sandbox(done_report(), None)),
+            Arc::new(StubNotifier),
             Arc::new(NoSecrets),
         ))
     };
@@ -404,41 +409,6 @@ repo = {:?}
     )
 }
 
-fn seeded_repo() -> tempfile::TempDir {
-    let repo = tempfile::tempdir().unwrap();
-    run_git(repo.path(), &["init", "--quiet"]);
-    std::fs::write(repo.path().join("README.md"), "seed\n").unwrap();
-    run_git(repo.path(), &["add", "README.md"]);
-    run_git(
-        repo.path(),
-        &[
-            "-c",
-            "user.name=hako test",
-            "-c",
-            "user.email=hako@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "seed",
-        ],
-    );
-    repo
-}
-
-fn run_git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {}: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn done_report() -> Value {
     json!({"status": "done", "summary": "finished from the fake"})
 }
@@ -449,107 +419,4 @@ fn needs_input_report() -> Value {
         "summary": "need a decision",
         "questions": [{"id": "q1", "text": "which shape?", "options": ["a", "b"]}]
     })
-}
-
-struct FakeSandbox {
-    report: Vec<u8>,
-    barrier: Option<Arc<Barrier>>,
-    next: AtomicUsize,
-    active: AtomicUsize,
-    max_active: AtomicUsize,
-    panic_on_create: bool,
-}
-
-impl FakeSandbox {
-    fn new(report: Value, barrier: Option<Arc<Barrier>>) -> Self {
-        Self {
-            report: serde_json::to_vec(&report).unwrap(),
-            barrier,
-            next: AtomicUsize::new(0),
-            active: AtomicUsize::new(0),
-            max_active: AtomicUsize::new(0),
-            panic_on_create: false,
-        }
-    }
-
-    fn panicking() -> Self {
-        Self {
-            panic_on_create: true,
-            ..Self::new(done_report(), None)
-        }
-    }
-}
-
-#[async_trait]
-impl Sandbox for FakeSandbox {
-    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
-        assert!(!self.panic_on_create, "scripted sandbox panic");
-        let id = format!("fake-{}", self.next.fetch_add(1, Ordering::SeqCst));
-        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-        self.max_active.fetch_max(active, Ordering::SeqCst);
-        Ok(SandboxHandle::new(id))
-    }
-
-    async fn exec_stream(
-        &self,
-        _sandbox: &SandboxHandle,
-        _command: &ExecSpec,
-    ) -> Result<ExecStream, SandboxError> {
-        if let Some(barrier) = &self.barrier {
-            barrier.wait().await;
-        }
-        Ok(stream::iter([Ok(ExecEvent::Exited(ExitStatus { code: Some(0) }))]).boxed())
-    }
-
-    async fn put_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-        _contents: &[u8],
-    ) -> Result<(), SandboxError> {
-        Ok(())
-    }
-
-    async fn get_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-    ) -> Result<Vec<u8>, SandboxError> {
-        Ok(self.report.clone())
-    }
-
-    async fn remove_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-    ) -> Result<(), SandboxError> {
-        Ok(())
-    }
-
-    async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
-        self.active.fetch_sub(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn preflight(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
-}
-
-struct QuietNotifier;
-
-#[async_trait]
-impl Notifier for QuietNotifier {
-    async fn notify(&self, _notification: &Notification) -> Result<(), NotifierError> {
-        Ok(())
-    }
-}
-
-struct NoSecrets;
-
-#[async_trait]
-impl SecretsProvider for NoSecrets {
-    async fn resolve(&self, name: &SecretName) -> Result<SecretValue, SecretsError> {
-        Err(SecretsError::NotFound(name.clone()))
-    }
 }

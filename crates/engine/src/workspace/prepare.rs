@@ -279,7 +279,8 @@ fn utf8_path(path: &Path) -> Result<&str, WorkspaceError> {
 mod tests {
     use std::path::Path;
 
-    use super::super::testkit::{SEED_FILE, commit, git, git_stdout, head, seeded_repo};
+    use crate::testkit::{SEED_FILE, commit, git, git_stdout, head, seeded_repo};
+
     use super::*;
 
     fn clone_config(repo: impl Into<String>) -> WorkspaceConfig {

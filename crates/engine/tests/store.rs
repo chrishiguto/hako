@@ -5,17 +5,18 @@
 //!
 //! The kernel here is a test-local fake that replays a scripted event
 //! sequence — the store's contract is with the seam, not with any
-//! particular loop.
+//! particular loop. Every other collaborator is the testkit's inert
+//! default: this kernel touches no sandbox and invokes no agent, so
+//! any such call is a test bug the defaults turn into a panic.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use engine::testkit;
 use engine::{
-    AgentAdapter, Budgets, EventSink, ExecSpec, ExecStream, Kernel, KernelContext, KernelError,
-    Notification, Notifier, NotifierError, PauseReason, PromptsConfig, RunDir, RunEvent, RunId,
-    RunOutcome, RunState, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName,
-    SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    EventSink, Kernel, KernelContext, KernelError, PauseReason, RunDir, RunEvent, RunId,
+    RunOutcome, RunState, Workspace,
 };
 use proto::event::{IterationOutcome, OutputStream};
 
@@ -36,95 +37,6 @@ impl Kernel for ScriptedKernel {
     }
 }
 
-/// The scripted kernel touches no sandbox; every call is a test bug.
-struct NoSandbox;
-
-#[async_trait]
-impl Sandbox for NoSandbox {
-    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
-        unreachable!("the scripted kernel boots no sandbox");
-    }
-
-    async fn exec_stream(
-        &self,
-        _sandbox: &SandboxHandle,
-        _command: &ExecSpec,
-    ) -> Result<ExecStream, SandboxError> {
-        unreachable!("the scripted kernel execs nothing");
-    }
-
-    async fn put_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-        _contents: &[u8],
-    ) -> Result<(), SandboxError> {
-        unreachable!("the scripted kernel uploads nothing");
-    }
-
-    async fn get_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-    ) -> Result<Vec<u8>, SandboxError> {
-        unreachable!("the scripted kernel reads nothing");
-    }
-
-    async fn remove_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-    ) -> Result<(), SandboxError> {
-        unreachable!("the scripted kernel removes nothing");
-    }
-
-    async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
-        unreachable!("the scripted kernel boots no sandbox");
-    }
-
-    async fn preflight(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
-}
-
-struct NoAgent;
-
-impl AgentAdapter for NoAgent {
-    fn name(&self) -> &str {
-        "scripted"
-    }
-
-    fn required_secrets(&self) -> Vec<SecretName> {
-        vec![]
-    }
-
-    fn invocation(&self, _prompt: &str) -> ExecSpec {
-        unreachable!("the scripted kernel invokes no agent");
-    }
-
-    fn token_usage(&self, _stdout: &str) -> Option<TokenUsage> {
-        None
-    }
-}
-
-struct StubNotifier;
-
-#[async_trait]
-impl Notifier for StubNotifier {
-    async fn notify(&self, _notification: &Notification) -> Result<(), NotifierError> {
-        Ok(())
-    }
-}
-
-struct NoSecrets;
-
-#[async_trait]
-impl SecretsProvider for NoSecrets {
-    async fn resolve(&self, _name: &SecretName) -> Result<SecretValue, SecretsError> {
-        Err(SecretsError::Provider("no secrets in this loop".into()))
-    }
-}
-
 /// Runs a scripted kernel over the file sink of a freshly created run
 /// directory — the exact wiring a daemon host will do.
 async fn run_scripted(runs_root: &Path, events: Vec<RunEvent>, outcome: RunOutcome) -> RunOutcome {
@@ -133,18 +45,10 @@ async fn run_scripted(runs_root: &Path, events: Vec<RunEvent>, outcome: RunOutco
         .unwrap();
     let sink: Arc<dyn EventSink> = Arc::new(run_dir.event_sink().await.unwrap());
     let workspace_dir = tempfile::tempdir().unwrap();
-    let ctx = KernelContext {
-        run_id: RunId::new("r1"),
-        budgets: Budgets::default(),
-        verify: VerifyConfig::default(),
-        prompts: PromptsConfig::default(),
-        workspace: Workspace::at(workspace_dir.path()),
-        sandbox: Arc::new(NoSandbox),
-        agent: Arc::new(NoAgent),
-        events: sink,
-        notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
-    };
+    let ctx = testkit::context()
+        .workspace(Workspace::at(workspace_dir.path()))
+        .events(sink)
+        .build();
     ScriptedKernel { events, outcome }.run(ctx).await.unwrap()
 }
 

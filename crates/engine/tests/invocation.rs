@@ -4,226 +4,47 @@
 //! progress. House pattern: assert the emitted events, the outcomes,
 //! and the seam effects — never internal call patterns.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use engine::invocation::{self, InvocationEnd};
+use engine::testkit::{self, RecordingSink, ScriptedAgent, ScriptedSandbox, exec};
 use engine::verify::{self, VerifyOutcome};
 use engine::{
-    AgentAdapter, Budgets, EventSink, EventSinkError, ExecEvent, ExecSpec, ExecStream, ExitStatus,
-    KernelContext, KernelError, Notification, Notifier, NotifierError, OnFail, OutputStream,
-    PromptsConfig, RunEvent, RunId, Sandbox, SandboxError, SandboxHandle, SandboxSpec, SecretName,
-    SecretValue, SecretsError, SecretsProvider, TokenUsage, VerifyConfig, Workspace,
+    ExecEvent, ExitStatus, KernelContext, KernelError, OnFail, OutputStream, RunEvent,
+    SandboxError, SandboxHandle, TokenUsage, VerifyConfig,
 };
-use futures_util::{StreamExt, stream};
-
-/// One scripted exec: the events its stream replays.
-type Transcript = Vec<Result<ExecEvent, SandboxError>>;
-
-fn exec(stdout: &str, code: i32) -> Transcript {
-    vec![
-        Ok(ExecEvent::Stdout(stdout.as_bytes().to_vec())),
-        Ok(ExecEvent::Exited(ExitStatus { code: Some(code) })),
-    ]
-}
-
-/// Boots nothing: hands out handles, replays scripted transcripts in
-/// order, records every exec, and serves file reads from a seeded map.
-#[derive(Default)]
-struct FakeSandbox {
-    script: Mutex<VecDeque<Transcript>>,
-    files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
-    execs: Mutex<Vec<ExecSpec>>,
-    report_on_next_exec: Mutex<Option<(PathBuf, Vec<u8>)>>,
-    created: AtomicU32,
-    destroyed: AtomicU32,
-}
-
-impl FakeSandbox {
-    fn scripted(script: Vec<Transcript>) -> Arc<Self> {
-        Arc::new(Self {
-            script: Mutex::new(script.into()),
-            ..Self::default()
-        })
-    }
-
-    fn execs(&self) -> Vec<ExecSpec> {
-        self.execs.lock().unwrap().clone()
-    }
-
-    fn write_report_on_next_exec(&self, path: PathBuf, raw: &[u8]) {
-        *self.report_on_next_exec.lock().unwrap() = Some((path, raw.to_vec()));
-    }
-}
-
-#[async_trait]
-impl Sandbox for FakeSandbox {
-    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
-        let n = self.created.fetch_add(1, Ordering::SeqCst);
-        Ok(SandboxHandle::new(format!("vm-{n}")))
-    }
-
-    async fn exec_stream(
-        &self,
-        _sandbox: &SandboxHandle,
-        command: &ExecSpec,
-    ) -> Result<ExecStream, SandboxError> {
-        self.execs.lock().unwrap().push(command.clone());
-        if let Some((path, raw)) = self.report_on_next_exec.lock().unwrap().take() {
-            self.files.lock().unwrap().insert(path, raw);
-        }
-        let transcript = self
-            .script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("an exec ran beyond its script");
-        Ok(stream::iter(transcript).boxed())
-    }
-
-    async fn put_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        _path: &Path,
-        _contents: &[u8],
-    ) -> Result<(), SandboxError> {
-        unreachable!("nothing here uploads files");
-    }
-
-    async fn get_file(
-        &self,
-        _sandbox: &SandboxHandle,
-        path: &Path,
-    ) -> Result<Vec<u8>, SandboxError> {
-        self.files
-            .lock()
-            .unwrap()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| SandboxError(format!("no such file: {}", path.display())))
-    }
-
-    async fn remove_file(&self, _sandbox: &SandboxHandle, path: &Path) -> Result<(), SandboxError> {
-        self.files.lock().unwrap().remove(path);
-        Ok(())
-    }
-
-    async fn destroy(&self, _sandbox: SandboxHandle) -> Result<(), SandboxError> {
-        self.destroyed.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn preflight(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
-}
-
-/// A pure translator, like every real adapter: prompt in, argv out.
-struct ScriptedAgent;
-
-impl AgentAdapter for ScriptedAgent {
-    fn name(&self) -> &str {
-        "scripted"
-    }
-
-    fn required_secrets(&self) -> Vec<SecretName> {
-        vec![]
-    }
-
-    fn invocation(&self, prompt: &str) -> ExecSpec {
-        ExecSpec {
-            argv: vec!["scripted-agent".into(), "--prompt".into(), prompt.into()],
-            cwd: None,
-        }
-    }
-
-    fn token_usage(&self, stdout: &str) -> Option<TokenUsage> {
-        stdout.contains("tokens used").then_some(TokenUsage {
-            input: 12,
-            output: 3,
-        })
-    }
-}
-
-#[derive(Default)]
-struct RecordingSink {
-    events: Mutex<Vec<RunEvent>>,
-}
-
-impl RecordingSink {
-    fn events(&self) -> Vec<RunEvent> {
-        self.events.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl EventSink for RecordingSink {
-    async fn emit(&self, event: RunEvent) -> Result<(), EventSinkError> {
-        self.events.lock().unwrap().push(event);
-        Ok(())
-    }
-}
-
-struct StubNotifier;
-
-#[async_trait]
-impl Notifier for StubNotifier {
-    async fn notify(&self, _notification: &Notification) -> Result<(), NotifierError> {
-        Ok(())
-    }
-}
-
-struct NoSecrets;
-
-#[async_trait]
-impl SecretsProvider for NoSecrets {
-    async fn resolve(&self, _name: &SecretName) -> Result<SecretValue, SecretsError> {
-        Err(SecretsError::Provider("no secrets here".into()))
-    }
-}
 
 fn context(
-    sandbox: Arc<FakeSandbox>,
+    sandbox: Arc<ScriptedSandbox>,
     sink: Arc<RecordingSink>,
     verify: VerifyConfig,
 ) -> KernelContext {
-    KernelContext {
-        run_id: RunId::new("r1"),
-        budgets: Budgets::default(),
-        verify,
-        prompts: PromptsConfig::default(),
-        workspace: Workspace::at("/srv/runs/r1/workspace"),
-        sandbox,
-        agent: Arc::new(ScriptedAgent),
-        events: sink,
-        notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
-    }
+    testkit::context()
+        .verify(verify)
+        .sandbox(sandbox)
+        .agent(Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 12,
+            output: 3,
+        })))
+        .events(sink)
+        .build()
 }
 
-fn seed_report(ctx: &KernelContext, sandbox: &FakeSandbox, raw: &[u8]) {
-    sandbox
-        .files
-        .lock()
-        .unwrap()
-        .insert(ctx.workspace.guest_report_path(), raw.to_vec());
+fn seed_report(ctx: &KernelContext, sandbox: &ScriptedSandbox, raw: &[u8]) {
+    sandbox.seed_file(ctx.workspace.guest_report_path(), raw);
 }
 
 #[tokio::test]
 async fn an_invocation_streams_output_accounts_tokens_and_fetches_the_report() {
-    let sandbox = FakeSandbox::scripted(vec![vec![
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![vec![
         Ok(ExecEvent::Stdout(b"working\n".to_vec())),
         Ok(ExecEvent::Stderr(b"warning: unused\n".to_vec())),
         Ok(ExecEvent::Stdout(b"tokens used: some\n".to_vec())),
         Ok(ExecEvent::Exited(ExitStatus { code: Some(0) })),
-    ]]);
+    ]]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
-    let report_path = ctx.workspace.guest_report_path();
-    sandbox.write_report_on_next_exec(report_path, br#"{"status": "done"}"#);
+    sandbox.serve_report(br#"{"status": "done"}"#.as_slice());
     let handle = SandboxHandle::new("vm-0");
 
     let end = invocation::invoke(&ctx, 3, &handle, "do the work")
@@ -274,7 +95,7 @@ async fn an_invocation_streams_output_accounts_tokens_and_fetches_the_report() {
 /// to be trusted from an invocation that did not exit cleanly.
 #[tokio::test]
 async fn a_crashed_agent_leaves_no_trustworthy_report() {
-    let sandbox = FakeSandbox::scripted(vec![exec("panic!\n", 1)]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec("panic!\n", 1)]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
     seed_report(&ctx, &sandbox, br#"{"status": "done"}"#);
@@ -297,7 +118,10 @@ async fn a_crashed_agent_leaves_no_trustworthy_report() {
 
 #[tokio::test]
 async fn a_missing_report_names_the_gap_for_the_repair_re_prompt() {
-    let sandbox = FakeSandbox::scripted(vec![exec("did things, reported nothing\n", 0)]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec(
+        "did things, reported nothing\n",
+        0,
+    )]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox, sink, VerifyConfig::default());
     let handle = SandboxHandle::new("vm-0");
@@ -312,7 +136,10 @@ async fn a_missing_report_names_the_gap_for_the_repair_re_prompt() {
 
 #[tokio::test]
 async fn a_clean_invocation_cannot_reuse_a_previous_report() {
-    let sandbox = FakeSandbox::scripted(vec![exec("forgot the report\n", 0)]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec(
+        "forgot the report\n",
+        0,
+    )]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
     seed_report(
@@ -332,7 +159,7 @@ async fn a_clean_invocation_cannot_reuse_a_previous_report() {
 
 #[tokio::test]
 async fn the_bracket_destroys_the_sandbox_on_success() {
-    let sandbox = FakeSandbox::scripted(vec![]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
 
@@ -341,15 +168,15 @@ async fn the_bracket_destroys_the_sandbox_on_success() {
         .unwrap();
 
     assert_eq!(out, "vm-0");
-    assert_eq!(sandbox.created.load(Ordering::SeqCst), 1);
-    assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 1);
+    assert_eq!(sandbox.created(), 1);
+    assert_eq!(sandbox.destroyed(), 1);
 }
 
 /// The bracket's whole reason to exist: an error inside it still tears
 /// the sandbox down before propagating.
 #[tokio::test]
 async fn the_bracket_destroys_the_sandbox_when_the_work_fails() {
-    let sandbox = FakeSandbox::scripted(vec![]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
 
@@ -360,8 +187,8 @@ async fn the_bracket_destroys_the_sandbox_when_the_work_fails() {
     .expect_err("the error must propagate");
 
     assert!(error.to_string().contains("the work blew up"), "{error}");
-    assert_eq!(sandbox.created.load(Ordering::SeqCst), 1);
-    assert_eq!(sandbox.destroyed.load(Ordering::SeqCst), 1);
+    assert_eq!(sandbox.created(), 1);
+    assert_eq!(sandbox.destroyed(), 1);
 }
 
 /// A verify section with the given checks; retries and on_fail stay
@@ -375,7 +202,10 @@ fn verifying(checks: &[&str]) -> VerifyConfig {
 
 #[tokio::test]
 async fn green_checks_run_in_order_through_the_shell_and_pass() {
-    let sandbox = FakeSandbox::scripted(vec![exec("compiled", 0), exec("42 passed", 0)]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        exec("compiled", 0),
+        exec("42 passed", 0),
+    ]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(
         sandbox.clone(),
@@ -417,7 +247,10 @@ async fn green_checks_run_in_order_through_the_shell_and_pass() {
 
 #[tokio::test]
 async fn a_red_check_stops_the_list_and_carries_its_output() {
-    let sandbox = FakeSandbox::scripted(vec![exec("error[E0433]: cannot find `Parser`", 1)]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec(
+        "error[E0433]: cannot find `Parser`",
+        1,
+    )]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(
         sandbox.clone(),
@@ -449,7 +282,7 @@ async fn a_red_check_stops_the_list_and_carries_its_output() {
 
 #[tokio::test]
 async fn no_checks_means_every_iteration_passes() {
-    let sandbox = FakeSandbox::scripted(vec![]);
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox, sink.clone(), VerifyConfig::default());
     let handle = SandboxHandle::new("vm-0");
