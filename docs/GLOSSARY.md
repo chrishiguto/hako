@@ -12,7 +12,7 @@ A named loop pattern implemented inside the engine, owning all control flow (ite
 _Avoid_: workflow engine, orchestrator
 
 **Kernel Dialect**:
-The vocabulary one kernel adds to the published language — its report shapes and its prompt slots — building on the shared core (status, questions, answers) and never redefining it. Every kernel ships with its dialect; the shared core alone runs no loop.
+The vocabulary one kernel adds to the published language — its report shapes and its prompt slots — building on the shared core (status, summary, questions, answers) and never redefining it. Every kernel ships with its dialect; the shared core alone runs no loop.
 _Avoid_: kernel types, kernel schema
 
 **Pipeline** (v1, specced):
@@ -51,6 +51,10 @@ _Avoid_: checkout, working copy
 The append-only record of everything a run did; the source of truth for clients, resumption, and audit.
 _Avoid_: run history, logs
 
+**Run Projection**:
+One pure pass over a run's Event Log reducing it to where the run stands now — state, iterations completed, last Report Core, last sequence. The single definition of how history reads back: every consumer projects the same log the same way.
+_Avoid_: status cache, materialized view
+
 ## Agent interface
 
 **Agent**:
@@ -74,6 +78,10 @@ The frame a kernel composes around its prompts: feedback, human answers, and the
 **Report**:
 The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core. What each status means, and how the loop branches on it, is kernel-owned — stated in the report contract, never the domain prompt.
 _Avoid_: progress report, outputs, output extraction
+
+**Report Core**:
+The uniform slice every Report carries — status, summary, questions — the part shared machinery may read from any kernel's report without importing its dialect. Every dialect's wire shape flattens into it; everything else in a report is dialect payload.
+_Avoid_: common fields, base report
 
 **Status**:
 The uniform verdict every report carries — continue, done, blocked, or needs_input — the shared core all kernels speak. What each means is kernel-owned, stated in the report contract: continue advances to the next stage, done claims the objective complete (a claim, gated by Verified Done), blocked and needs_input pause the run for a human. A domain prompt says which to report for its stage's work; it never redefines what they do.
