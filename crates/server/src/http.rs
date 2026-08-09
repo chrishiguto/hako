@@ -15,7 +15,8 @@ use axum_extra::typed_header::TypedHeaderRejection;
 use constant_time_eq::constant_time_eq;
 use engine::RunId;
 
-use crate::registry::{RunRegistry, status};
+use crate::projection;
+use crate::registry::RunRegistry;
 use crate::runtime::EngineRuntime;
 
 pub(crate) struct AppState {
@@ -111,7 +112,9 @@ async fn run_status(
         .get(&run_id)
         .await
         .ok_or(HttpError::RunNotFound)?;
-    Ok(Json(status(&dir).await.map_err(HttpError::store)?))
+    Ok(Json(
+        projection::status(&dir).await.map_err(HttpError::store)?,
+    ))
 }
 
 enum HttpError {

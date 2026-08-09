@@ -3,6 +3,7 @@
 //! request lifetimes.
 
 mod http;
+mod projection;
 mod registry;
 mod runtime;
 
