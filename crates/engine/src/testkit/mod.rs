@@ -66,6 +66,16 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
+    pub fn run_id(mut self, run_id: RunId) -> Self {
+        self.ctx.run_id = run_id;
+        self
+    }
+
+    pub fn budgets(mut self, budgets: Budgets) -> Self {
+        self.ctx.budgets = budgets;
+        self
+    }
+
     pub fn verify(mut self, verify: VerifyConfig) -> Self {
         self.ctx.verify = verify;
         self
