@@ -11,12 +11,8 @@ const DEFAULT_RUNS_ROOT: &str = ".hako/runs";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let token = std::env::var("HAKO_TOKEN").map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "HAKO_TOKEN must contain the daemon bearer token",
-        )
-    })?;
+    let token = std::env::var("HAKO_TOKEN")
+        .map_err(|_| "HAKO_TOKEN must contain the daemon bearer token")?;
     let address: SocketAddr = std::env::var("HAKO_ADDR")
         .unwrap_or_else(|_| DEFAULT_ADDR.to_owned())
         .parse()?;
