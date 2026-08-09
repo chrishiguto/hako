@@ -6,10 +6,11 @@
 //! through this fold, so no two can disagree about the same log.
 //! Events in, value out: no I/O, testable with fixture logs.
 //!
-//! The projection is dialect-blind (ADR 0010): it reads a stage
-//! report only through [`ReportCore`], the uniform slice every
-//! kernel's dialect flattens into. A typed dialect read is the owning
-//! kernel's business, done by replaying the raw events itself.
+//! The projection is dialect-blind — the engine's shared machinery
+//! never imports a kernel's dialect — so it reads a stage report only
+//! through [`ReportCore`], the uniform slice every kernel's dialect
+//! flattens into. A typed dialect read is the owning kernel's
+//! business, done by replaying the raw events itself.
 
 use serde::Deserialize;
 
