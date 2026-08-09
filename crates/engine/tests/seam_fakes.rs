@@ -166,21 +166,22 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
     let sink = Arc::new(RecordingSink::default());
     let notifier = Arc::new(RecordingNotifier::default());
 
-    let ctx = testkit::context()
-        .workspace(workspace)
-        .sandbox(sandbox.clone())
-        .agent(Arc::new(
+    let ctx = KernelContext {
+        workspace,
+        sandbox: sandbox.clone(),
+        agent: Arc::new(
             ScriptedAgent::new()
                 .requiring("GH_TOKEN")
                 .reporting(TokenUsage {
                     input: 142,
                     output: 17,
                 }),
-        ))
-        .events(sink.clone())
-        .notifier(notifier.clone())
-        .secrets(Arc::new(MapSecrets::new([("GH_TOKEN", "ghp_fake")])))
-        .build();
+        ),
+        events: sink.clone(),
+        notifier: notifier.clone(),
+        secrets: Arc::new(MapSecrets::new([("GH_TOKEN", "ghp_fake")])),
+        ..testkit::context()
+    };
 
     // Held as `dyn Kernel`: the registry that maps flow names to
     // kernels needs the seam to be dyn-compatible.

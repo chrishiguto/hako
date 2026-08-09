@@ -19,15 +19,16 @@ fn context(
     sink: Arc<RecordingSink>,
     verify: VerifyConfig,
 ) -> KernelContext {
-    testkit::context()
-        .verify(verify)
-        .sandbox(sandbox)
-        .agent(Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+    KernelContext {
+        verify,
+        sandbox,
+        agent: Arc::new(ScriptedAgent::new().reporting(TokenUsage {
             input: 12,
             output: 3,
-        })))
-        .events(sink)
-        .build()
+        })),
+        events: sink,
+        ..testkit::context()
+    }
 }
 
 fn seed_report(ctx: &KernelContext, sandbox: &ScriptedSandbox, raw: &[u8]) {

@@ -45,10 +45,11 @@ async fn run_scripted(runs_root: &Path, events: Vec<RunEvent>, outcome: RunOutco
         .unwrap();
     let sink: Arc<dyn EventSink> = Arc::new(run_dir.event_sink().await.unwrap());
     let workspace_dir = tempfile::tempdir().unwrap();
-    let ctx = testkit::context()
-        .workspace(Workspace::at(workspace_dir.path()))
-        .events(sink)
-        .build();
+    let ctx = KernelContext {
+        workspace: Workspace::at(workspace_dir.path()),
+        events: sink,
+        ..testkit::context()
+    };
     ScriptedKernel { events, outcome }.run(ctx).await.unwrap()
 }
 

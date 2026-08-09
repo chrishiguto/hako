@@ -41,14 +41,15 @@ fn context(
     prompts: PromptsConfig,
 ) -> (KernelContext, Arc<RecordingSink>) {
     let sink = Arc::new(RecordingSink::default());
-    let ctx = testkit::context()
-        .verify(verify)
-        .prompts(prompts)
-        .workspace(Workspace::at(workspace))
-        .sandbox(sandbox)
-        .agent(Arc::new(ScriptedAgent::new()))
-        .events(sink.clone())
-        .build();
+    let ctx = KernelContext {
+        verify,
+        prompts,
+        workspace: Workspace::at(workspace),
+        sandbox,
+        agent: Arc::new(ScriptedAgent::new()),
+        events: sink.clone(),
+        ..testkit::context()
+    };
     (ctx, sink)
 }
 
