@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use api::proto::flow::FlowConfig;
-use api::{ApiError, ListRunsResponse, SubmitRunRequest, SubmitRunResponse};
+use api::{ApiError, ErrorCode, ListRunsResponse, SubmitRunRequest, SubmitRunResponse};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -139,33 +139,32 @@ impl IntoResponse for HttpError {
         let (status, code, message) = match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
-                "unauthorized",
+                ErrorCode::Unauthorized,
                 "missing or invalid bearer token".to_owned(),
             ),
-            Self::InvalidRequest(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
-            Self::InvalidFlow(message) => (StatusCode::BAD_REQUEST, "invalid_flow", message),
-            Self::UnrunnableFlow(message) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, "invalid_agent", message)
+            Self::InvalidRequest(message) => {
+                (StatusCode::BAD_REQUEST, ErrorCode::InvalidRequest, message)
             }
+            Self::InvalidFlow(message) => {
+                (StatusCode::BAD_REQUEST, ErrorCode::InvalidFlow, message)
+            }
+            Self::UnrunnableFlow(message) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::InvalidAgent,
+                message,
+            ),
             Self::RunNotFound => (
                 StatusCode::NOT_FOUND,
-                "run_not_found",
+                ErrorCode::RunNotFound,
                 "no such run".to_owned(),
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
+                ErrorCode::InternalError,
                 "internal daemon error".to_owned(),
             ),
         };
-        let mut response = (
-            status,
-            Json(ApiError {
-                code: code.to_owned(),
-                message,
-            }),
-        )
-            .into_response();
+        let mut response = (status, Json(ApiError { code, message })).into_response();
         if unauthorized {
             response
                 .headers_mut()

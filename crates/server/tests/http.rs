@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use api::{ApiError, ListRunsResponse, RunStatusResponse, SubmitRunResponse};
+use api::{ApiError, ErrorCode, ListRunsResponse, RunStatusResponse, SubmitRunResponse};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
@@ -115,7 +115,7 @@ async fn every_served_endpoint_requires_the_configured_bearer_token() {
                 "{route:?}"
             );
             let error: ApiError = body(response).await;
-            assert_eq!(error.code, "unauthorized");
+            assert_eq!(error.code, ErrorCode::Unauthorized);
         }
     }
 
@@ -147,7 +147,7 @@ async fn malformed_authorization_is_a_structured_unauthorized_response() {
             Some(&header::HeaderValue::from_static("Bearer"))
         );
         let error: ApiError = body(response).await;
-        assert_eq!(error.code, "unauthorized");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
     }
 }
 
@@ -171,7 +171,7 @@ async fn submit_rejects_invalid_flows_and_starts_valid_ones_detached() {
     .await;
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     let error: ApiError = body(invalid).await;
-    assert_eq!(error.code, "invalid_flow");
+    assert_eq!(error.code, ErrorCode::InvalidFlow);
     assert!(error.message.contains("typo"), "{}", error.message);
 
     let submitted = host.submit().await;
@@ -200,7 +200,7 @@ async fn submit_distinguishes_well_formed_flows_the_engine_cannot_run() {
     .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let error: ApiError = body(response).await;
-    assert_eq!(error.code, "invalid_agent");
+    assert_eq!(error.code, ErrorCode::InvalidAgent);
     assert!(error.message.contains("missing"));
 }
 
