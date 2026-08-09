@@ -88,7 +88,6 @@ pub struct BudgetExtension {
 /// Every non-2xx response carries this body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApiError {
-    /// Machine-readable and stable; [`ErrorCode`] is the closed set.
     pub code: ErrorCode,
     /// Human-readable; never parse this.
     pub message: String,

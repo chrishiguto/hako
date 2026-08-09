@@ -11,7 +11,6 @@ const DEFAULT_RUNS_ROOT: &str = ".hako/runs";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `RUST_LOG` filters as usual; `info` when unset.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

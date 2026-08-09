@@ -29,7 +29,8 @@ testkit = ["dep:tempfile"]
 # builds.
 engine = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
-# `test-util` gives the pausable clock: per ADR 0006 time is
-# deliberately not a seam, so timeout tests pause tokio's clock
-# instead of faking a collaborator.
+# `test-util` gives the pausable clock. Timeouts and wall-clock
+# budgets read tokio's time directly rather than through a seam, so
+# tests that exercise them pause the clock instead of faking a
+# collaborator.
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }

@@ -68,8 +68,6 @@ impl RunRegistry {
             // ours to interpret, and skipping it beats refusing to
             // start. Real runs stay strict: corrupt metadata or a
             // lying log still fails the load.
-            // TODO: the two eprintln!s below await the in-flight
-            // rework of this load loop before converting to tracing.
             let Ok(name) = entry.file_name().into_string() else {
                 eprintln!("ignoring {}: not a run directory", entry.path().display());
                 continue;
