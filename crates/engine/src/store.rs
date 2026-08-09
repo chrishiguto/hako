@@ -185,16 +185,7 @@ impl RunDir {
     /// reads `running` after a restart simply never got further — what
     /// to do about its dead kernel is the host's call.
     pub async fn state(&self) -> Result<RunState, StoreError> {
-        Ok(self
-            .events()
-            .await?
-            .iter()
-            .rev()
-            .find_map(|envelope| match envelope.event {
-                RunEvent::StateChanged { state } => Some(state),
-                _ => None,
-            })
-            .unwrap_or(INITIAL_STATE))
+        Ok(reduce_state(&self.events().await?))
     }
 
     /// The sink a kernel appends this run's events through. Continues
@@ -235,6 +226,22 @@ impl RunDir {
     fn meta_path(&self) -> PathBuf {
         self.root.join(META_FILE)
     }
+}
+
+/// The state a run's log reduces to: the last `state_changed` it
+/// carries, or [`INITIAL_STATE`] while none has landed. The single
+/// definition of how a run's state is read back — shared by
+/// [`RunDir::state`] and the daemon's status projection, so a run
+/// cannot read one state through the store and another through the API.
+pub fn reduce_state(events: &[EventEnvelope]) -> RunState {
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match envelope.event {
+            RunEvent::StateChanged { state } => Some(state),
+            _ => None,
+        })
+        .unwrap_or(INITIAL_STATE)
 }
 
 /// The file-backed [`EventSink`]: each event becomes one enveloped

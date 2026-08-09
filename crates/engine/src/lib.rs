@@ -44,5 +44,5 @@ pub use sandbox::{
     WorkspaceMount,
 };
 pub use secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
-pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
+pub use store::{FileEventSink, RunDir, RunMeta, StoreError, reduce_state};
 pub use workspace::{Workspace, WorkspaceError};
