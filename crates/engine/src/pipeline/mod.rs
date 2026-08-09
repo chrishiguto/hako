@@ -209,9 +209,8 @@ async fn drive_stage(
             })
             .await?;
 
-        let contract = contract::StageContract(stage);
         let Some(report) =
-            invocation::invoke_to_report(ctx, iteration, sandbox, &prompt, &contract).await?
+            invocation::invoke_to_report(ctx, iteration, sandbox, &prompt, &stage).await?
         else {
             return Ok(StageDrive::Failed);
         };

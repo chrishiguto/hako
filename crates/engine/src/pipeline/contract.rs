@@ -1,7 +1,7 @@
 //! The pipeline kernel's report contract and shipped assets: a
 //! default prompt for every active stage, the report schema each
-//! dialect stage quotes, and the stage-keyed [`StageContract`] the
-//! engine's parse-and-repair loop is handed.
+//! dialect stage quotes, and the [`ReportContract`] impl the engine's
+//! parse-and-repair loop reads a stage's report through.
 //!
 //! Both are compiled in. The default prompts fill any active slot a
 //! flow leaves unset, so a minimal pipeline flow needs no prompt files.
@@ -17,21 +17,20 @@ use proto::pipeline::{Stage, StageReport};
 
 use crate::invocation::ReportContract;
 
-/// One stage's report contract: its committed schema and the strict
-/// dialect parse — what the pipeline hands
-/// [`crate::invocation::invoke_to_report`], keeping the dialect types
-/// on the kernel's side of the seam (ADR 0010).
-pub struct StageContract(pub Stage);
-
-impl ReportContract for StageContract {
+/// A stage is its own report contract: its committed schema and the
+/// strict dialect parse — what the pipeline hands
+/// [`crate::invocation::invoke_to_report`]. The impl lives here, not
+/// in proto, keeping the dialect types on the kernel's side of the
+/// seam (ADR 0010).
+impl ReportContract for Stage {
     type Report = StageReport;
 
     fn schema(&self) -> &str {
-        report_schema(self.0)
+        report_schema(*self)
     }
 
     fn parse(&self, text: &str) -> Result<StageReport, String> {
-        StageReport::from_stage_json(self.0, text).map_err(|error| error.to_string())
+        StageReport::from_stage_json(*self, text).map_err(|error| error.to_string())
     }
 }
 
