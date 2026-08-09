@@ -9,13 +9,14 @@
 //! workspace remains kernel policy.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 use futures_util::StreamExt;
 
 use crate::event::{OutputStream, RunEvent};
 use crate::kernel::{KernelContext, KernelError};
-use crate::preamble::repair;
 use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec, into_text};
+use crate::workspace::REPORT_FILE;
 
 /// What one agent invocation left behind.
 #[derive(Debug)]
@@ -74,6 +75,8 @@ pub async fn in_fresh_sandbox<T>(
 /// emit every output chunk and the token usage as events, then fetch
 /// the report the agent wrote — through the sandbox seam, because
 /// scratch is read through the guest's view, never the host's.
+/// One exec, no enforcement — a kernel reads the agent boundary
+/// through [`invoke_to_report`], which drives this.
 pub async fn invoke(
     ctx: &KernelContext,
     iteration: u32,
@@ -171,6 +174,29 @@ pub async fn invoke_to_report<C: ReportContract>(
     }
 }
 
+/// The repair re-prompt — the one second chance a rejected report
+/// earns. Deliberately bare: the work already done stays done; only
+/// the report needs writing, so this carries the validation errors
+/// and the report contract — the fixed scratch path and the shape the
+/// kernel demands — and nothing else. The path is the same one
+/// [`invoke`] fetches, by construction.
+fn repair(errors: &[String], shape: &str) -> String {
+    let mut text = String::from(
+        "# hako report repair\n\n\
+         The report you wrote was rejected:\n\n",
+    );
+    for error in errors {
+        let _ = writeln!(text, "- {error}");
+    }
+    let _ = write!(
+        text,
+        "\nWrite a corrected `{REPORT_FILE}` in the workspace and do \
+         nothing else:\n\n\
+         ```json\n{shape}\n```\n",
+    );
+    text
+}
+
 /// The outcome of reading one invocation's report against the
 /// contract.
 enum Parsed<R> {
@@ -194,5 +220,25 @@ fn parse<C: ReportContract>(contract: &C, end: InvocationEnd) -> Parsed<C::Repor
                 Err(error) => Parsed::Rejected(vec![error]),
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_repair_prompt_carries_the_errors_and_the_contract() {
+        let text = repair(
+            &["missing field `summary`".into(), "not UTF-8".into()],
+            r#"{ "status": "..." }"#,
+        );
+        assert!(text.contains("- missing field `summary`\n"), "{text}");
+        assert!(text.contains("- not UTF-8\n"), "{text}");
+        assert!(text.contains(&format!("`{REPORT_FILE}`")), "{text}");
+        assert!(
+            text.contains("```json\n{ \"status\": \"...\" }\n```"),
+            "{text}"
+        );
     }
 }
