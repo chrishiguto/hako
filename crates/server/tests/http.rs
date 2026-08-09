@@ -25,7 +25,7 @@ fn fake_sandbox(report: Value, barrier: Option<Arc<Barrier>>) -> ScriptedSandbox
     if let Some(barrier) = barrier {
         sandbox = sandbox.with_barrier(barrier);
     }
-    sandbox.serve_report(serde_json::to_vec(&report).unwrap());
+    sandbox.write_report_on_exec(serde_json::to_vec(&report).unwrap());
     sandbox
 }
 

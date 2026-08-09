@@ -73,16 +73,12 @@ impl Sandbox for NoSandbox {
 }
 
 /// Boots nothing: hands out handles, replays scripted transcripts in
-/// order, records every exec, and serves files from in-memory maps.
+/// order, records every exec, and serves files from one in-memory map.
 ///
-/// Two file layers with different lifetimes: `seed_file` plants a
-/// mutable file that `put_file`/`remove_file` can touch — so freshness
-/// logic (clear the old report, demand a new one) is observable — while
-/// `serve_file`/[`Self::serve_report`] plants an immutable one that
-/// survives removal, standing in for output the scripted exec would
-/// have written. [`Self::write_on_next_exec`] lands in the mutable
-/// layer, but only once the exec streams — output the exec itself
-/// "wrote", still subject to removal.
+/// Files planted with [`Self::seed_file`] exist up front; files
+/// registered with [`Self::write_on_exec`] land in the same map the
+/// moment an exec streams — output that exec "wrote", so a test proves
+/// a stale-file clear ran before the exec, not merely at some point.
 #[derive(Default)]
 pub struct ScriptedSandbox {
     script: Mutex<VecDeque<Transcript>>,
@@ -90,8 +86,7 @@ pub struct ScriptedSandbox {
     /// exec a loud panic instead.
     fallback: Option<Transcript>,
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
-    served: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
-    on_next_exec: Mutex<Option<(PathBuf, Vec<u8>)>>,
+    on_exec: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     execs: Mutex<Vec<ExecSpec>>,
     /// Every exec waits here before streaming — how a test holds two
     /// runs in flight at once to observe their overlap.
@@ -141,27 +136,25 @@ impl ScriptedSandbox {
             .insert(path.into(), contents.into());
     }
 
-    /// Plants an immutable guest file that removal cannot clear — the
-    /// output a scripted exec "wrote".
-    pub fn serve_file(&self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) {
-        self.served
+    /// Plants a guest file the moment any exec streams — output every
+    /// exec "wrote". The write lands in the same removable map as
+    /// [`Self::seed_file`], so a stale-file clear before the exec is
+    /// observable and a clear after it is too. The map is shared
+    /// across every handle: concurrent runs removing and fetching the
+    /// same path must synchronize their execs (a barrier) or their
+    /// interleavings race.
+    pub fn write_on_exec(&self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) {
+        self.on_exec
             .lock()
             .unwrap()
             .insert(path.into(), contents.into());
     }
 
-    /// Serves `report` at the guest report path — the report a real
-    /// agent would have left for the kernel to fetch.
-    pub fn serve_report(&self, report: impl Into<Vec<u8>>) {
-        self.serve_file(Path::new(GUEST_ROOT).join(REPORT_FILE), report);
-    }
-
-    /// Plants a mutable guest file the moment the next exec streams —
-    /// output that exec "wrote". Unlike [`Self::serve_file`] the write
-    /// lands in the removable layer, so a test can prove a stale-file
-    /// clear ran before the exec, not merely at some point.
-    pub fn write_on_next_exec(&self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) {
-        *self.on_next_exec.lock().unwrap() = Some((path.into(), contents.into()));
+    /// Registers `report` as what every exec "writes" at the guest
+    /// report path — the report a real agent would leave for the
+    /// kernel to fetch.
+    pub fn write_report_on_exec(&self, report: impl Into<Vec<u8>>) {
+        self.write_on_exec(Path::new(GUEST_ROOT).join(REPORT_FILE), report);
     }
 
     /// Every exec that ran, argv-exact, in order.
@@ -211,8 +204,8 @@ impl Sandbox for ScriptedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
-        if let Some((path, contents)) = self.on_next_exec.lock().unwrap().take() {
-            self.seed_file(path, contents);
+        for (path, contents) in self.on_exec.lock().unwrap().iter() {
+            self.seed_file(path.clone(), contents.clone());
         }
         let transcript = {
             let mut script = self.script.lock().unwrap();
@@ -242,9 +235,6 @@ impl Sandbox for ScriptedSandbox {
         _sandbox: &SandboxHandle,
         path: &Path,
     ) -> Result<Vec<u8>, SandboxError> {
-        if let Some(contents) = self.served.lock().unwrap().get(path) {
-            return Ok(contents.clone());
-        }
         self.files
             .lock()
             .unwrap()
