@@ -11,8 +11,8 @@ pub mod dto;
 pub mod openapi;
 
 pub use dto::{
-    AnswerRequest, ApiError, BudgetExtension, ListRunsResponse, ResumeRequest, RunStatusResponse,
-    RunSummary, SubmitRunRequest, SubmitRunResponse,
+    AnswerRequest, ApiError, BudgetExtension, ErrorCode, ListRunsResponse, ResumeRequest,
+    RunStatusResponse, RunSummary, SubmitRunRequest, SubmitRunResponse,
 };
 pub use openapi::document;
 /// The full published language, so a `proto` type missing from the

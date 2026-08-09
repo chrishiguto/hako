@@ -88,11 +88,25 @@ pub struct BudgetExtension {
 /// Every non-2xx response carries this body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApiError {
-    /// Machine-readable and stable, e.g. `run_not_found`,
-    /// `secret_missing`, `not_paused`.
-    pub code: String,
+    pub code: ErrorCode,
     /// Human-readable; never parse this.
     pub message: String,
+}
+
+/// Every machine-readable failure code the daemon answers with — on
+/// the wire as snake_case strings, e.g. `run_not_found`. Exhaustive
+/// on both ends: the daemon's error mapping produces a variant and
+/// clients match on one, so a new failure mode adds a variant here,
+/// never a bare string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    Unauthorized,
+    InvalidRequest,
+    InvalidFlow,
+    InvalidAgent,
+    RunNotFound,
+    InternalError,
 }
 
 #[cfg(test)]
@@ -159,6 +173,36 @@ mod tests {
         round_trips(&submit);
         round_trips(&answer);
         round_trips(&resume);
+    }
+
+    /// The wire strings are the published contract; the enum only
+    /// names them. The `match` is the pin: a new variant fails to
+    /// compile here until its wire string is written down, and a
+    /// rename that would silently break clients fails the assertion.
+    #[test]
+    fn error_codes_keep_their_wire_strings() {
+        let wire = |code| match code {
+            ErrorCode::Unauthorized => "unauthorized",
+            ErrorCode::InvalidRequest => "invalid_request",
+            ErrorCode::InvalidFlow => "invalid_flow",
+            ErrorCode::InvalidAgent => "invalid_agent",
+            ErrorCode::RunNotFound => "run_not_found",
+            ErrorCode::InternalError => "internal_error",
+        };
+        for code in [
+            ErrorCode::Unauthorized,
+            ErrorCode::InvalidRequest,
+            ErrorCode::InvalidFlow,
+            ErrorCode::InvalidAgent,
+            ErrorCode::RunNotFound,
+            ErrorCode::InternalError,
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), json!(wire(code)));
+        }
+        round_trips(&ApiError {
+            code: ErrorCode::RunNotFound,
+            message: "no such run".into(),
+        });
     }
 
     /// The nested `RunSummary` must be invisible on the wire — a

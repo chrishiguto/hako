@@ -210,6 +210,7 @@ mod tests {
             "Answer",
             "Question",
             "ApiError",
+            "ErrorCode",
         ] {
             assert!(
                 components.schemas.contains_key(schema),
