@@ -85,7 +85,7 @@ impl Kernel for PipelineKernel {
                     // so no `IterationFinished` closes a pass that never
                     // finished. Only a full pass (below) or a hard
                     // failure emits one.
-                    StageEnd::Done => return conclude(&ctx, RunOutcome::Done).await,
+                    StageEnd::Done(_) => return conclude(&ctx, RunOutcome::Done).await,
                     StageEnd::Pause(reason) => {
                         return conclude(&ctx, RunOutcome::Paused(reason)).await;
                     }
@@ -119,8 +119,12 @@ enum StageEnd {
     /// the next stage.
     Advance(StageReport),
     /// A stage claimed `done` and cleared its verify gate — the run is
-    /// complete. (The Verified Done skeptic lands on top of this in #7.)
-    Done,
+    /// complete. Carries the claiming report so the Verified Done
+    /// skeptic (#7) has a claim to interrogate.
+    Done(
+        #[expect(dead_code, reason = "read once the #7 skeptic interrogates the claim")]
+        StageReport,
+    ),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
     Pause(PauseReason),
@@ -165,7 +169,7 @@ async fn execute_stage(
         // where the run goes.
         return Ok(match report.status() {
             ReportStatus::Continue => StageEnd::Advance(report),
-            ReportStatus::Done => StageEnd::Done,
+            ReportStatus::Done => StageEnd::Done(report),
             ReportStatus::Blocked => StageEnd::Pause(PauseReason::Blocked),
             ReportStatus::NeedsInput => StageEnd::Pause(PauseReason::AwaitingHuman),
         });
