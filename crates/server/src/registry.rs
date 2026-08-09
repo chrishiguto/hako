@@ -5,7 +5,7 @@ use std::sync::Arc;
 use api::RunSummary;
 use api::proto::flow::FlowConfig;
 use engine::{EventSink, RunDir, RunId};
-use futures_util::future::try_join_all;
+use futures_util::future::join_all;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -142,9 +142,19 @@ impl RunRegistry {
             .values()
             .map(|record| record.dir.clone())
             .collect();
-        let statuses = try_join_all(dirs.iter().map(projection::status)).await?;
-        let mut summaries: Vec<RunSummary> =
-            statuses.into_iter().map(|status| status.run).collect();
+        let statuses = join_all(dirs.iter().map(projection::status)).await;
+        let mut summaries = Vec::with_capacity(statuses.len());
+        for status in statuses {
+            match status {
+                Ok(status) => summaries.push(status.run),
+                // A run dir deleted under a live entry is a run that
+                // no longer exists; skipping it here gives the same
+                // list a restarted daemon would serve, where `load`
+                // would not index it at all.
+                Err(engine::StoreError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         summaries.sort_by(|left, right| {
             right
                 .created_at
