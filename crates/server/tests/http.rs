@@ -246,6 +246,21 @@ async fn concurrent_runs_have_independent_ids_directories_and_histories() {
 }
 
 #[tokio::test]
+async fn startup_ignores_entries_that_are_not_run_directories() {
+    let runs = tempfile::tempdir().unwrap();
+    std::fs::create_dir(runs.path().join("not-a-run")).unwrap();
+    std::fs::write(runs.path().join("stray-file"), b"junk").unwrap();
+    let repo = seeded_repo();
+    let sandbox = Arc::new(FakeSandbox::new(done_report(), None));
+    let host = TestHost::with_parts(runs, repo, sandbox).await;
+
+    let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed: ListRunsResponse = body(response).await;
+    assert!(listed.runs.is_empty());
+}
+
+#[tokio::test]
 async fn restart_reloads_runs_and_reduces_status_from_their_event_logs() {
     let runs = tempfile::tempdir().unwrap();
     let repo = seeded_repo();

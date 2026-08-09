@@ -49,18 +49,13 @@ impl RunRecord {
 
 impl RunRegistry {
     pub(crate) async fn load(runs_root: PathBuf) -> Result<Self, ServerError> {
+        let io_error = |source| ServerError::registry_io(&runs_root, source);
         tokio::fs::create_dir_all(&runs_root)
             .await
-            .map_err(|source| ServerError::registry_io(&runs_root, source))?;
-        let mut entries = tokio::fs::read_dir(&runs_root)
-            .await
-            .map_err(|source| ServerError::registry_io(&runs_root, source))?;
+            .map_err(io_error)?;
+        let mut entries = tokio::fs::read_dir(&runs_root).await.map_err(io_error)?;
         let mut runs = BTreeMap::new();
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|source| ServerError::registry_io(&runs_root, source))?
-        {
+        while let Some(entry) = entries.next_entry().await.map_err(io_error)? {
             let file_type = entry
                 .file_type()
                 .await
@@ -68,17 +63,24 @@ impl RunRegistry {
             if !file_type.is_dir() {
                 continue;
             }
-            let name = entry.file_name().into_string().map_err(|_| {
-                ServerError::registry_io(
-                    entry.path(),
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "run directory name is not UTF-8",
-                    ),
-                )
-            })?;
+            // A directory the store never wrote — a non-UTF-8 name can
+            // name no run, one without metadata holds none — is not
+            // ours to interpret, and skipping it beats refusing to
+            // start. Real runs stay strict: corrupt metadata or a
+            // lying log still fails the load.
+            let Ok(name) = entry.file_name().into_string() else {
+                eprintln!("ignoring {}: not a run directory", entry.path().display());
+                continue;
+            };
             let run_id = RunId::new(name);
-            let dir = RunDir::open(&runs_root, &run_id).await?;
+            let dir = match RunDir::open(&runs_root, &run_id).await {
+                Ok(dir) => dir,
+                Err(engine::StoreError::NotFound(_)) => {
+                    eprintln!("ignoring {}: not a run directory", entry.path().display());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             runs.insert(run_id, RunRecord::persisted(dir));
         }
         Ok(Self {
