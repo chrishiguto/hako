@@ -18,7 +18,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync"] }
 
 [features]
-# The seam fakes, KernelContext builder, and real-git fixtures under
+# The seam fakes, defaulted KernelContext, and real-git fixtures under
 # `engine::testkit`. Test-only, like proto's `schema`: product crates
 # build without it; consumers enable it from their dev-dependencies.
 testkit = ["dep:tempfile"]

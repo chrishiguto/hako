@@ -1,4 +1,4 @@
-//! In-process fakes for the six seams, a [`KernelContext`] builder,
+//! In-process fakes for the six seams, a defaulted [`KernelContext`],
 //! and real-git fixtures — the payoff of the seam design, paid once.
 //!
 //! Feature-gated behind `testkit` so product builds never carry it:
