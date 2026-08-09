@@ -80,7 +80,9 @@ impl Sandbox for NoSandbox {
 /// logic (clear the old report, demand a new one) is observable — while
 /// `serve_file`/[`Self::serve_report`] plants an immutable one that
 /// survives removal, standing in for output the scripted exec would
-/// have written.
+/// have written. [`Self::write_on_next_exec`] lands in the mutable
+/// layer, but only once the exec streams — output the exec itself
+/// "wrote", still subject to removal.
 #[derive(Default)]
 pub struct ScriptedSandbox {
     script: Mutex<VecDeque<Transcript>>,
@@ -89,6 +91,7 @@ pub struct ScriptedSandbox {
     fallback: Option<Transcript>,
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     served: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+    on_next_exec: Mutex<Option<(PathBuf, Vec<u8>)>>,
     execs: Mutex<Vec<ExecSpec>>,
     /// Every exec waits here before streaming — how a test holds two
     /// runs in flight at once to observe their overlap.
@@ -153,6 +156,14 @@ impl ScriptedSandbox {
         self.serve_file(Path::new(GUEST_ROOT).join(REPORT_FILE), report);
     }
 
+    /// Plants a mutable guest file the moment the next exec streams —
+    /// output that exec "wrote". Unlike [`Self::serve_file`] the write
+    /// lands in the removable layer, so a test can prove a stale-file
+    /// clear ran before the exec, not merely at some point.
+    pub fn write_on_next_exec(&self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) {
+        *self.on_next_exec.lock().unwrap() = Some((path.into(), contents.into()));
+    }
+
     /// Every exec that ran, argv-exact, in order.
     pub fn execs(&self) -> Vec<ExecSpec> {
         self.execs.lock().unwrap().clone()
@@ -200,6 +211,9 @@ impl Sandbox for ScriptedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
+        if let Some((path, contents)) = self.on_next_exec.lock().unwrap().take() {
+            self.seed_file(path, contents);
+        }
         let transcript = {
             let mut script = self.script.lock().unwrap();
             script

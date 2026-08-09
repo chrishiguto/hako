@@ -44,7 +44,12 @@ async fn an_invocation_streams_output_accounts_tokens_and_fetches_the_report() {
     ]]));
     let sink = Arc::new(RecordingSink::default());
     let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
-    sandbox.serve_report(br#"{"status": "done"}"#.as_slice());
+    // Written during the exec into the removable layer: the fetch below
+    // proves the stale-report clear ran before the agent, not after.
+    sandbox.write_on_next_exec(
+        ctx.workspace.guest_report_path(),
+        br#"{"status": "done"}"#.as_slice(),
+    );
     let handle = SandboxHandle::new("vm-0");
 
     let end = invocation::invoke(&ctx, 3, &handle, "do the work")
