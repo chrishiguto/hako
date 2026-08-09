@@ -23,7 +23,7 @@ pub struct EngineRuntime {
 impl EngineRuntime {
     /// The host-side collaborators used by the daemon binary. The
     /// notifier and secrets store gain their real implementations in
-    /// their dedicated slices; neither is exercised by today's kernel.
+    /// their dedicated slices; no kernel exercises either until then.
     pub fn production() -> Self {
         Self::new(
             Arc::new(sandbox::SmolvmSandbox::new(sandbox::SmolvmConfig::default())),
@@ -55,15 +55,15 @@ impl EngineRuntime {
         })
     }
 
-    pub(crate) async fn launch(
+    pub(crate) fn launch(
         &self,
         dir: RunDir,
         flow: FlowConfig,
         resolved: ResolvedRun,
-    ) -> Result<tokio::task::JoinHandle<()>, engine::StoreError> {
-        let events: Arc<dyn EventSink> = Arc::new(dir.event_sink().await?);
+        events: Arc<dyn EventSink>,
+    ) -> tokio::task::JoinHandle<()> {
         let runtime = self.clone();
-        Ok(tokio::spawn(async move {
+        tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(drive_run(
                 &runtime,
                 &dir,
@@ -86,7 +86,7 @@ impl EngineRuntime {
                     })
                     .await;
             }
-        }))
+        })
     }
 }
 

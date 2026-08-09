@@ -14,7 +14,6 @@ use axum_extra::headers::{Authorization, authorization::Bearer};
 use axum_extra::typed_header::TypedHeaderRejection;
 use constant_time_eq::constant_time_eq;
 use engine::RunId;
-use uuid::Uuid;
 
 use crate::registry::{RunRegistry, status};
 use crate::runtime::EngineRuntime;
@@ -82,25 +81,11 @@ async fn submit_run(
         .runtime
         .resolve(&flow)
         .map_err(|error| HttpError::UnrunnableFlow(error.to_string()))?;
-    let run_id = RunId::new(Uuid::now_v7().to_string());
-    let dir = state
+    let run_id = state
         .registry
-        .create_dir(
-            run_id.clone(),
-            flow.r#loop.kernel.as_str(),
-            &flow.agent.engine,
-        )
+        .submit(flow, resolved, &state.runtime)
         .await
         .map_err(HttpError::store)?;
-    let execution = state
-        .runtime
-        .launch(dir.clone(), flow, resolved)
-        .await
-        .map_err(HttpError::store)?;
-    state
-        .registry
-        .insert_live(run_id.clone(), dir, execution)
-        .await;
     Ok((
         StatusCode::CREATED,
         Json(SubmitRunResponse {

@@ -2,23 +2,27 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use api::proto::flow::FlowConfig;
 use api::{Question, RunStatusResponse, RunSummary};
-use engine::{RunDir, RunEvent, RunId, RunState};
+use engine::{EventSink, RunDir, RunEvent, RunId, RunState};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::ServerError;
+use crate::runtime::{EngineRuntime, ResolvedRun};
 
 /// The live index over durable run directories. The map owns no run
 /// state: status is reduced from each event log whenever it is read.
 pub(crate) struct RunRegistry {
     runs_root: PathBuf,
-    runs: Arc<RwLock<BTreeMap<RunId, RunRecord>>>,
+    runs: RwLock<BTreeMap<RunId, RunRecord>>,
 }
 
-/// One registry entry. The task handle is retained so #14 can cancel
-/// or resume the run through it; nothing reads it yet — published
-/// status is reduced from the event log, never from the handle — but
-/// dropping it would detach its task beyond recall, so it is kept.
+/// One registry entry. The task handle is retained so a later
+/// cancel/resume slice can drive the run through it; nothing reads it
+/// yet — published status is reduced from the event log, never from
+/// the handle — but dropping it would detach its task beyond recall,
+/// so it is kept.
 struct RunRecord {
     dir: RunDir,
     #[allow(dead_code)]
@@ -77,33 +81,45 @@ impl RunRegistry {
         }
         Ok(Self {
             runs_root,
-            runs: Arc::new(RwLock::new(runs)),
+            runs: RwLock::new(runs),
         })
     }
 
-    /// Lays down the on-disk directory for a new run. The registry
-    /// owns where runs live, so creation sits beside `load`; the caller
-    /// attaches the live task with [`insert_live`] once the engine is
-    /// driving it.
-    pub(crate) async fn create_dir(
+    /// Brings a new run into existence — directory on disk, kernel
+    /// driving it, live record in the index — or nothing at all. The
+    /// event sink is opened before anything is published so the one
+    /// fallible step can still unwind the directory; a failure here
+    /// must not leave a run a restarted daemon would misreport as
+    /// running forever.
+    pub(crate) async fn submit(
         &self,
-        run_id: RunId,
-        kernel: &str,
-        agent: &str,
-    ) -> Result<RunDir, engine::StoreError> {
-        RunDir::create(&self.runs_root, run_id, kernel, agent).await
-    }
-
-    pub(crate) async fn insert_live(
-        &self,
-        run_id: RunId,
-        dir: RunDir,
-        execution: tokio::task::JoinHandle<()>,
-    ) {
-        self.runs
-            .write()
-            .await
-            .insert(run_id, RunRecord::live(dir, execution));
+        flow: FlowConfig,
+        resolved: ResolvedRun,
+        runtime: &EngineRuntime,
+    ) -> Result<RunId, engine::StoreError> {
+        let run_id = RunId::new(Uuid::now_v7().to_string());
+        let dir = RunDir::create(
+            &self.runs_root,
+            run_id.clone(),
+            flow.r#loop.kernel.as_str(),
+            &flow.agent.engine,
+        )
+        .await?;
+        let events: Arc<dyn EventSink> = match dir.event_sink().await {
+            Ok(sink) => Arc::new(sink),
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(dir.path()).await;
+                return Err(error);
+            }
+        };
+        // Spawning under the write lock keeps the record's insertion
+        // atomic with the launch: no reader can observe the run on
+        // disk and running but absent from the index. `launch` never
+        // awaits, so the lock is not held across a suspension point.
+        let mut runs = self.runs.write().await;
+        let execution = runtime.launch(dir.clone(), flow, resolved, events);
+        runs.insert(run_id.clone(), RunRecord::live(dir, execution));
+        Ok(run_id)
     }
 
     pub(crate) async fn get(&self, run_id: &RunId) -> Option<RunDir> {
