@@ -580,6 +580,20 @@ mod tests {
         assert!(err.contains("pipeline"), "{err}");
     }
 
+    /// A malformed name fails at parse, naming the rule — never as a
+    /// store miss claiming the secret "is not provisioned", a message
+    /// provisioning could not make true (the store only addresses
+    /// env-var-shaped files).
+    #[test]
+    fn a_malformed_secret_name_is_rejected_naming_it_and_the_shape() {
+        for name in ["GH-TOKEN", "../../etc/shadow", ""] {
+            let flow = format!("{MINIMAL_FLOW}\n[secrets]\nenv = [{name:?}]\n");
+            let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
+            assert!(err.contains("env-var shaped"), "{name}: {err}");
+            assert!(err.contains(name), "{name}: {err}");
+        }
+    }
+
     #[test]
     fn every_published_slot_validates_for_its_kernel() {
         for kernel in KernelName::ALL {

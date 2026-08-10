@@ -200,8 +200,9 @@
       "additionalProperties": false
     },
     "SecretName": {
-      "description": "A name a flow may reference — never a value, so flow files stay\nsafe to commit and safe for LLMs to read and write.",
-      "type": "string"
+      "description": "A name a flow may reference — never a value, so flow files stay\nsafe to commit and safe for LLMs to read and write.\n\nEnv-var shaped: non-empty, ASCII letters, digits, and `_`.\nDeserializing anything else fails, so a malformed name is a flow\nerror naming the rule — never a store miss claiming the secret\n\"is not provisioned\" when no provisioning could make it true.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$"
     },
     "SecretsConfig": {
       "description": "Secret *names* only — values live in the daemon's store, so flow\nfiles stay safe to commit and to hand to an LLM.",
