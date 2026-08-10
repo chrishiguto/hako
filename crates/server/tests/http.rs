@@ -7,7 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
-use engine::{ExecEvent, ExitStatus};
+use engine::{EventSink, ExecEvent, ExitStatus, RunDir, RunEvent, RunId};
 use http_body_util::BodyExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -232,6 +232,43 @@ async fn list_and_status_expose_pause_reasons_summaries_and_questions() {
     let listed: ListRunsResponse = body(response).await;
     assert_eq!(listed.runs.len(), 1);
     assert_eq!(listed.runs[0], status.run);
+}
+
+/// A stage report reaches the log only after the kernel strict-parsed
+/// it against its dialect, so a logged report that cannot yield the
+/// shared report core is a damaged log — not a run in some odd state.
+/// The daemon says so rather than serving a half-read run, and the
+/// list the run belongs to fails with it: quietly dropping the run
+/// would misreport the fleet as healthy.
+#[tokio::test]
+async fn a_logged_report_without_the_shared_core_reads_as_a_corrupt_log() {
+    let runs = tempfile::tempdir().unwrap();
+    let dir = RunDir::create(runs.path(), RunId::new("r1"), "pipeline", "scripted")
+        .await
+        .unwrap();
+    dir.event_sink()
+        .await
+        .unwrap()
+        .emit(RunEvent::StageReported {
+            iteration: 1,
+            stage: "plan".into(),
+            report: json!({"weird": true}),
+        })
+        .await
+        .unwrap();
+
+    let sandbox = Arc::new(fake_sandbox(done_report(), None));
+    let host = TestHost::with_parts(runs, seeded_repo(), sandbox).await;
+    for uri in ["/v1/runs/r1", "/v1/runs"] {
+        let response = request(&host.app, Method::GET, uri, Some(TOKEN), None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{uri}"
+        );
+        let error: ApiError = body(response).await;
+        assert_eq!(error.code, ErrorCode::InternalError, "{uri}");
+    }
 }
 
 #[tokio::test]
