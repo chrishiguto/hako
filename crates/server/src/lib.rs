@@ -22,7 +22,9 @@ pub use secrets::FileSecrets;
 use http::AppState;
 use registry::RunRegistry;
 
-/// The settings a daemon host must supply.
+/// The settings a daemon host must supply. The token is the daemon's
+/// bearer credential; [`HostConfig`] is where the binary validates it
+/// non-empty before construction reaches here.
 #[derive(Clone)]
 pub struct DaemonConfig {
     token: String,
@@ -50,9 +52,6 @@ impl Daemon {
         config: DaemonConfig,
         runtime: Arc<EngineRuntime>,
     ) -> Result<Self, ServerError> {
-        if config.token.is_empty() {
-            return Err(ServerError::EmptyToken);
-        }
         runtime.preflight().await?;
         let registry = RunRegistry::load(config.runs_root).await?;
         Ok(Self {
@@ -72,8 +71,6 @@ impl Daemon {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
-    #[error("the daemon bearer token cannot be empty")]
-    EmptyToken,
     #[error("run registry I/O on {path}: {source}")]
     RegistryIo {
         path: PathBuf,
