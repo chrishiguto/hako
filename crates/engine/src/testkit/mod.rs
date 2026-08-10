@@ -25,6 +25,7 @@ pub use sandbox::{
 use std::sync::Arc;
 
 use crate::budget::Budgets;
+use crate::cancel::CancelToken;
 use crate::kernel::KernelContext;
 use crate::run::RunId;
 use crate::workspace::Workspace;
@@ -42,6 +43,8 @@ pub fn context() -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
+        // A fresh token nobody holds the other end of: never fires.
+        cancel: CancelToken::new(),
         verify: VerifyConfig::default(),
         prompts: PromptsConfig::default(),
         workspace: Workspace::at("/srv/runs/r1/workspace"),

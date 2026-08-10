@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use api::RunSummary;
 use api::proto::flow::FlowConfig;
-use engine::{EventSink, RunDir, RunId};
+use engine::{CancelToken, EventSink, RunDir, RunId};
 use futures_util::future::join_all;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -20,15 +20,37 @@ pub(crate) struct RunRegistry {
     runs: RwLock<BTreeMap<RunId, RunRecord>>,
 }
 
-/// One registry entry. The task handle is retained so a later
-/// cancel/resume slice can drive the run through it; nothing reads it
-/// yet — published status is reduced from the event log, never from
-/// the handle — but dropping it would detach its task beyond recall,
-/// so it is kept.
+/// One registry entry. Published status is reduced from the event
+/// log, never from the execution — the live half exists only so a
+/// cancel can reach the run.
 struct RunRecord {
     dir: RunDir,
-    #[allow(dead_code)]
-    execution: Option<tokio::task::JoinHandle<()>>,
+    execution: Option<Execution>,
+}
+
+/// The live half of a record: the cancel token the kernel watches and
+/// the task driving the run. Cancelling means firing the token and
+/// draining the task — never `JoinHandle::abort`, which would drop
+/// the future mid-await inside the agent exec, skip the sandbox
+/// bracket's destroy, and leak the microVM (ADR 0003: teardown is the
+/// isolation guarantee).
+struct Execution {
+    cancel: CancelToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// How a cancel request landed against the registry's live view.
+#[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
+pub(crate) enum CancelOutcome {
+    /// The token fired and the task drained: the terminal event is on
+    /// disk and every sandbox torn down before this comes back.
+    Cancelled,
+    /// The run exists but nothing is executing — it already reached a
+    /// terminal state, or the daemon restarted and only the directory
+    /// remains.
+    NotRunning,
+    /// No such run.
+    UnknownRun,
 }
 
 impl RunRecord {
@@ -39,7 +61,7 @@ impl RunRecord {
         }
     }
 
-    fn live(dir: RunDir, execution: tokio::task::JoinHandle<()>) -> Self {
+    fn live(dir: RunDir, execution: Execution) -> Self {
         Self {
             dir,
             execution: Some(execution),
@@ -121,9 +143,40 @@ impl RunRegistry {
         // disk and running but absent from the index. `launch` never
         // awaits, so the lock is not held across a suspension point.
         let mut runs = self.runs.write().await;
-        let execution = runtime.launch(dir.clone(), flow, resolved, events);
-        runs.insert(run_id.clone(), RunRecord::live(dir, execution));
+        let cancel = CancelToken::new();
+        let task = runtime.launch(dir.clone(), flow, resolved, events, cancel.clone());
+        runs.insert(
+            run_id.clone(),
+            RunRecord::live(dir, Execution { cancel, task }),
+        );
         Ok(run_id)
+    }
+
+    /// Cancels a run cooperatively: fire the token the kernel watches,
+    /// then drain its task, so the run unwinds through the sandbox
+    /// bracket — teardown on every exit path — and writes its terminal
+    /// `state_changed` before the caller answers. The execution is
+    /// taken out of the record first, outside any await: a second
+    /// cancel finds `NotRunning`, and the lock is never held while the
+    /// run winds down.
+    #[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
+    pub(crate) async fn cancel(&self, run_id: &RunId) -> CancelOutcome {
+        let execution = {
+            let mut runs = self.runs.write().await;
+            match runs.get_mut(run_id) {
+                None => return CancelOutcome::UnknownRun,
+                Some(record) => record.execution.take(),
+            }
+        };
+        let Some(execution) = execution else {
+            return CancelOutcome::NotRunning;
+        };
+        execution.cancel.cancel();
+        // A run that beat the token to a terminal state stays what it
+        // was — the event log holds whichever ending won. A join error
+        // is a panic `launch` already logged and published as failed.
+        let _ = execution.task.await;
+        CancelOutcome::Cancelled
     }
 
     pub(crate) async fn get(&self, run_id: &RunId) -> Option<RunDir> {
@@ -162,5 +215,74 @@ impl RunRegistry {
                 .then_with(|| right.run_id.cmp(&left.run_id))
         });
         Ok(summaries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use engine::RunState;
+    use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
+    use tokio::sync::Barrier;
+
+    use super::*;
+
+    /// Cancel rides the token through the kernel's sandbox bracket:
+    /// the hung agent exec is abandoned, its sandbox destroyed, and
+    /// the terminal `cancelled` event is on disk before `cancel`
+    /// answers — the run `JoinHandle::abort` would have left as a
+    /// leaked VM and a log stuck on `running`.
+    #[tokio::test]
+    async fn cancel_drains_the_run_destroys_the_sandbox_and_ends_the_log_cancelled() {
+        let runs_root = tempfile::tempdir().unwrap();
+        let repo = seeded_repo();
+        let barrier = Arc::new(Barrier::new(2));
+        let sandbox = Arc::new(ScriptedSandbox::hanging().with_barrier(barrier.clone()));
+        let runtime =
+            EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
+        let registry = RunRegistry::load(runs_root.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let flow = FlowConfig::from_toml(&format!(
+            r#"[loop]
+kernel = "pipeline"
+
+[agent]
+engine = "cmd"
+command = ["fake-agent", "{{prompt}}"]
+
+[workspace]
+repo = {:?}
+"#,
+            repo.path().to_str().unwrap()
+        ))
+        .unwrap();
+        let resolved = runtime.resolve(&flow).unwrap();
+        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+
+        // Fire the cancel only once the agent exec is provably in
+        // flight — the mid-exec case, where an abort would leak.
+        barrier.wait().await;
+        assert!(matches!(
+            registry.cancel(&run_id).await,
+            CancelOutcome::Cancelled
+        ));
+
+        let dir = registry.get(&run_id).await.unwrap();
+        let status = projection::status(&dir).await.unwrap();
+        assert_eq!(status.run.state, RunState::Cancelled);
+        assert_eq!(sandbox.created(), 1);
+        assert_eq!(sandbox.destroyed(), 1);
+
+        // The execution is spent: a second cancel finds nothing live,
+        // and a made-up run finds nothing at all.
+        assert!(matches!(
+            registry.cancel(&run_id).await,
+            CancelOutcome::NotRunning
+        ));
+        assert!(matches!(
+            registry.cancel(&RunId::new("no-such-run")).await,
+            CancelOutcome::UnknownRun
+        ));
     }
 }

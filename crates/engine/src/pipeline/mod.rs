@@ -25,7 +25,7 @@ mod frame;
 use async_trait::async_trait;
 
 use crate::event::{IterationOutcome, RunEvent};
-use crate::invocation;
+use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
 use crate::preamble::Feedback;
 use crate::run::{PauseReason, RunOutcome};
@@ -74,6 +74,13 @@ impl Kernel for PipelineKernel {
 
             let mut pass: Vec<StageReport> = Vec::new();
             for (index, &stage) in STAGES.iter().enumerate() {
+                // A cancel is honored at every stage boundary: the
+                // finished stage's work stands, the next never boots a
+                // sandbox. Cancel is terminal — unlike a pause, nothing
+                // resumes it.
+                if ctx.cancel.is_cancelled() {
+                    return conclude(&ctx, RunOutcome::Cancelled).await;
+                }
                 // Plan opens a fresh unit, so it reads the previous
                 // iteration; every later stage reads what this
                 // iteration produced before it.
@@ -88,6 +95,9 @@ impl Kernel for PipelineKernel {
                     StageEnd::Done(_) => return conclude(&ctx, RunOutcome::Done).await,
                     StageEnd::Pause(reason) => {
                         return conclude(&ctx, RunOutcome::Paused(reason)).await;
+                    }
+                    StageEnd::Cancelled => {
+                        return conclude(&ctx, RunOutcome::Cancelled).await;
                     }
                     StageEnd::Fail => {
                         ctx.events
@@ -128,6 +138,9 @@ enum StageEnd {
     /// The stage produced no trustworthy report — a crashed agent or a
     /// report still malformed after its one repair.
     Fail,
+    /// The run's cancel token fired mid-stage; the bracket has already
+    /// destroyed the sandbox, and the run ends `Cancelled`.
+    Cancelled,
 }
 
 /// Runs one stage to a verdict, re-running it in a fresh sandbox for as
@@ -144,9 +157,11 @@ async fn execute_stage(
     let mut feedback: Option<Feedback> = None;
     let mut verify_failures: u32 = 0;
     loop {
-        let StageDrive::Reported { report, verify } =
-            drive_stage(ctx, iteration, stage, handoff, feedback.as_ref()).await?
-        else {
+        let drive = match drive_stage(ctx, iteration, stage, handoff, feedback.as_ref()).await? {
+            Bracketed::Finished(drive) => drive,
+            Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
+        };
+        let StageDrive::Reported { report, verify } = drive else {
             return Ok(StageEnd::Fail);
         };
 
@@ -195,7 +210,7 @@ async fn drive_stage(
     stage: Stage,
     handoff: &[StageReport],
     feedback: Option<&Feedback>,
-) -> Result<StageDrive, KernelError> {
+) -> Result<Bracketed<StageDrive>, KernelError> {
     invocation::in_fresh_sandbox(ctx, async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
         let prompt = frame::compose(stage, handoff, feedback, &domain_prompt);

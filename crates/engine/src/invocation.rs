@@ -50,21 +50,44 @@ pub trait ReportContract {
     fn parse(&self, text: &str) -> Result<Self::Report, String>;
 }
 
+/// How a sandbox bracket ended: the work ran to its value, or the
+/// run's cancel token fired mid-work and the rest was abandoned. The
+/// sandbox is destroyed either way — cancellation changes what comes
+/// back, never whether teardown runs.
+#[derive(Debug)]
+pub enum Bracketed<T> {
+    Finished(T),
+    Cancelled,
+}
+
 /// Boots a fresh sandbox over the workspace, runs `work` inside it,
-/// and destroys the sandbox on every path — an error can never leak a
-/// live VM. One bracket may span several execs: a repair re-prompt
-/// and the verify checks belong in the same sandbox as the invocation
-/// whose work they judge.
+/// and destroys the sandbox on every path — neither an error nor a
+/// cancellation can leak a live VM. One bracket may span several
+/// execs: a repair re-prompt and the verify checks belong in the same
+/// sandbox as the invocation whose work they judge. The cancel token
+/// is raced against the whole bracket body, so a cancel lands even
+/// mid-exec — dropping the work abandons the guest process with its
+/// VM, which is exactly ADR 0003's cancellation model: teardown, not
+/// a kill signal.
 pub async fn in_fresh_sandbox<T>(
     ctx: &KernelContext,
     work: impl AsyncFnOnce(&SandboxHandle) -> Result<T, KernelError>,
-) -> Result<T, KernelError> {
+) -> Result<Bracketed<T>, KernelError> {
+    // A token that already fired boots no sandbox at all.
+    if ctx.cancel.is_cancelled() {
+        return Ok(Bracketed::Cancelled);
+    }
     let spec = SandboxSpec {
         workspace: ctx.workspace.mount(),
         env: BTreeMap::new(),
     };
     let sandbox = ctx.sandbox.create(&spec).await?;
-    let result = work(&sandbox).await;
+    // The select sits inside the bracket: however the race lands, the
+    // destroy below still runs.
+    let result = tokio::select! {
+        result = work(&sandbox) => result.map(Bracketed::Finished),
+        () = ctx.cancel.cancelled() => Ok(Bracketed::Cancelled),
+    };
     let destroyed = ctx.sandbox.destroy(sandbox).await;
     let result = result?;
     destroyed?;

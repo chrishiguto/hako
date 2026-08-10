@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use engine::invocation::{self, InvocationEnd};
+use engine::invocation::{self, Bracketed, InvocationEnd};
 use engine::testkit::{self, RecordingSink, ScriptedAgent, ScriptedSandbox, exec};
 use engine::verify::{self, VerifyOutcome};
 use engine::{
@@ -173,6 +173,9 @@ async fn the_bracket_destroys_the_sandbox_on_success() {
         .await
         .unwrap();
 
+    let Bracketed::Finished(out) = out else {
+        panic!("nothing cancelled this bracket: {out:?}");
+    };
     assert_eq!(out, "vm-0");
     assert_eq!(sandbox.created(), 1);
     assert_eq!(sandbox.destroyed(), 1);
@@ -195,6 +198,48 @@ async fn the_bracket_destroys_the_sandbox_when_the_work_fails() {
     assert!(error.to_string().contains("the work blew up"), "{error}");
     assert_eq!(sandbox.created(), 1);
     assert_eq!(sandbox.destroyed(), 1);
+}
+
+/// The bracket's other exit: a cancel fired mid-work abandons the work
+/// but still tears the sandbox down — never `abort`-shaped, never a
+/// leaked VM.
+#[tokio::test]
+async fn the_bracket_destroys_the_sandbox_when_the_run_is_cancelled() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
+
+    let cancel = ctx.cancel.clone();
+    let out = invocation::in_fresh_sandbox(&ctx, async |_handle| -> Result<(), KernelError> {
+        // The minutes-long agent exec in miniature: fire the cancel,
+        // then never finish.
+        cancel.cancel();
+        std::future::pending().await
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(out, Bracketed::Cancelled), "{out:?}");
+    assert_eq!(sandbox.created(), 1);
+    assert_eq!(sandbox.destroyed(), 1);
+}
+
+/// A token that fired before the bracket boots no sandbox at all —
+/// there is nothing to tear down because nothing was created.
+#[tokio::test]
+async fn an_already_cancelled_bracket_boots_nothing() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink, VerifyConfig::default());
+    ctx.cancel.cancel();
+
+    let out = invocation::in_fresh_sandbox(&ctx, async |_handle| Ok(()))
+        .await
+        .unwrap();
+
+    assert!(matches!(out, Bracketed::Cancelled), "{out:?}");
+    assert_eq!(sandbox.created(), 0);
+    assert_eq!(sandbox.destroyed(), 0);
 }
 
 /// A minimal report contract for the parse-and-repair loop: accepts
