@@ -532,8 +532,10 @@ mod tests {
         assert_eq!(events[2].event, RunEvent::RunResumed { note: None });
     }
 
-    /// The store's side of the projection: `project()` is the pure
-    /// fold applied to the log this directory holds.
+    /// The store's side of the projection, stated as the contract
+    /// itself: `project()` is the pure fold applied to the log this
+    /// directory holds — no more, no less. What the fold computes is
+    /// pinned by its own fixture tests, not re-asserted here.
     #[tokio::test]
     async fn a_run_directory_projects_its_own_log() {
         let root = tempfile::tempdir().unwrap();
@@ -556,20 +558,11 @@ mod tests {
         sink.emit(paused()).await.unwrap();
 
         let projection = dir.project().await.unwrap();
-        assert_eq!(
-            projection.state,
-            RunState::Paused {
-                reason: PauseReason::Drift
-            }
-        );
-        assert_eq!(projection.iterations_completed, 1);
+        // The anchor keeps the equality honest: the log flowed, so
+        // neither side is the empty-log projection.
         assert_eq!(projection.last_seq, Some(3));
         let events = dir.events().await.unwrap();
-        assert_eq!(
-            projection.updated_at.as_deref(),
-            Some(events[3].at.as_str())
-        );
-        assert_eq!(projection.last_report.unwrap().summary, "picked issue #7");
+        assert_eq!(projection, RunProjection::of(&events).unwrap());
     }
 
     /// A logged report that cannot yield the shared core never came
