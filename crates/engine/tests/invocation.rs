@@ -587,6 +587,41 @@ async fn an_agent_echoing_its_environment_does_not_poison_the_log() {
     );
 }
 
+/// Output chunks split at arbitrary byte boundaries, so a value can
+/// arrive bisected — each half innocent on its own, which is exactly
+/// what the per-event scrub cannot see. The stream scrubber holds the
+/// seam: however the reader chopped it, the log carries the value
+/// redacted whole.
+#[tokio::test]
+async fn a_secret_bisected_by_a_chunk_boundary_is_still_redacted() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![vec![
+        Ok(ExecEvent::Stdout(b"GH_TOKEN=ghp_sec".to_vec())),
+        Ok(ExecEvent::Stdout(b"ret\n".to_vec())),
+        Ok(ExecEvent::Exited(ExitStatus { code: Some(0) })),
+    ]]));
+    let recorded = Arc::new(RecordingSink::default());
+    let secrets = testkit::secret_env([("GH_TOKEN", "ghp_secret")]);
+    let ctx = KernelContext {
+        secrets: secrets.clone(),
+        events: Arc::new(ScrubbingSink::new(recorded.clone(), secrets)),
+        ..context(sandbox.clone(), recorded.clone(), VerifyConfig::default())
+    };
+
+    invocation::invoke(&ctx, 1, &SandboxHandle::new("vm-0"), "do the work")
+        .await
+        .unwrap();
+
+    let log: String = recorded
+        .events()
+        .into_iter()
+        .map(|event| match event {
+            RunEvent::AgentOutput { chunk, .. } => chunk,
+            other => panic!("unexpected event {other:?}"),
+        })
+        .collect();
+    assert_eq!(log, "GH_TOKEN=[redacted secret]\n");
+}
+
 /// A failing check's output goes two ways — the log and the next
 /// iteration's preamble. The sink covers the first; this covers both,
 /// because the outcome the kernel feeds back is scrubbed at capture.

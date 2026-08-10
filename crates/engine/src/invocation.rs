@@ -116,30 +116,50 @@ pub async fn invoke(
     let invocation = ctx.agent.invocation(prompt);
     let mut output = ctx.sandbox.exec_stream(sandbox, &invocation).await?;
     let mut stdout = String::new();
+    // One scrubber per stream: the sink scrubs each event whole, but
+    // chunks split at arbitrary byte boundaries and a value bisected
+    // by one must still redact — the scrubber holds the seam.
+    let mut stdout_scrub = ctx.secrets.stream_scrubber();
+    let mut stderr_scrub = ctx.secrets.stream_scrubber();
     let mut exit = None;
     while let Some(event) = output.next().await {
-        match event? {
+        let (stream, chunk) = match event? {
             ExecEvent::Stdout(bytes) => {
                 let chunk = into_text(bytes);
                 stdout.push_str(&chunk);
-                ctx.events
-                    .emit(RunEvent::AgentOutput {
-                        iteration,
-                        stream: OutputStream::Stdout,
-                        chunk,
-                    })
-                    .await?;
+                (OutputStream::Stdout, stdout_scrub.push(&chunk))
             }
             ExecEvent::Stderr(bytes) => {
-                ctx.events
-                    .emit(RunEvent::AgentOutput {
-                        iteration,
-                        stream: OutputStream::Stderr,
-                        chunk: into_text(bytes),
-                    })
-                    .await?;
+                (OutputStream::Stderr, stderr_scrub.push(&into_text(bytes)))
             }
-            ExecEvent::Exited(status) => exit = Some(status),
+            ExecEvent::Exited(status) => {
+                exit = Some(status);
+                continue;
+            }
+        };
+        if !chunk.is_empty() {
+            ctx.events
+                .emit(RunEvent::AgentOutput {
+                    iteration,
+                    stream,
+                    chunk,
+                })
+                .await?;
+        }
+    }
+    // The streams are over: whatever sat on a boundary flushes now.
+    for (stream, tail) in [
+        (OutputStream::Stdout, stdout_scrub.finish()),
+        (OutputStream::Stderr, stderr_scrub.finish()),
+    ] {
+        if !tail.is_empty() {
+            ctx.events
+                .emit(RunEvent::AgentOutput {
+                    iteration,
+                    stream,
+                    chunk: tail,
+                })
+                .await?;
         }
     }
 

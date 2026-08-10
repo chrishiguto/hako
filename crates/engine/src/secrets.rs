@@ -141,11 +141,13 @@ impl SecretEnv {
     /// Borrowed back untouched when nothing matched, so the common
     /// case — agent output carrying no secret — copies nothing.
     ///
-    /// Values are only caught whole: a secret split across two output
-    /// chunks, or printed with a line break through it, passes. The
-    /// scrub is a net over an agent echoing its environment, not a
-    /// guarantee against one that means to smuggle its key out — the
-    /// microVM boundary is what stands against that.
+    /// Values are only caught whole within the given text; the seam
+    /// between chunks is [`StreamScrubber`]'s job, and the emission
+    /// site feeds each output stream through one. A value printed
+    /// with other bytes through it (a line break mid-token) still
+    /// passes: the scrub is a net over an agent echoing its
+    /// environment, not a guarantee against one that means to smuggle
+    /// its key out — the microVM boundary is what stands against that.
     pub fn scrub<'t>(&self, text: &'t str) -> Cow<'t, str> {
         let mut scrubbed = Cow::Borrowed(text);
         for pattern in &self.patterns {
@@ -154,6 +156,75 @@ impl SecretEnv {
             }
         }
         scrubbed
+    }
+
+    /// A scrubber for one output stream, catching what [`scrub`]
+    /// alone cannot: a value bisected by a chunk boundary. Chunks
+    /// arrive at arbitrary byte boundaries, so each stream the engine
+    /// emits is fed through one of these.
+    ///
+    /// [`scrub`]: Self::scrub
+    pub fn stream_scrubber(&self) -> StreamScrubber<'_> {
+        StreamScrubber {
+            env: self,
+            held: String::new(),
+        }
+    }
+
+    /// The longest suffix of `text` that is a proper prefix of a
+    /// known value — what a chunk-wise scrub must hold back, because
+    /// the next chunk may complete it.
+    fn boundary_risk(&self, text: &str) -> usize {
+        let mut risk = 0;
+        for pattern in &self.patterns {
+            for (end, _) in pattern.char_indices().skip(1) {
+                let prefix = &pattern[..end];
+                if prefix.len() > risk && text.ends_with(prefix) {
+                    risk = prefix.len();
+                }
+            }
+        }
+        risk
+    }
+}
+
+/// Scrubs one output stream chunk by chunk. [`SecretEnv::scrub`] sees
+/// one text at a time, so a value bisected by a chunk boundary would
+/// land in the log in halves — each half innocent on its own. This
+/// holds back the longest tail that could still grow into a known
+/// value and settles it on the next chunk: emission lags the agent by
+/// at most one value's length, a false start is released the moment
+/// the next chunk rules it out, and a stream with no secrets passes
+/// straight through.
+pub struct StreamScrubber<'env> {
+    env: &'env SecretEnv,
+    held: String,
+}
+
+impl StreamScrubber<'_> {
+    /// Scrubs `chunk` in the context of everything pushed before it
+    /// and returns what is now safe to emit — possibly empty while a
+    /// would-be value sits on the boundary.
+    pub fn push(&mut self, chunk: &str) -> String {
+        if self.env.patterns.is_empty() {
+            return chunk.to_owned();
+        }
+        self.held.push_str(chunk);
+        let mut text = match self.env.scrub(&self.held) {
+            Cow::Owned(scrubbed) => scrubbed,
+            Cow::Borrowed(_) => std::mem::take(&mut self.held),
+        };
+        let keep = self.env.boundary_risk(&text);
+        self.held = text[text.len() - keep..].to_owned();
+        text.truncate(text.len() - keep);
+        text
+    }
+
+    /// The stream is over: what is held can no longer complete into a
+    /// value, so out it goes. Every full value in it was already
+    /// scrubbed on the way in.
+    pub fn finish(self) -> String {
+        self.held
     }
 }
 
@@ -508,6 +579,63 @@ mod tests {
             SecretEnv::default().scrub("ghp_1"),
             Cow::Borrowed(_)
         ));
+    }
+
+    /// The chunk seam: however the reader chops a value, what comes
+    /// out the other side carries it redacted whole.
+    #[test]
+    fn a_value_split_across_chunks_is_scrubbed_whole() {
+        let env = SecretEnv::new(
+            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
+                .into_iter()
+                .collect(),
+        );
+        let mut stream = env.stream_scrubber();
+        let mut out = String::new();
+        for chunk in ["token is gh", "p", "_1 done"] {
+            out.push_str(&stream.push(chunk));
+        }
+        out.push_str(&stream.finish());
+        assert_eq!(out, format!("token is {REDACTED} done"));
+    }
+
+    /// A tail that merely looks like a value's start is released the
+    /// moment the next chunk rules it out — held, never dropped.
+    #[test]
+    fn a_false_start_is_released_not_swallowed() {
+        let env = SecretEnv::new(
+            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
+                .into_iter()
+                .collect(),
+        );
+        let mut stream = env.stream_scrubber();
+        assert_eq!(stream.push("ends in ghp"), "ends in ");
+        assert_eq!(stream.push("!ok"), "ghp!ok");
+        assert_eq!(stream.finish(), "");
+    }
+
+    /// The stream ending is what settles a held tail: it can no
+    /// longer grow into a value, so it flushes rather than vanishes.
+    #[test]
+    fn a_held_tail_flushes_when_the_stream_ends() {
+        let env = SecretEnv::new(
+            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
+                .into_iter()
+                .collect(),
+        );
+        let mut stream = env.stream_scrubber();
+        assert_eq!(stream.push("ends in ghp"), "ends in ");
+        assert_eq!(stream.finish(), "ghp");
+    }
+
+    /// A run with no secrets pays nothing: every chunk passes
+    /// straight through, nothing is held.
+    #[test]
+    fn no_secrets_means_nothing_held() {
+        let env = SecretEnv::default();
+        let mut stream = env.stream_scrubber();
+        assert_eq!(stream.push("looks like ghp"), "looks like ghp");
+        assert_eq!(stream.finish(), "");
     }
 
     /// An empty secret would match between every character; scrubbing
