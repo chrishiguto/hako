@@ -74,13 +74,6 @@ impl Kernel for PipelineKernel {
 
             let mut pass: Vec<StageReport> = Vec::new();
             for (index, &stage) in STAGES.iter().enumerate() {
-                // A cancel is honored at every stage boundary: the
-                // finished stage's work stands, the next never boots a
-                // sandbox. Cancel is terminal — unlike a pause, nothing
-                // resumes it.
-                if ctx.cancel.is_cancelled() {
-                    return conclude(&ctx, RunOutcome::Cancelled).await;
-                }
                 // Plan opens a fresh unit, so it reads the previous
                 // iteration; every later stage reads what this
                 // iteration produced before it.
@@ -138,8 +131,12 @@ enum StageEnd {
     /// The stage produced no trustworthy report — a crashed agent or a
     /// report still malformed after its one repair.
     Fail,
-    /// The run's cancel token fired mid-stage; the bracket has already
-    /// destroyed the sandbox, and the run ends `Cancelled`.
+    /// The run's cancel token fired — mid-stage, where the bracket
+    /// destroyed the sandbox before answering, or before the stage
+    /// booted anything. The bracket observes the token at every stage
+    /// boundary, so the kernel only translates: a finished stage's
+    /// work stands, no further stage starts, and the run ends
+    /// `Cancelled` — terminal, unlike a pause.
     Cancelled,
 }
 

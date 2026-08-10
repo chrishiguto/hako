@@ -50,8 +50,11 @@ pub struct KernelContext {
     pub budgets: Budgets,
     /// The run's cooperative cancel flag — a value like [`budgets`],
     /// not a seventh seam (ADR 0006): nothing fakes it, the host fires
-    /// the same token a test would. The sandbox bracket and the stage
-    /// boundaries observe it; a kernel answers a fired token with
+    /// the same token a test would. The sandbox bracket is its single
+    /// observation point — an already-fired token boots nothing, and
+    /// one firing mid-work wins the bracket's race — so every kernel
+    /// inherits stage-boundary and mid-stage cancellation without a
+    /// check of its own; it only answers a cancelled bracket with
     /// [`RunOutcome::Cancelled`] through its normal exit, so teardown
     /// and the terminal event happen exactly as for any other ending.
     ///
