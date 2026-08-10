@@ -35,6 +35,12 @@ pub struct EventSinkError(pub String);
 /// today, its stage report or a rejection message tomorrow. Wrapping
 /// the seam covers every variant of [`RunEvent`], including the ones
 /// this crate has yet to add.
+///
+/// Because the scrub works through the event's wire form, a secret
+/// value that collides with the structure itself — a field name, a
+/// tag such as `stdout` — makes the re-typing fail and the emit
+/// error. That direction is deliberate: such an event is dropped,
+/// ending the run, rather than ever landing unscrubbed.
 pub struct ScrubbingSink {
     inner: Arc<dyn EventSink>,
     secrets: SecretEnv,
@@ -182,6 +188,27 @@ mod tests {
             })
         );
         assert!(!report.to_string().contains("ghp_leaked"), "{report}");
+    }
+
+    /// No realistic key material looks like a JSON tag, but a secret
+    /// that does must fail the emit, never land half-typed: the error
+    /// is the safe direction, and this pins it.
+    #[tokio::test]
+    async fn a_secret_colliding_with_event_structure_errors_instead_of_leaking() {
+        let recording = Arc::new(Recording::default());
+        let secrets = SecretEnv::new(BTreeMap::from([(
+            "WEIRD".to_owned(),
+            SecretValue::new("stdout"),
+        )]));
+        let result = ScrubbingSink::new(recording.clone(), secrets)
+            .emit(RunEvent::AgentOutput {
+                iteration: 1,
+                stream: OutputStream::Stdout,
+                chunk: "hello".into(),
+            })
+            .await;
+        assert!(result.is_err(), "a rewritten tag must not re-type");
+        assert!(recording.0.lock().unwrap().is_empty());
     }
 
     /// The structural fields a run is read by must survive the round
