@@ -1,5 +1,7 @@
-//! The pipeline kernel's shipped assets: a default prompt for every
-//! active stage, and the report schema each dialect stage quotes.
+//! The pipeline kernel's report contract and shipped assets: a
+//! default prompt for every active stage, the report schema each
+//! dialect stage quotes, and the [`ReportContract`] impl the engine's
+//! parse-and-repair loop reads a stage's report through.
 //!
 //! Both are compiled in. The default prompts fill any active slot a
 //! flow leaves unset, so a minimal pipeline flow needs no prompt files.
@@ -11,7 +13,26 @@
 //! enforces, and the engine reads the published contract without
 //! carrying schemars (a product crate never does).
 
-use proto::pipeline::Stage;
+use proto::pipeline::{Stage, StageReport};
+
+use crate::invocation::ReportContract;
+
+/// A stage is its own report contract: its committed schema and the
+/// strict dialect parse — what the pipeline hands
+/// [`crate::invocation::invoke_to_report`]. The impl lives here, not
+/// in proto, keeping the dialect types on the kernel's side of the
+/// seam.
+impl ReportContract for Stage {
+    type Report = StageReport;
+
+    fn schema(&self) -> &str {
+        report_schema(*self)
+    }
+
+    fn parse(&self, text: &str) -> Result<StageReport, String> {
+        StageReport::from_stage_json(*self, text).map_err(|error| error.to_string())
+    }
+}
 
 /// The kernel-shipped default prompt for an active stage. A dialect
 /// stage may be published before its execution policy and therefore

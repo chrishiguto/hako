@@ -84,7 +84,9 @@ pub struct ScriptedSandbox {
     /// exec a loud panic instead.
     fallback: Option<Transcript>,
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
-    on_exec: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+    /// Per path, the contents successive execs write; the last entry
+    /// repeats once the queue is down to it.
+    on_exec: Mutex<BTreeMap<PathBuf, VecDeque<Vec<u8>>>>,
     execs: Mutex<Vec<ExecSpec>>,
     /// Every exec waits here before streaming — how a test holds two
     /// runs in flight at once to observe their overlap.
@@ -134,8 +136,12 @@ impl ScriptedSandbox {
             .insert(path.into(), contents.into());
     }
 
-    /// Plants a guest file the moment any exec streams — output every
-    /// exec "wrote". The write lands in the same removable map as
+    /// Plants a guest file the moment any exec streams — output that
+    /// exec "wrote". Successive calls for the same path queue up for
+    /// successive execs, and the last registered contents repeat
+    /// forever — so one call scripts an agent that always writes the
+    /// same file, two script one that writes differently after a
+    /// re-prompt. The write lands in the same removable map as
     /// [`Self::seed_file`], so a stale-file clear before the exec is
     /// observable and a clear after it is too. The map is shared
     /// across every handle: concurrent runs removing and fetching the
@@ -145,12 +151,15 @@ impl ScriptedSandbox {
         self.on_exec
             .lock()
             .unwrap()
-            .insert(path.into(), contents.into());
+            .entry(path.into())
+            .or_default()
+            .push_back(contents.into());
     }
 
-    /// Registers `report` as what every exec "writes" at the guest
-    /// report path — the report a real agent would leave for the
-    /// kernel to fetch.
+    /// Registers what the next exec "writes" at the guest report path
+    /// — the report a real agent would leave for the kernel to fetch.
+    /// Queued like [`Self::write_on_exec`]: the last registered report
+    /// repeats.
     pub fn write_report_on_exec(&self, report: impl Into<Vec<u8>>) {
         self.write_on_exec(Path::new(GUEST_ROOT).join(REPORT_FILE), report);
     }
@@ -190,8 +199,15 @@ impl Sandbox for ScriptedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
-        for (path, contents) in self.on_exec.lock().unwrap().iter() {
-            self.seed_file(path.clone(), contents.clone());
+        for (path, queue) in self.on_exec.lock().unwrap().iter_mut() {
+            // Advance the queue only while another entry waits behind;
+            // the last one serves every exec from then on.
+            let contents = if queue.len() > 1 {
+                queue.pop_front().unwrap()
+            } else {
+                queue.front().cloned().unwrap()
+            };
+            self.seed_file(path.clone(), contents);
         }
         let transcript = {
             let mut script = self.script.lock().unwrap();
@@ -244,8 +260,6 @@ impl Sandbox for ScriptedSandbox {
         Ok(())
     }
 }
-
-// ---------- the staged sandbox and its scripted attempts ----------
 
 /// One agent exec [`StagedSandbox`] will serve: what it prints, how it
 /// exits, and the report it leaves (or `None` to leave none, so the

@@ -25,9 +25,9 @@ mod frame;
 use async_trait::async_trait;
 
 use crate::event::{IterationOutcome, RunEvent};
-use crate::invocation::{self, InvocationEnd};
+use crate::invocation;
 use crate::kernel::{Kernel, KernelContext, KernelError};
-use crate::preamble::{Feedback, repair};
+use crate::preamble::Feedback;
 use crate::run::{PauseReason, RunOutcome};
 use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
@@ -85,7 +85,7 @@ impl Kernel for PipelineKernel {
                     // so no `IterationFinished` closes a pass that never
                     // finished. Only a full pass (below) or a hard
                     // failure emits one.
-                    StageEnd::Done => return conclude(&ctx, RunOutcome::Done).await,
+                    StageEnd::Done(_) => return conclude(&ctx, RunOutcome::Done).await,
                     StageEnd::Pause(reason) => {
                         return conclude(&ctx, RunOutcome::Paused(reason)).await;
                     }
@@ -119,8 +119,9 @@ enum StageEnd {
     /// the next stage.
     Advance(StageReport),
     /// A stage claimed `done` and cleared its verify gate — the run is
-    /// complete. (The Verified Done skeptic lands on top of this in #7.)
-    Done,
+    /// complete. Carries the claiming report so the Verified Done
+    /// skeptic has a claim to interrogate.
+    Done(#[expect(dead_code, reason = "read once the skeptic interrogates the claim")] StageReport),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
     Pause(PauseReason),
@@ -165,7 +166,7 @@ async fn execute_stage(
         // where the run goes.
         return Ok(match report.status() {
             ReportStatus::Continue => StageEnd::Advance(report),
-            ReportStatus::Done => StageEnd::Done,
+            ReportStatus::Done => StageEnd::Done(report),
             ReportStatus::Blocked => StageEnd::Pause(PauseReason::Blocked),
             ReportStatus::NeedsInput => StageEnd::Pause(PauseReason::AwaitingHuman),
         });
@@ -205,7 +206,9 @@ async fn drive_stage(
             })
             .await?;
 
-        let Some(report) = invoke_and_parse(ctx, iteration, stage, sandbox, &prompt).await? else {
+        let Some(report) =
+            invocation::invoke_to_report(ctx, iteration, sandbox, &prompt, &stage).await?
+        else {
             return Ok(StageDrive::Failed);
         };
 
@@ -238,71 +241,6 @@ async fn drive_stage(
         Ok(StageDrive::Reported { report, verify })
     })
     .await
-}
-
-/// Drives the agent to a parsed report, spending the one repair
-/// re-prompt a rejected report earns in the same sandbox — the work is
-/// done, only the report needs fixing. `None` means the stage is out of
-/// chances: a crash (no report to trust) or a report still malformed
-/// after repair. Every rejection is logged for the repair to answer.
-async fn invoke_and_parse(
-    ctx: &KernelContext,
-    iteration: u32,
-    stage: Stage,
-    sandbox: &SandboxHandle,
-    prompt: &str,
-) -> Result<Option<StageReport>, KernelError> {
-    let errors = match parse(
-        stage,
-        invocation::invoke(ctx, iteration, sandbox, prompt).await?,
-    ) {
-        Parsed::Report(report) => return Ok(Some(report)),
-        Parsed::Crashed => return Ok(None),
-        Parsed::Rejected(errors) => errors,
-    };
-    let repair_prompt = repair(&errors, contract::report_schema(stage));
-    ctx.events
-        .emit(RunEvent::ReportRejected { iteration, errors })
-        .await?;
-    match parse(
-        stage,
-        invocation::invoke(ctx, iteration, sandbox, &repair_prompt).await?,
-    ) {
-        Parsed::Report(report) => Ok(Some(report)),
-        Parsed::Crashed => Ok(None),
-        Parsed::Rejected(errors) => {
-            ctx.events
-                .emit(RunEvent::ReportRejected { iteration, errors })
-                .await?;
-            Ok(None)
-        }
-    }
-}
-
-/// The outcome of reading one invocation's report against `stage`'s
-/// schema.
-enum Parsed {
-    Report(StageReport),
-    /// The agent exited badly — nothing it left can be trusted, so no
-    /// repair is offered.
-    Crashed,
-    /// The report is missing or malformed; the errors feed the repair
-    /// re-prompt.
-    Rejected(Vec<String>),
-}
-
-fn parse(stage: Stage, end: InvocationEnd) -> Parsed {
-    match end {
-        InvocationEnd::Crashed => Parsed::Crashed,
-        InvocationEnd::MissingReport(message) => Parsed::Rejected(vec![message]),
-        InvocationEnd::Reported(raw) => match std::str::from_utf8(&raw) {
-            Err(error) => Parsed::Rejected(vec![format!("report is not UTF-8: {error}")]),
-            Ok(text) => match StageReport::from_stage_json(stage, text) {
-                Ok(report) => Parsed::Report(report),
-                Err(error) => Parsed::Rejected(vec![error.to_string()]),
-            },
-        },
-    }
 }
 
 /// The stage's domain prompt: the flow's override for the slot, read

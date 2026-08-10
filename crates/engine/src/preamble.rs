@@ -2,14 +2,14 @@
 //! its prompts with. The frame itself — which sections, in what
 //! order, around which prompts — is kernel policy; what lives here is
 //! the mechanism every frame shares: quoting agent-influenced text so
-//! it cannot escape its fence, feeding a verify failure back,
-//! attributing a human's answers to the questions they addressed, and
-//! the repair re-prompt a rejected report earns.
+//! it cannot escape its fence, feeding a verify failure back, and
+//! attributing a human's answers to the questions they addressed.
+//! The repair re-prompt is not a frame piece — it belongs to the
+//! parse-and-repair loop in [`crate::invocation`].
 
 use std::fmt::Write;
 
 use crate::report::{Answer, Question};
-use crate::workspace::REPORT_FILE;
 
 /// Why the previous work did not count as progress — machine feedback
 /// a kernel puts in front of the agent so it corrects the cause
@@ -88,29 +88,6 @@ pub fn human_input(
         let _ = write!(text, "\nNote: {note}\n");
     }
     Some(text)
-}
-
-/// The repair re-prompt — the one second chance a rejected report
-/// earns. Deliberately bare: the work already done stays done; only
-/// the report needs writing, so this carries the validation errors
-/// and the report contract — the fixed scratch path and the shape the
-/// kernel demands — and nothing else. The path is the same one
-/// [`crate::invocation::invoke`] fetches, by construction.
-pub fn repair(errors: &[String], shape: &str) -> String {
-    let mut text = String::from(
-        "# hako report repair\n\n\
-         The report you wrote was rejected:\n\n",
-    );
-    for error in errors {
-        let _ = writeln!(text, "- {error}");
-    }
-    let _ = write!(
-        text,
-        "\nWrite a corrected `{REPORT_FILE}` in the workspace and do \
-         nothing else:\n\n\
-         ```json\n{shape}\n```\n",
-    );
-    text
 }
 
 #[cfg(test)]
@@ -193,21 +170,6 @@ mod tests {
         assert_eq!(
             human_input(&[], &questions(&[("q1", "ignored?")]), None),
             None
-        );
-    }
-
-    #[test]
-    fn the_repair_prompt_carries_the_errors_and_the_contract() {
-        let text = repair(
-            &["missing field `summary`".into(), "not UTF-8".into()],
-            r#"{ "status": "..." }"#,
-        );
-        assert!(text.contains("- missing field `summary`\n"), "{text}");
-        assert!(text.contains("- not UTF-8\n"), "{text}");
-        assert!(text.contains(&format!("`{REPORT_FILE}`")), "{text}");
-        assert!(
-            text.contains("```json\n{ \"status\": \"...\" }\n```"),
-            "{text}"
         );
     }
 }
