@@ -147,10 +147,10 @@ impl RunRegistry {
         for status in statuses {
             match status {
                 Ok(status) => summaries.push(status.run),
-                // A run dir deleted under a live entry is a run that
-                // no longer exists; skipping it here gives the same
-                // list a restarted daemon would serve, where `load`
-                // would not index it at all.
+                // A run dir deleted under a live entry is a run that no
+                // longer exists: skipping it serves the same list a
+                // restarted daemon would, where `load` would not index
+                // it at all.
                 Err(engine::StoreError::NotFound(_)) => {}
                 Err(error) => return Err(error),
             }

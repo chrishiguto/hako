@@ -144,9 +144,9 @@ impl RunDir {
         let raw = match fs::read(&path).await {
             Ok(raw) => raw,
             // `create` writes the log at birth and nothing removes it,
-            // so its absence means the run directory itself is gone:
-            // a missing run, not an I/O fault. Disk is the source of
-            // truth — the same answer `open` gives after a restart.
+            // so its absence means the run directory itself is gone.
+            // Disk is the source of truth — the same answer `open`
+            // gives after a restart.
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
                 return Err(StoreError::NotFound(self.meta.run_id.clone()));
             }
@@ -446,9 +446,8 @@ mod tests {
         assert!(matches!(error, StoreError::NotFound(id) if id == RunId::new("ghost")));
     }
 
-    /// A run directory deleted under a live handle reads as the run
-    /// missing, not as an I/O fault — the answer must match what
-    /// `open` would say about the same disk state after a restart.
+    /// The restart criterion: a live handle must read a deleted run
+    /// directory the way `open` would read that same disk state.
     #[tokio::test]
     async fn reading_a_deleted_run_dir_is_not_found() {
         let root = tempfile::tempdir().unwrap();

@@ -136,8 +136,7 @@ impl HttpError {
 
     /// For a handler addressing one run: a vanished run directory is
     /// that run missing — the same answer a restarted daemon would
-    /// give, since `load` would not index it — and everything else is
-    /// a daemon fault.
+    /// give, since `load` would not index it.
     fn run_store(error: engine::StoreError) -> Self {
         match error {
             engine::StoreError::NotFound(_) => Self::RunNotFound,

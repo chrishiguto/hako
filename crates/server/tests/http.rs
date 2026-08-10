@@ -251,8 +251,8 @@ async fn concurrent_runs_have_independent_ids_directories_and_histories() {
 }
 
 /// Disk is the source of truth: a run directory deleted under a live
-/// daemon answers exactly as it would after a restart — status 404s,
-/// and the list simply no longer carries the run.
+/// daemon answers on every endpoint exactly as it would after a
+/// restart.
 #[tokio::test]
 async fn a_run_whose_directory_vanished_is_missing_not_a_daemon_fault() {
     let host = TestHost::new(done_report()).await;
