@@ -1,14 +1,8 @@
 //! `hakod` — the always-on hako engine host.
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use server::{Daemon, DaemonConfig, EngineRuntime, FileSecrets};
-
-const DEFAULT_ADDR: &str = "127.0.0.1:7878";
-const DEFAULT_RUNS_ROOT: &str = ".hako/runs";
-const DEFAULT_SECRETS_ROOT: &str = ".hako/secrets";
+use server::{Daemon, EngineRuntime, FileSecrets, HostConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,26 +13,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let token = std::env::var("HAKO_TOKEN")
-        .map_err(|_| "HAKO_TOKEN must contain the daemon bearer token")?;
-    let address: SocketAddr = std::env::var("HAKO_ADDR")
-        .unwrap_or_else(|_| DEFAULT_ADDR.to_owned())
-        .parse()?;
-    let runs_root = std::env::var_os("HAKO_RUNS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_RUNS_ROOT));
-    let secrets_root = std::env::var_os("HAKO_SECRETS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_ROOT));
-
+    let config = HostConfig::from_env()?;
     // Before the listener: a daemon whose secret store is readable by
     // the box's other users must not come up at all.
-    let secrets = Arc::new(FileSecrets::open(secrets_root)?);
+    let secrets = Arc::new(FileSecrets::open(config.secrets_root)?);
     let daemon = Daemon::load(
-        DaemonConfig::new(token, runs_root),
-        Arc::new(EngineRuntime::production(secrets)),
+        config.daemon,
+        Arc::new(EngineRuntime::production(config.sandbox, secrets)),
     )
     .await?;
+    let address = config.address;
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!("hakod {} listening on {address}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, daemon.router())
