@@ -430,9 +430,9 @@ mod tests {
         assert_eq!(store.asked(), ["CLAUDE_CODE_OAUTH_TOKEN"]);
     }
 
-    /// Failing only when *no* alternative is present is the whole
-    /// amendment — and the message has to list every name that would
-    /// have worked, or an operator cannot act on it.
+    /// A one-of requirement fails only when *no* alternative is
+    /// present, and the message has to list every name that would have
+    /// worked, or an operator cannot act on it.
     #[tokio::test]
     async fn a_requirement_with_nothing_provisioned_names_every_alternative() {
         let store = Store::with(&[("GH_TOKEN", "ghp_1")]);
