@@ -39,15 +39,21 @@ struct Execution {
     task: tokio::task::JoinHandle<()>,
 }
 
-/// How a cancel request landed against the registry's live view.
+/// How a cancel request landed against the registry's live view. The
+/// registry reports only what it knows — whether an execution was
+/// drained — and never mints a state: a drained run may have beaten
+/// the token to its own ending, and a completed run's execution stays
+/// in its record until a cancel reaps it. The run's actual ending is
+/// read from the log, like all published status.
 #[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
 pub(crate) enum CancelOutcome {
-    /// The token fired and the task drained: the terminal event is on
-    /// disk and every sandbox torn down before this comes back.
-    Cancelled,
-    /// The run exists but nothing is executing — it already reached a
-    /// terminal state, or the daemon restarted and only the directory
-    /// remains.
+    /// An execution existed and has fully wound down: its terminal
+    /// event is on disk and every sandbox torn down before this comes
+    /// back. The log holds whichever ending won the race — usually
+    /// `cancelled`, but a run already finished keeps what it earned.
+    Drained,
+    /// Nothing was executing — a prior cancel already drained the run,
+    /// or the daemon restarted and only the directory remains.
     NotRunning,
     /// No such run.
     UnknownRun,
@@ -154,11 +160,12 @@ impl RunRegistry {
 
     /// Cancels a run cooperatively: fire the token the kernel watches,
     /// then drain its task, so the run unwinds through the sandbox
-    /// bracket — teardown on every exit path — and writes its terminal
-    /// `state_changed` before the caller answers. The execution is
-    /// taken out of the record first, outside any await: a second
-    /// cancel finds `NotRunning`, and the lock is never held while the
-    /// run winds down.
+    /// bracket — teardown on every exit path — and its terminal
+    /// `state_changed` is on disk before the caller answers. What the
+    /// run ended as is the log's to say, per [`CancelOutcome`]. The
+    /// execution is taken out of the record first, outside any await:
+    /// a second cancel finds `NotRunning`, and the lock is never held
+    /// while the run winds down.
     #[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
     pub(crate) async fn cancel(&self, run_id: &RunId) -> CancelOutcome {
         let execution = {
@@ -176,7 +183,7 @@ impl RunRegistry {
         // was — the event log holds whichever ending won. A join error
         // is a panic `launch` already logged and published as failed.
         let _ = execution.task.await;
-        CancelOutcome::Cancelled
+        CancelOutcome::Drained
     }
 
     pub(crate) async fn get(&self, run_id: &RunId) -> Option<RunDir> {
@@ -221,10 +228,29 @@ impl RunRegistry {
 #[cfg(test)]
 mod tests {
     use engine::RunState;
-    use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
+    use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, exec, seeded_repo};
     use tokio::sync::Barrier;
 
     use super::*;
+
+    /// The one-stage cmd-agent flow every registry test submits, over
+    /// the given seeded repo.
+    fn flow_over(repo: &std::path::Path) -> FlowConfig {
+        FlowConfig::from_toml(&format!(
+            r#"[loop]
+kernel = "pipeline"
+
+[agent]
+engine = "cmd"
+command = ["fake-agent", "{{prompt}}"]
+
+[workspace]
+repo = {:?}
+"#,
+            repo.to_str().unwrap()
+        ))
+        .unwrap()
+    }
 
     /// Cancel rides the token through the kernel's sandbox bracket:
     /// the hung agent exec is abandoned, its sandbox destroyed, and
@@ -243,20 +269,7 @@ mod tests {
             .await
             .unwrap();
 
-        let flow = FlowConfig::from_toml(&format!(
-            r#"[loop]
-kernel = "pipeline"
-
-[agent]
-engine = "cmd"
-command = ["fake-agent", "{{prompt}}"]
-
-[workspace]
-repo = {:?}
-"#,
-            repo.path().to_str().unwrap()
-        ))
-        .unwrap();
+        let flow = flow_over(repo.path());
         let resolved = runtime.resolve(&flow).unwrap();
         let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
 
@@ -265,7 +278,7 @@ repo = {:?}
         barrier.wait().await;
         assert!(matches!(
             registry.cancel(&run_id).await,
-            CancelOutcome::Cancelled
+            CancelOutcome::Drained
         ));
 
         let dir = registry.get(&run_id).await.unwrap();
@@ -284,5 +297,49 @@ repo = {:?}
             registry.cancel(&RunId::new("no-such-run")).await,
             CancelOutcome::UnknownRun
         ));
+    }
+
+    /// A run that already ended keeps its ending: cancelling it drains
+    /// the spent execution — `Drained`, because the registry reports
+    /// only what it drained, never a state — while the log still says
+    /// `done`. The route reads status for the truth, like every
+    /// caller.
+    #[tokio::test]
+    async fn cancelling_a_finished_run_drains_it_but_the_log_keeps_its_ending() {
+        let runs_root = tempfile::tempdir().unwrap();
+        let repo = seeded_repo();
+        // One agent exec whose report claims done: the plan stage ends
+        // the run on its own word, no checkpoint, no verify.
+        let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec("planned\n", 0)]));
+        sandbox.write_report_on_exec(r#"{"status": "done", "summary": "nothing left"}"#);
+        let runtime =
+            EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
+        let registry = RunRegistry::load(runs_root.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let flow = flow_over(repo.path());
+        let resolved = runtime.resolve(&flow).unwrap();
+        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+
+        // Let the run reach its own ending before any cancel exists.
+        let dir = registry.get(&run_id).await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while projection::status(&dir).await.unwrap().run.state != RunState::Done {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the run never reached done"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(matches!(
+            registry.cancel(&run_id).await,
+            CancelOutcome::Drained
+        ));
+        assert_eq!(
+            projection::status(&dir).await.unwrap().run.state,
+            RunState::Done
+        );
     }
 }
