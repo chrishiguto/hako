@@ -127,11 +127,9 @@ pub async fn invoke(
             ExecEvent::Stdout(bytes) => {
                 let chunk = into_text(bytes);
                 stdout.push_str(&chunk);
-                (OutputStream::Stdout, stdout_scrub.push(&chunk))
+                (OutputStream::Stdout, stdout_scrub.push(chunk))
             }
-            ExecEvent::Stderr(bytes) => {
-                (OutputStream::Stderr, stderr_scrub.push(&into_text(bytes)))
-            }
+            ExecEvent::Stderr(bytes) => (OutputStream::Stderr, stderr_scrub.push(into_text(bytes))),
             ExecEvent::Exited(status) => {
                 exit = Some(status);
                 continue;
