@@ -620,3 +620,36 @@ async fn a_check_that_prints_a_secret_carries_none_into_the_next_preamble() {
         }]
     );
 }
+
+/// The tail cut can land inside a value, and the fragment it leaves
+/// would slip a whole-value scrub — so the scrub must run while the
+/// value is whole, before the tail is cut.
+#[tokio::test]
+async fn a_secret_straddling_the_tail_cut_leaves_no_fragment() {
+    // 18 secret chars + 3990 filler put the 4000-char tail cut 8
+    // characters into the secret: scrubbed after the cut, the
+    // fragment `dler_9q7x` would survive in the clear.
+    let printed = format!("ghp_straddler_9q7x{}", "y".repeat(3990));
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec(&printed, 1)]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = KernelContext {
+        secrets: testkit::secret_env([("GH_TOKEN", "ghp_straddler_9q7x")]),
+        ..context(sandbox, sink.clone(), verifying(&["./deploy.sh"]))
+    };
+    let handle = SandboxHandle::new("vm-0");
+
+    let outcome = verify::run_checks(&ctx, &handle, 1).await.unwrap();
+
+    let VerifyOutcome::Failed { output, .. } = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
+    assert!(
+        output.starts_with("…(earlier output truncated)…"),
+        "{output}"
+    );
+    assert!(!output.contains("9q7x"), "{output}");
+    let [RunEvent::VerifyCheckFinished { output: logged, .. }] = &sink.events()[..] else {
+        panic!("expected exactly one check event");
+    };
+    assert!(!logged.contains("9q7x"), "{logged}");
+}
