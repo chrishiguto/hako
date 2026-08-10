@@ -150,7 +150,7 @@ async fn a_restarted_host_reconstructs_the_run_from_disk_alone() {
     assert_eq!(run_dir.meta().kernel, "pipeline");
     assert_eq!(run_dir.meta().agent, "scripted");
     assert_eq!(
-        run_dir.state().await.unwrap(),
+        run_dir.project().await.unwrap().state,
         RunState::Paused {
             reason: PauseReason::Blocked
         }

@@ -1,9 +1,10 @@
 //! The pipeline kernel's dialect — the vocabulary one kernel adds to
 //! the published language: its stages and the report shape each stage
 //! writes. Dialects build on the shared report vocabulary in
-//! [`crate::report`] — the uniform status, questions, answers — and
-//! never redefine it; one module per kernel, so the line between core
-//! language and kernel dialect stays visible in the crate tree.
+//! [`crate::report`] — the uniform status, summary, questions,
+//! answers — and never redefine it; one module per kernel, so the
+//! line between core language and kernel dialect stays visible in the
+//! crate tree.
 //!
 //! The shapes mirror the flow format's pattern: Rust types as the
 //! source of truth, generated JSON Schemas (committed under
@@ -258,18 +259,6 @@ impl StageReport {
     pub fn to_pretty_json(&self) -> String {
         serde_json::to_string_pretty(&self.to_json_value()).expect("stage reports serialize")
     }
-
-    /// The questions a `needs_input` report asks — uniform across
-    /// stages, so pausing surfaces them the same wherever they arose.
-    pub fn questions(&self) -> &[Question] {
-        match self {
-            Self::Plan(report) => &report.questions,
-            Self::Implement(report) => &report.questions,
-            Self::Review(report) => &report.questions,
-            Self::Simplify(report) => &report.questions,
-            Self::Deliver(report) => &report.questions,
-        }
-    }
 }
 
 /// The stage's report schema, generated from its type so the two
@@ -291,11 +280,68 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::report::ReportCore;
 
     /// The smallest report every stage accepts: the uniform status
     /// plus the summary; all payloads default.
     fn minimal(status: &str) -> String {
         json!({"status": status, "summary": "did the thing"}).to_string()
+    }
+
+    /// The shared core a dialect-blind reader gets out of this report
+    /// — read off the wire bytes, the way the engine's run projection
+    /// reads it back off the event log, never off the Rust fields. A
+    /// dialect that renamed a core field on the wire would fail here,
+    /// which is the whole point.
+    fn core_of(report: &StageReport) -> ReportCore {
+        serde_json::from_value(report.to_json_value()).expect("a report carries the shared core")
+    }
+
+    /// One report per stage with every payload field populated — the
+    /// fixtures the round-trip and core-agreement tests share.
+    fn populated_reports() -> [StageReport; 5] {
+        let question = Question {
+            id: "q1".into(),
+            text: "which way?".into(),
+            options: vec![],
+        };
+        [
+            StageReport::Plan(PlanReport {
+                status: ReportStatus::Continue,
+                summary: "drive issue #7".into(),
+                work_unit: Some("issue #7".into()),
+                steps: vec!["add the type".into(), "wire the schema".into()],
+                blockers: vec![],
+                questions: vec![question],
+            }),
+            StageReport::Implement(ImplementReport {
+                status: ReportStatus::Continue,
+                summary: "added the type".into(),
+                remaining: vec!["wire the schema".into()],
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Review(ReviewReport {
+                status: ReportStatus::Continue,
+                summary: "patched naming".into(),
+                findings: vec!["error paths untested".into()],
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Simplify(SimplifyReport {
+                status: ReportStatus::Done,
+                summary: "folded the twins".into(),
+                blockers: vec![],
+                questions: vec![],
+            }),
+            StageReport::Deliver(DeliverReport {
+                status: ReportStatus::Blocked,
+                summary: "push rejected".into(),
+                links: vec!["https://example.com/pr/1".into()],
+                blockers: vec!["no push credential".into()],
+                questions: vec![],
+            }),
+        ]
     }
 
     #[test]
@@ -333,49 +379,7 @@ mod tests {
 
     #[test]
     fn each_stage_report_round_trips_with_its_payload() {
-        let question = Question {
-            id: "q1".into(),
-            text: "which way?".into(),
-            options: vec![],
-        };
-        let reports = [
-            StageReport::Plan(PlanReport {
-                status: ReportStatus::Continue,
-                summary: "drive issue #7".into(),
-                work_unit: Some("issue #7".into()),
-                steps: vec!["add the type".into(), "wire the schema".into()],
-                blockers: vec![],
-                questions: vec![question.clone()],
-            }),
-            StageReport::Implement(ImplementReport {
-                status: ReportStatus::Continue,
-                summary: "added the type".into(),
-                remaining: vec!["wire the schema".into()],
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Review(ReviewReport {
-                status: ReportStatus::Continue,
-                summary: "patched naming".into(),
-                findings: vec!["error paths untested".into()],
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Simplify(SimplifyReport {
-                status: ReportStatus::Done,
-                summary: "folded the twins".into(),
-                blockers: vec![],
-                questions: vec![],
-            }),
-            StageReport::Deliver(DeliverReport {
-                status: ReportStatus::Blocked,
-                summary: "push rejected".into(),
-                links: vec!["https://example.com/pr/1".into()],
-                blockers: vec!["no push credential".into()],
-                questions: vec![],
-            }),
-        ];
-        for report in reports {
+        for report in populated_reports() {
             let wire = match &report {
                 StageReport::Plan(r) => serde_json::to_string(r).unwrap(),
                 StageReport::Implement(r) => serde_json::to_string(r).unwrap(),
@@ -394,7 +398,7 @@ mod tests {
             let report = StageReport::from_stage_json(stage, &minimal("continue")).unwrap();
             assert_eq!(report.stage(), stage);
             assert_eq!(report.status(), ReportStatus::Continue, "{stage:?}");
-            assert!(report.questions().is_empty(), "{stage:?}");
+            assert!(core_of(&report).questions.is_empty(), "{stage:?}");
         }
     }
 
@@ -460,11 +464,56 @@ mod tests {
             .to_string();
             let report = StageReport::from_stage_json(stage, &report).unwrap();
             assert_eq!(report.status(), ReportStatus::NeedsInput);
-            let [question] = report.questions() else {
+            let core = core_of(&report);
+            let [question] = core.questions.as_slice() else {
                 panic!("{stage:?}: expected one question");
             };
             assert_eq!(question.id, "q1");
             assert_eq!(question.options, ["a", "b"]);
+        }
+    }
+
+    /// The flattening contract [`ReportCore`] documents: every stage's
+    /// wire shape deserializes into the shared core, carrying exactly
+    /// the uniform fields whatever payload surrounds them. Stated
+    /// against literal cores, so the expectation cannot drift along
+    /// with the report structs it is meant to pin.
+    #[test]
+    fn every_stage_report_flattens_into_the_shared_core() {
+        let expected = [
+            ReportCore {
+                status: ReportStatus::Continue,
+                summary: "drive issue #7".into(),
+                questions: vec![Question {
+                    id: "q1".into(),
+                    text: "which way?".into(),
+                    options: vec![],
+                }],
+            },
+            ReportCore {
+                status: ReportStatus::Continue,
+                summary: "added the type".into(),
+                questions: vec![],
+            },
+            ReportCore {
+                status: ReportStatus::Continue,
+                summary: "patched naming".into(),
+                questions: vec![],
+            },
+            ReportCore {
+                status: ReportStatus::Done,
+                summary: "folded the twins".into(),
+                questions: vec![],
+            },
+            ReportCore {
+                status: ReportStatus::Blocked,
+                summary: "push rejected".into(),
+                questions: vec![],
+            },
+        ];
+        assert_eq!(Stage::ALL.len(), expected.len());
+        for (report, expected) in populated_reports().into_iter().zip(expected) {
+            assert_eq!(core_of(&report), expected, "{:?}", report.stage());
         }
     }
 }

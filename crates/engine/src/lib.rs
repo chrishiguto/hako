@@ -16,6 +16,7 @@ pub mod kernel;
 pub mod notify;
 pub mod pipeline;
 pub mod preamble;
+pub mod projection;
 pub mod report;
 pub mod run;
 pub mod sandbox;
@@ -39,12 +40,13 @@ pub use event::{
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use pipeline::PipelineKernel;
-pub use report::{Answer, Question, ReportStatus};
+pub use projection::{ProjectionError, RunProjection};
+pub use report::{Answer, Question, ReportCore, ReportStatus};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
 pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
     WorkspaceMount,
 };
 pub use secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
-pub use store::{FileEventSink, RunDir, RunMeta, StoreError, reduce_state};
+pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
 pub use workspace::{Workspace, WorkspaceError};
