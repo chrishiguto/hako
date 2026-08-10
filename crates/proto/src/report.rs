@@ -56,8 +56,10 @@ pub struct Question {
 /// belong to whichever dialect wrote the report, and the full shape
 /// was strict-parsed at the agent boundary before it was ever logged.
 /// Each dialect's agreement suite pins that its wire shape flattens
-/// into this core.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// into this core. Deliberately not `Serialize`: a core written back
+/// to the wire would impersonate a report while carrying none of its
+/// dialect's payload.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ReportCore {
     pub status: ReportStatus,
     /// What happened, in the agent's words.
