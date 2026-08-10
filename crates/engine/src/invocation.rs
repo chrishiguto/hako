@@ -136,6 +136,27 @@ impl<'env> ScrubbedStream<'env> {
     }
 }
 
+/// Emits one output event, skipping the empty chunks a seam-holding
+/// push legitimately returns.
+async fn emit_output(
+    ctx: &KernelContext,
+    iteration: u32,
+    stream: OutputStream,
+    chunk: String,
+) -> Result<(), KernelError> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    ctx.events
+        .emit(RunEvent::AgentOutput {
+            iteration,
+            stream,
+            chunk,
+        })
+        .await?;
+    Ok(())
+}
+
 /// Runs the agent once in the sandbox: exec-stream the invocation,
 /// emit every output chunk and the token usage as events, then fetch
 /// the report the agent wrote — through the sandbox seam, because
@@ -195,30 +216,14 @@ pub async fn invoke(
                 continue;
             }
         };
-        if !chunk.is_empty() {
-            ctx.events
-                .emit(RunEvent::AgentOutput {
-                    iteration,
-                    stream,
-                    chunk,
-                })
-                .await?;
-        }
+        emit_output(ctx, iteration, stream, chunk).await?;
     }
     // The streams are over — cleanly or not: whatever sat on a
     // boundary flushes now. A flushed tail lands after any events the
     // other stream logged meanwhile: the log records emission order,
     // which trails byte-arrival order by at most the held tail.
     for (stream, tail) in [stdout_seam.finish(), stderr_seam.finish()] {
-        if !tail.is_empty() {
-            ctx.events
-                .emit(RunEvent::AgentOutput {
-                    iteration,
-                    stream,
-                    chunk: tail,
-                })
-                .await?;
-        }
+        emit_output(ctx, iteration, stream, tail).await?;
     }
     if let Some(error) = stream_error {
         return Err(error.into());

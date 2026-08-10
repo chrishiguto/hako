@@ -142,12 +142,15 @@ impl SecretEnv {
     /// case — agent output carrying no secret — copies nothing.
     ///
     /// Values are only caught whole within the given text; the seam
-    /// between chunks is [`StreamScrubber`]'s job, and the emission
-    /// site feeds each output stream through one. A value printed
+    /// between chunks is the stream scrubber's job (see
+    /// [`stream_scrubber`]), and the emission site feeds each output
+    /// stream through one. A value printed
     /// with other bytes through it (a line break mid-token) still
     /// passes: the scrub is a net over an agent echoing its
     /// environment, not a guarantee against one that means to smuggle
     /// its key out — the microVM boundary is what stands against that.
+    ///
+    /// [`stream_scrubber`]: Self::stream_scrubber
     pub fn scrub<'t>(&self, text: &'t str) -> Cow<'t, str> {
         let mut scrubbed = Cow::Borrowed(text);
         for pattern in &self.patterns {
@@ -164,7 +167,7 @@ impl SecretEnv {
     /// emits is fed through one of these.
     ///
     /// [`scrub`]: Self::scrub
-    pub fn stream_scrubber(&self) -> StreamScrubber<'_> {
+    pub(crate) fn stream_scrubber(&self) -> StreamScrubber<'_> {
         StreamScrubber {
             env: self,
             held: String::new(),
@@ -181,8 +184,10 @@ impl SecretEnv {
 /// another must redact whole rather than leak its tail. Emission lags
 /// the agent by at most one value's length, a false start is released
 /// the moment the next chunk rules it out, and a stream with no
-/// secrets passes straight through untouched.
-pub struct StreamScrubber<'env> {
+/// secrets passes straight through untouched. Reached only from the
+/// engine's own emission site — hosts scrub whole events through
+/// [`ScrubbingSink`](crate::event::ScrubbingSink).
+pub(crate) struct StreamScrubber<'env> {
     env: &'env SecretEnv,
     held: String,
 }
@@ -406,6 +411,17 @@ mod tests {
         SecretRequirement::named("ANTHROPIC_API_KEY").or("CLAUDE_CODE_OAUTH_TOKEN")
     }
 
+    /// A resolved env from plain pairs — the scrub tests' one-line
+    /// setup.
+    fn resolved(values: &[(&str, &str)]) -> SecretEnv {
+        SecretEnv::new(
+            values
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), SecretValue::new(*value)))
+                .collect(),
+        )
+    }
+
     #[test]
     fn secret_values_debug_print_redacted() {
         let value = SecretValue::new("ghp_super_sensitive");
@@ -424,11 +440,7 @@ mod tests {
     /// prints through here.
     #[test]
     fn a_resolved_env_debug_prints_names_without_values() {
-        let env = SecretEnv::new(
-            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_sensitive"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_sensitive")]);
         let printed = format!("{env:?}");
         assert!(printed.contains("GH_TOKEN"), "{printed}");
         assert!(!printed.contains("ghp_sensitive"), "{printed}");
@@ -550,14 +562,7 @@ mod tests {
 
     #[test]
     fn scrubbing_replaces_every_occurrence_of_every_value() {
-        let env = SecretEnv::new(
-            [
-                ("GH_TOKEN".to_owned(), SecretValue::new("ghp_1")),
-                ("NPM_TOKEN".to_owned(), SecretValue::new("npm_2")),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_1"), ("NPM_TOKEN", "npm_2")]);
         let scrubbed = env.scrub("pushing with ghp_1, publishing with npm_2, again ghp_1");
         assert_eq!(
             scrubbed,
@@ -570,14 +575,7 @@ mod tests {
     /// clear.
     #[test]
     fn a_value_containing_another_is_scrubbed_whole() {
-        let env = SecretEnv::new(
-            [
-                ("SHORT".to_owned(), SecretValue::new("ghp_1")),
-                ("LONG".to_owned(), SecretValue::new("ghp_1_and_more")),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let env = resolved(&[("SHORT", "ghp_1"), ("LONG", "ghp_1_and_more")]);
         assert_eq!(env.scrub("key=ghp_1_and_more"), format!("key={REDACTED}"));
     }
 
@@ -585,11 +583,7 @@ mod tests {
     /// so the agent's every output chunk is not copied for nothing.
     #[test]
     fn text_without_a_secret_is_not_copied() {
-        let env = SecretEnv::new(
-            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_1")]);
         assert!(matches!(env.scrub("nothing to see"), Cow::Borrowed(_)));
         assert!(matches!(
             SecretEnv::default().scrub("ghp_1"),
@@ -601,11 +595,7 @@ mod tests {
     /// out the other side carries it redacted whole.
     #[test]
     fn a_value_split_across_chunks_is_scrubbed_whole() {
-        let env = SecretEnv::new(
-            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_1")]);
         let mut stream = env.stream_scrubber();
         let mut out = String::new();
         for chunk in ["token is gh", "p", "_1 done"] {
@@ -621,14 +611,7 @@ mod tests {
     /// until the next chunk decides which value it was.
     #[test]
     fn a_value_containing_another_straddling_chunks_is_scrubbed_whole() {
-        let env = SecretEnv::new(
-            [
-                ("SHORT".to_owned(), SecretValue::new("ghp_1")),
-                ("LONG".to_owned(), SecretValue::new("ghp_1_and_more")),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let env = resolved(&[("SHORT", "ghp_1"), ("LONG", "ghp_1_and_more")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("x ghp_1".to_owned()), "x ");
         assert_eq!(
@@ -650,14 +633,7 @@ mod tests {
     /// short value settles scrubbed rather than flushing raw.
     #[test]
     fn a_completed_value_inside_a_held_tail_is_scrubbed_at_finish() {
-        let env = SecretEnv::new(
-            [
-                ("INNER".to_owned(), SecretValue::new("ab")),
-                ("OUTER".to_owned(), SecretValue::new("xaby")),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let env = resolved(&[("INNER", "ab"), ("OUTER", "xaby")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("xab".to_owned()), "");
         assert_eq!(stream.finish(), format!("x{REDACTED}"));
@@ -667,14 +643,7 @@ mod tests {
     /// start overlapping its tail: the completed match settles first.
     #[test]
     fn a_completed_value_is_not_cut_by_an_overlapping_false_start() {
-        let env = SecretEnv::new(
-            [
-                ("A".to_owned(), SecretValue::new("abc")),
-                ("B".to_owned(), SecretValue::new("bcdef")),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let env = resolved(&[("A", "abc"), ("B", "bcdef")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("zabcd".to_owned()), format!("z{REDACTED}d"));
         assert_eq!(stream.finish(), "");
@@ -684,11 +653,7 @@ mod tests {
     /// whole — the hold never cuts through a completed match.
     #[test]
     fn a_self_overlapping_value_redacts_whole() {
-        let env = SecretEnv::new(
-            [("LOOP".to_owned(), SecretValue::new("abab"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("LOOP", "abab")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("ab".to_owned()), "");
         assert_eq!(stream.push("ab".to_owned()), REDACTED);
@@ -699,11 +664,7 @@ mod tests {
     /// moment the next chunk rules it out — held, never dropped.
     #[test]
     fn a_false_start_is_released_not_swallowed() {
-        let env = SecretEnv::new(
-            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_1")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("ends in ghp".to_owned()), "ends in ");
         assert_eq!(stream.push("!ok".to_owned()), "ghp!ok");
@@ -714,11 +675,7 @@ mod tests {
     /// longer grow into a value, so it flushes rather than vanishes.
     #[test]
     fn a_held_tail_flushes_when_the_stream_ends() {
-        let env = SecretEnv::new(
-            [("GH_TOKEN".to_owned(), SecretValue::new("ghp_1"))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("GH_TOKEN", "ghp_1")]);
         let mut stream = env.stream_scrubber();
         assert_eq!(stream.push("ends in ghp".to_owned()), "ends in ");
         assert_eq!(stream.finish(), "ghp");
@@ -738,11 +695,7 @@ mod tests {
     /// on it would redact the whole log and hide nothing.
     #[test]
     fn an_empty_value_scrubs_nothing() {
-        let env = SecretEnv::new(
-            [("EMPTY".to_owned(), SecretValue::new(""))]
-                .into_iter()
-                .collect(),
-        );
+        let env = resolved(&[("EMPTY", "")]);
         assert_eq!(env.scrub("ordinary output"), "ordinary output");
     }
 }
