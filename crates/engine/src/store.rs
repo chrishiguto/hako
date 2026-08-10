@@ -141,9 +141,17 @@ impl RunDir {
     /// whole-lines prefix — anything beyond it is a torn tail.
     async fn read_log(&self) -> Result<(Vec<EventEnvelope>, u64), StoreError> {
         let path = self.log_path();
-        let raw = fs::read(&path)
-            .await
-            .map_err(|source| StoreError::io(&path, source))?;
+        let raw = match fs::read(&path).await {
+            Ok(raw) => raw,
+            // `create` writes the log at birth and nothing removes it,
+            // so its absence means the run directory itself is gone.
+            // Disk is the source of truth — the same answer `open`
+            // gives after a restart.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::NotFound(self.meta.run_id.clone()));
+            }
+            Err(source) => return Err(StoreError::io(&path, source)),
+        };
         let terminated = raw
             .iter()
             .rposition(|&byte| byte == b'\n')
@@ -436,6 +444,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, StoreError::NotFound(id) if id == RunId::new("ghost")));
+    }
+
+    /// The restart criterion: a live handle must read a deleted run
+    /// directory the way `open` would read that same disk state.
+    #[tokio::test]
+    async fn reading_a_deleted_run_dir_is_not_found() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        tokio::fs::remove_dir_all(dir.path()).await.unwrap();
+        let error = dir.events().await.unwrap_err();
+        assert!(matches!(error, StoreError::NotFound(id) if id == RunId::new("r1")));
     }
 
     #[tokio::test]

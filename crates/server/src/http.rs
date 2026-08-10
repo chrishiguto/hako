@@ -113,7 +113,9 @@ async fn run_status(
         .await
         .ok_or(HttpError::RunNotFound)?;
     Ok(Json(
-        projection::status(&dir).await.map_err(HttpError::store)?,
+        projection::status(&dir)
+            .await
+            .map_err(HttpError::run_store)?,
     ))
 }
 
@@ -130,6 +132,16 @@ impl HttpError {
     fn store(error: engine::StoreError) -> Self {
         tracing::error!(%error, "daemon run-store failure");
         Self::Internal
+    }
+
+    /// For a handler addressing one run: a vanished run directory is
+    /// that run missing — the same answer a restarted daemon would
+    /// give, since `load` would not index it.
+    fn run_store(error: engine::StoreError) -> Self {
+        match error {
+            engine::StoreError::NotFound(_) => Self::RunNotFound,
+            error => Self::store(error),
+        }
     }
 }
 
