@@ -15,9 +15,9 @@
 use serde::Deserialize;
 
 use proto::event::{EventEnvelope, RunEvent};
-use proto::report::ReportCore;
+use proto::report::{Question, ReportCore};
 
-use crate::run::RunState;
+use crate::run::{PauseReason, RunState};
 
 /// The state a run is born in — what an empty log projects to, and
 /// what the store seeds its state mirror with. One definition, so the
@@ -81,6 +81,23 @@ impl RunProjection {
             last_report,
             last_seq: last.map(|envelope| envelope.seq),
         })
+    }
+
+    /// The questions the run is waiting on right now: the last
+    /// report's, while the run is paused awaiting a human. Outside
+    /// that pause a report's questions are history, not an ask —
+    /// uniform across kernels, so every host surfaces the same
+    /// pending questions from the same log.
+    pub fn pending_questions(&self) -> &[Question] {
+        match (&self.state, &self.last_report) {
+            (
+                RunState::Paused {
+                    reason: PauseReason::AwaitingHuman,
+                },
+                Some(core),
+            ) => &core.questions,
+            _ => &[],
+        }
     }
 }
 
@@ -230,6 +247,33 @@ mod tests {
         assert_eq!(core.questions.len(), 1);
         assert_eq!(core.questions[0].id, "q1");
         assert_eq!(core.questions[0].options, ["a", "b"]);
+    }
+
+    /// Questions are an ask only while the run waits on a human: the
+    /// same report read past the pause answers with none.
+    #[test]
+    fn questions_are_pending_only_while_awaiting_a_human() {
+        let asked = vec![
+            reported(
+                "plan",
+                json!({
+                    "status": "needs_input",
+                    "summary": "need a decision",
+                    "questions": [{"id": "q1", "text": "which shape?"}],
+                }),
+            ),
+            paused(PauseReason::AwaitingHuman),
+        ];
+        let waiting = RunProjection::of(&log(asked.clone())).unwrap();
+        assert_eq!(waiting.pending_questions().len(), 1);
+        assert_eq!(waiting.pending_questions()[0].id, "q1");
+
+        let mut answered = asked;
+        answered.push(RunEvent::StateChanged {
+            state: RunState::Running,
+        });
+        let resumed = RunProjection::of(&log(answered)).unwrap();
+        assert!(resumed.pending_questions().is_empty());
     }
 
     #[test]

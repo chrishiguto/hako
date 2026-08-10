@@ -6,24 +6,12 @@
 //! log afresh.
 
 use api::{RunStatusResponse, RunSummary};
-use engine::{PauseReason, RunDir, RunState};
+use engine::RunDir;
 
 pub(crate) async fn status(dir: &RunDir) -> Result<RunStatusResponse, engine::StoreError> {
     let meta = dir.meta();
     let projection = dir.project().await?;
-    // Questions are pending only while the run actually waits on a
-    // human; outside that pause the last report's questions are
-    // history, not an ask.
-    let pending_questions = match projection.state {
-        RunState::Paused {
-            reason: PauseReason::AwaitingHuman,
-        } => projection
-            .last_report
-            .as_ref()
-            .map(|core| core.questions.clone())
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
+    let pending_questions = projection.pending_questions().to_vec();
     Ok(RunStatusResponse {
         run: RunSummary {
             run_id: meta.run_id.as_str().to_owned(),
