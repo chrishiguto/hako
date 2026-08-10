@@ -1,7 +1,7 @@
 //! The secrets seam — flows reference names, values exist only where
 //! the daemon runs.
 //!
-//! Resolution happens once, at launch: the host reads the flow's names
+//! Resolution happens once, at submit: the host reads the flow's names
 //! and the adapter's requirements through a [`SecretsProvider`] and
 //! hands the kernel a [`SecretEnv`] — a value, not a seam. Per-sandbox
 //! resolution would hit the store four times an iteration and let a
@@ -216,7 +216,7 @@ pub async fn resolve(
 
 /// Resolves secret names to values. A file store with restrictive
 /// permissions (or daemon env) in production, a map in tests. Reached
-/// once per run, at launch — never from inside a kernel, which works
+/// once per run, at submit — never from inside a kernel, which works
 /// from the [`SecretEnv`] that resolution produced.
 #[async_trait]
 pub trait SecretsProvider: Send + Sync {

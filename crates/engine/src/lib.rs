@@ -6,7 +6,7 @@
 //! [`AgentAdapter`], [`EventSink`], [`Notifier`], [`SecretsProvider`] —
 //! never reached globally. Five of them reach a kernel through
 //! [`KernelContext`]; [`SecretsProvider`] is spent before the kernel
-//! starts, at launch, and what the context carries is the
+//! starts, at submit, and what the context carries is the
 //! [`SecretEnv`] that resolution produced (ADR 0006). That is what
 //! makes an entire loop testable in-process with fakes.
 

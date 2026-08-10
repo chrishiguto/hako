@@ -75,7 +75,7 @@ pub async fn in_fresh_sandbox<T>(
         return Ok(Bracketed::Cancelled);
     }
     // Every sandbox gets the same env: the run's secrets resolved
-    // once, at launch. Copied rather than re-resolved because a store
+    // once, at submit. Copied rather than re-resolved because a store
     // read here would put a run four iterations deep at the mercy of
     // the store still being up.
     let spec = SandboxSpec {

@@ -78,7 +78,7 @@ pub struct KernelContext {
     pub events: Arc<dyn EventSink>,
     pub notifier: Arc<dyn Notifier>,
     /// The run's secrets, already resolved — a value like [`budgets`],
-    /// not a seam. The host resolves them once at launch, where a gap
+    /// not a seam. The host resolves them once at submit, where a gap
     /// still fails the submission that could be fixed; a kernel only
     /// spends them, injecting them into every sandbox it boots and
     /// scrubbing them back out of what comes off the agent.

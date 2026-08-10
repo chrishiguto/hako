@@ -60,19 +60,6 @@ impl ScriptedAgent {
         self
     }
 
-    /// Declares a requirement any one of `secrets` satisfies — the
-    /// shape a CLI that takes either a key or a token states.
-    pub fn requiring_any_of(mut self, secrets: &[&str]) -> Self {
-        let mut names = secrets.iter();
-        let first = names.next().expect("a requirement needs a name");
-        self.secrets.push(
-            names.fold(SecretRequirement::named(first), |requirement, name| {
-                requirement.or(name)
-            }),
-        );
-        self
-    }
-
     /// Reports this usage whenever the stdout carries the
     /// `tokens used` marker — the adapter-parses-stdout contract.
     pub fn reporting(mut self, usage: TokenUsage) -> Self {
