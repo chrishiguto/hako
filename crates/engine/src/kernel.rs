@@ -13,7 +13,7 @@ use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
 use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
-use crate::secrets::{SecretsError, SecretsProvider};
+use crate::secrets::{SecretEnv, SecretsError};
 use crate::workspace::{Workspace, WorkspaceError};
 use proto::flow::{KernelName, PromptsConfig, VerifyConfig};
 
@@ -77,7 +77,14 @@ pub struct KernelContext {
     pub agent: Arc<dyn AgentAdapter>,
     pub events: Arc<dyn EventSink>,
     pub notifier: Arc<dyn Notifier>,
-    pub secrets: Arc<dyn SecretsProvider>,
+    /// The run's secrets, already resolved — a value like [`budgets`],
+    /// not a seam. The host resolves them once at launch, where a gap
+    /// still fails the submission that could be fixed; a kernel only
+    /// spends them, injecting them into every sandbox it boots and
+    /// scrubbing them back out of what comes off the agent.
+    ///
+    /// [`budgets`]: Self::budgets
+    pub secrets: SecretEnv,
 }
 
 /// An infrastructure failure the kernel cannot recover from — distinct

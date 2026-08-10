@@ -3,30 +3,28 @@
 //! `Arc`, and a kernel can drive a full iteration through
 //! `KernelContext` alone — no VMs, no LLMs, no network.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine::testkit::{
-    self, MapSecrets, RecordingNotifier, RecordingSink, ScriptedAgent, ScriptedSandbox, Transcript,
+    self, RecordingNotifier, RecordingSink, ScriptedAgent, ScriptedSandbox, Transcript,
 };
 use engine::{
     ExecEvent, ExitStatus, Kernel, KernelContext, KernelError, Notification, OutputStream,
-    PauseReason, ReportStatus, RunEvent, RunId, RunOutcome, RunState, SandboxSpec, SecretName,
-    TokenUsage, Workspace,
+    PauseReason, ReportStatus, RunEvent, RunId, RunOutcome, RunState, SandboxSpec, TokenUsage,
+    Workspace,
 };
 use futures_util::StreamExt;
 
-/// One hand-written iteration exercising every collaborator: resolve a
-/// secret, boot a sandbox, run the agent, collect its report, tear the
-/// sandbox down, pause for the human.
+/// One hand-written iteration exercising every collaborator: boot a
+/// sandbox over the run's resolved secrets, run the agent, collect its
+/// report, tear the sandbox down, pause for the human.
 struct OneIterationKernel;
 
 #[async_trait]
 impl Kernel for OneIterationKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         ctx.sandbox.preflight().await?;
-        let token = ctx.secrets.resolve(&SecretName::new("GH_TOKEN")).await?;
 
         ctx.events
             .emit(RunEvent::RunStarted {
@@ -38,9 +36,11 @@ impl Kernel for OneIterationKernel {
             .emit(RunEvent::IterationStarted { iteration: 1 })
             .await?;
 
+        // The secrets arrive resolved — a kernel spends them, it
+        // never fetches them.
         let spec = SandboxSpec {
             workspace: ctx.workspace.mount(),
-            env: BTreeMap::from([("GH_TOKEN".to_string(), token)]),
+            env: ctx.secrets.vars().clone(),
         };
         let vm = ctx.sandbox.create(&spec).await?;
 
@@ -179,7 +179,7 @@ async fn a_fully_faked_kernel_drives_one_iteration_end_to_end() {
         ),
         events: sink.clone(),
         notifier: notifier.clone(),
-        secrets: Arc::new(MapSecrets::new([("GH_TOKEN", "ghp_fake")])),
+        secrets: testkit::secret_env([("GH_TOKEN", "ghp_fake")]),
         ..testkit::context()
     };
 

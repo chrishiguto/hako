@@ -6,8 +6,8 @@ use api::{ApiError, ErrorCode, ListRunsResponse, RunStatusResponse, SubmitRunRes
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
-use engine::{EventSink, ExecEvent, ExitStatus, RunDir, RunEvent, RunId};
+use engine::testkit::{MapSecrets, NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
+use engine::{EventSink, ExecEvent, ExitStatus, RunDir, RunEvent, RunId, SecretsProvider};
 use http_body_util::BodyExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -53,10 +53,21 @@ impl TestHost {
         repo: tempfile::TempDir,
         sandbox: Arc<ScriptedSandbox>,
     ) -> Self {
+        Self::with_secrets(runs, repo, sandbox, Arc::new(NoSecrets)).await
+    }
+
+    /// A host over a daemon that holds these secrets — the only part
+    /// of a submission's fate that lives outside the flow file.
+    async fn with_secrets(
+        runs: tempfile::TempDir,
+        repo: tempfile::TempDir,
+        sandbox: Arc<ScriptedSandbox>,
+        secrets: Arc<dyn SecretsProvider>,
+    ) -> Self {
         let runtime = Arc::new(EngineRuntime::new(
             sandbox.clone(),
             Arc::new(StubNotifier),
-            Arc::new(NoSecrets),
+            secrets,
         ));
         let daemon = Daemon::load(DaemonConfig::new(TOKEN, runs.path()), runtime)
             .await
@@ -202,6 +213,143 @@ async fn submit_distinguishes_well_formed_flows_the_engine_cannot_run() {
     let error: ApiError = body(response).await;
     assert_eq!(error.code, ErrorCode::InvalidAgent);
     assert!(error.message.contains("missing"));
+}
+
+/// A run that cannot get its secrets must not start: the submission
+/// itself fails, naming what to provision, because that is the moment
+/// a human is there to fix it. Provision the secret and the same flow
+/// runs — with the value in every sandbox it boots.
+#[tokio::test]
+async fn submit_fails_naming_an_unprovisioned_secret_and_succeeds_once_it_exists() {
+    let flow_with_secrets =
+        |host: &TestHost| format!("{}\n[secrets]\nenv = [\"GH_TOKEN\"]\n", host.flow());
+
+    let host = TestHost::new(done_report()).await;
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": flow_with_secrets(&host)})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error: ApiError = body(response).await;
+    assert_eq!(error.code, ErrorCode::MissingSecret);
+    assert!(error.message.contains("GH_TOKEN"), "{}", error.message);
+
+    let sandbox = Arc::new(fake_sandbox(done_report(), None));
+    let host = TestHost::with_secrets(
+        tempfile::tempdir().unwrap(),
+        seeded_repo(),
+        sandbox.clone(),
+        Arc::new(MapSecrets::new([("GH_TOKEN", "ghp_provisioned")])),
+    )
+    .await;
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": flow_with_secrets(&host)})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let submitted: SubmitRunResponse = body(response).await;
+    host.wait_for_state(&submitted.run_id, "done").await;
+
+    // The value never crossed the wire, but it did reach the machine
+    // the agent ran in.
+    let specs = sandbox.specs();
+    assert!(!specs.is_empty());
+    for spec in specs {
+        assert_eq!(spec.env["GH_TOKEN"].expose(), "ghp_provisioned");
+    }
+}
+
+/// The claude adapter takes either credential, so a daemon holding
+/// just one of them can run the flow — and a daemon holding neither is
+/// told both names it could provision.
+#[tokio::test]
+async fn an_adapter_requirement_is_satisfied_by_any_one_of_its_alternatives() {
+    let claude_flow = |host: &TestHost| {
+        host.flow().replace(
+            "engine = \"cmd\"\ncommand = [\"fake-agent\", \"{prompt}\"]",
+            "engine = \"claude\"",
+        )
+    };
+
+    let host = TestHost::new(done_report()).await;
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": claude_flow(&host)})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error: ApiError = body(response).await;
+    assert_eq!(error.code, ErrorCode::MissingSecret);
+    for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+        assert!(error.message.contains(name), "{}", error.message);
+    }
+
+    let sandbox = Arc::new(fake_sandbox(done_report(), None));
+    let host = TestHost::with_secrets(
+        tempfile::tempdir().unwrap(),
+        seeded_repo(),
+        sandbox.clone(),
+        // Only the OAuth token: the alternative, not the primary.
+        Arc::new(MapSecrets::new([("CLAUDE_CODE_OAUTH_TOKEN", "oauth")])),
+    )
+    .await;
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": claude_flow(&host)})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let submitted: SubmitRunResponse = body(response).await;
+    host.wait_for_state(&submitted.run_id, "done").await;
+    assert_eq!(
+        sandbox.specs()[0].env["CLAUDE_CODE_OAUTH_TOKEN"].expose(),
+        "oauth"
+    );
+}
+
+/// An agent that writes its credential into its own report cannot
+/// poison the run's record: what the daemon serves — and what the log
+/// behind it holds — is redacted.
+#[tokio::test]
+async fn a_secret_the_agent_reported_is_scrubbed_out_of_the_runs_record() {
+    let report = json!({"status": "done", "summary": "pushed with ghp_provisioned"});
+    let host = TestHost::with_secrets(
+        tempfile::tempdir().unwrap(),
+        seeded_repo(),
+        Arc::new(fake_sandbox(report, None)),
+        Arc::new(MapSecrets::new([("GH_TOKEN", "ghp_provisioned")])),
+    )
+    .await;
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": format!("{}\n[secrets]\nenv = [\"GH_TOKEN\"]\n", host.flow())})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let submitted: SubmitRunResponse = body(response).await;
+
+    let status = host.wait_for_state(&submitted.run_id, "done").await;
+    assert_eq!(
+        status.last_summary.as_deref(),
+        Some("pushed with [redacted secret]")
+    );
 }
 
 #[tokio::test]

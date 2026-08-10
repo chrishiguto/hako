@@ -71,7 +71,7 @@ mod paths {
         (status = 201, description = "Run accepted and started", body = SubmitRunResponse),
         (status = 400, description = "Malformed request or invalid flow file", body = ApiError),
         (status = 401, description = "Missing or invalid bearer token", body = ApiError),
-        (status = 422, description = "Well-formed flow the daemon cannot run — e.g. a referenced secret is not provisioned", body = ApiError),
+        (status = 422, description = "Well-formed flow the daemon cannot run: an agent engine it does not know (`invalid_agent`), or a secret the flow or its agent needs that is not provisioned (`missing_secret`, naming what to provision)", body = ApiError),
     )
 )]
     fn submit_run() {}

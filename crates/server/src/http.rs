@@ -17,7 +17,7 @@ use engine::RunId;
 
 use crate::projection;
 use crate::registry::RunRegistry;
-use crate::runtime::EngineRuntime;
+use crate::runtime::{EngineRuntime, ResolveError};
 
 pub(crate) struct AppState {
     pub(crate) token: String,
@@ -81,7 +81,8 @@ async fn submit_run(
     let resolved = state
         .runtime
         .resolve(&flow)
-        .map_err(|error| HttpError::UnrunnableFlow(error.to_string()))?;
+        .await
+        .map_err(HttpError::from)?;
     let run_id = state
         .registry
         .submit(flow, resolved, &state.runtime)
@@ -124,8 +125,28 @@ enum HttpError {
     InvalidRequest(String),
     InvalidFlow(String),
     UnrunnableFlow(String),
+    MissingSecret(String),
     RunNotFound,
     Internal,
+}
+
+/// A well-formed flow the daemon cannot run: both halves answer 422,
+/// and which code the client reads is which side has to change — the
+/// flow file, or the host's provisioning.
+impl From<ResolveError> for HttpError {
+    fn from(error: ResolveError) -> Self {
+        match error {
+            ResolveError::Agent(error) => Self::UnrunnableFlow(error.to_string()),
+            // A store that is broken rather than incomplete is the
+            // daemon's failure, not the submission's: nothing the
+            // client sends would fix it.
+            ResolveError::Secrets(engine::SecretsError::Provider(message)) => {
+                tracing::error!(%message, "daemon secret store failure");
+                Self::Internal
+            }
+            ResolveError::Secrets(error) => Self::MissingSecret(error.to_string()),
+        }
+    }
 }
 
 impl HttpError {
@@ -163,6 +184,11 @@ impl IntoResponse for HttpError {
             Self::UnrunnableFlow(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::InvalidAgent,
+                message,
+            ),
+            Self::MissingSecret(message) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::MissingSecret,
                 message,
             ),
             Self::RunNotFound => (

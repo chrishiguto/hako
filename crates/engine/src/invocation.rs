@@ -8,7 +8,6 @@
 //! agent-boundary read behaves identically. When to checkpoint the
 //! workspace remains kernel policy.
 
-use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use futures_util::StreamExt;
@@ -75,9 +74,13 @@ pub async fn in_fresh_sandbox<T>(
     if ctx.cancel.is_cancelled() {
         return Ok(Bracketed::Cancelled);
     }
+    // Every sandbox gets the same env: the run's secrets resolved
+    // once, at launch. Copied rather than re-resolved because a store
+    // read here would put a run four iterations deep at the mercy of
+    // the store still being up.
     let spec = SandboxSpec {
         workspace: ctx.workspace.mount(),
-        env: BTreeMap::new(),
+        env: ctx.secrets.vars().clone(),
     };
     let sandbox = ctx.sandbox.create(&spec).await?;
     // The select sits inside the bracket: however the race lands, the

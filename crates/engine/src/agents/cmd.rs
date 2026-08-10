@@ -4,7 +4,7 @@ use crate::agent::AgentAdapter;
 use crate::agents::AgentConfigError;
 use crate::budget::TokenUsage;
 use crate::sandbox::ExecSpec;
-use crate::secrets::SecretName;
+use crate::secrets::SecretRequirement;
 
 /// The marker a template's argv elements use to receive the composed
 /// prompt.
@@ -39,7 +39,7 @@ impl AgentAdapter for CmdAdapter {
         "cmd"
     }
 
-    fn required_secrets(&self) -> Vec<SecretName> {
+    fn required_secrets(&self) -> Vec<SecretRequirement> {
         Vec::new()
     }
 

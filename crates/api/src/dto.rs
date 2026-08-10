@@ -107,6 +107,11 @@ pub enum ErrorCode {
     InvalidRequest,
     InvalidFlow,
     InvalidAgent,
+    /// A secret the flow or its agent needs is not provisioned on the
+    /// daemon. Distinct from [`ErrorCode::InvalidAgent`] because the
+    /// fix is on the daemon host, not in the flow file: the message
+    /// names what to provision.
+    MissingSecret,
     RunNotFound,
     InternalError,
     /// Never produced by the daemon — the deserialize-side net that
@@ -194,6 +199,7 @@ mod tests {
             ErrorCode::InvalidRequest => "invalid_request",
             ErrorCode::InvalidFlow => "invalid_flow",
             ErrorCode::InvalidAgent => "invalid_agent",
+            ErrorCode::MissingSecret => "missing_secret",
             ErrorCode::RunNotFound => "run_not_found",
             ErrorCode::InternalError => "internal_error",
             ErrorCode::Unknown => "unknown",
@@ -203,6 +209,7 @@ mod tests {
             ErrorCode::InvalidRequest,
             ErrorCode::InvalidFlow,
             ErrorCode::InvalidAgent,
+            ErrorCode::MissingSecret,
             ErrorCode::RunNotFound,
             ErrorCode::InternalError,
             ErrorCode::Unknown,

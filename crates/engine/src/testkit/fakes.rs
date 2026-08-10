@@ -11,7 +11,9 @@ use crate::budget::TokenUsage;
 use crate::event::{EventSink, EventSinkError, RunEvent};
 use crate::notify::{Notification, Notifier, NotifierError};
 use crate::sandbox::{ExecEvent, ExecSpec, ExitStatus, SandboxError};
-use crate::secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
+use crate::secrets::{
+    SecretEnv, SecretName, SecretRequirement, SecretValue, SecretsError, SecretsProvider,
+};
 
 /// One scripted exec: the events its stream replays.
 pub type Transcript = Vec<Result<ExecEvent, SandboxError>>;
@@ -43,7 +45,7 @@ pub(super) fn prompt_from(argv: &[String]) -> Option<&str> {
 /// cares opts in.
 #[derive(Default)]
 pub struct ScriptedAgent {
-    secrets: Vec<SecretName>,
+    secrets: Vec<SecretRequirement>,
     usage: Option<TokenUsage>,
 }
 
@@ -54,7 +56,20 @@ impl ScriptedAgent {
 
     /// Declares a secret the agent requires, as a real adapter would.
     pub fn requiring(mut self, secret: &str) -> Self {
-        self.secrets.push(SecretName::new(secret));
+        self.secrets.push(SecretRequirement::named(secret));
+        self
+    }
+
+    /// Declares a requirement any one of `secrets` satisfies — the
+    /// shape a CLI that takes either a key or a token states.
+    pub fn requiring_any_of(mut self, secrets: &[&str]) -> Self {
+        let mut names = secrets.iter();
+        let first = names.next().expect("a requirement needs a name");
+        self.secrets.push(
+            names.fold(SecretRequirement::named(first), |requirement, name| {
+                requirement.or(name)
+            }),
+        );
         self
     }
 
@@ -71,7 +86,7 @@ impl AgentAdapter for ScriptedAgent {
         "scripted"
     }
 
-    fn required_secrets(&self) -> Vec<SecretName> {
+    fn required_secrets(&self) -> Vec<SecretRequirement> {
         self.secrets.clone()
     }
 
@@ -96,7 +111,7 @@ impl AgentAdapter for NoAgent {
         "none"
     }
 
-    fn required_secrets(&self) -> Vec<SecretName> {
+    fn required_secrets(&self) -> Vec<SecretRequirement> {
         vec![]
     }
 
@@ -161,6 +176,18 @@ impl Notifier for RecordingNotifier {
             .push(notification.clone());
         Ok(())
     }
+}
+
+/// A run's resolved secrets, built the short way — what a host hands
+/// a kernel once resolution is done, so a test that only cares what
+/// the loop *spends* skips the provider entirely.
+pub fn secret_env<'a>(secrets: impl IntoIterator<Item = (&'a str, &'a str)>) -> SecretEnv {
+    SecretEnv::new(
+        secrets
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), SecretValue::new(value)))
+            .collect(),
+    )
 }
 
 /// A provider with nothing in it: every resolve is a miss.

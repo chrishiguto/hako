@@ -6,6 +6,7 @@ mod http;
 mod projection;
 mod registry;
 mod runtime;
+mod secrets;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use axum::Router;
 
 pub use http::{SERVED_ROUTES, ServedRoute};
 pub use runtime::EngineRuntime;
+pub use secrets::FileSecrets;
 
 use http::AppState;
 use registry::RunRegistry;

@@ -3,7 +3,7 @@
 use crate::agent::AgentAdapter;
 use crate::budget::TokenUsage;
 use crate::sandbox::ExecSpec;
-use crate::secrets::SecretName;
+use crate::secrets::SecretRequirement;
 
 /// Drives `codex exec` headless: JSONL events on stdout, codex's own
 /// sandbox disabled because the microVM is the safety boundary, the
@@ -32,10 +32,10 @@ impl AgentAdapter for CodexAdapter {
         "codex"
     }
 
-    fn required_secrets(&self) -> Vec<SecretName> {
+    fn required_secrets(&self) -> Vec<SecretRequirement> {
         // The API-key variable `codex exec` reads; OPENAI_API_KEY only
         // feeds the interactive login flow.
-        vec![SecretName::new("CODEX_API_KEY")]
+        vec![SecretRequirement::named("CODEX_API_KEY")]
     }
 
     fn invocation(&self, prompt: &str) -> ExecSpec {
@@ -98,7 +98,7 @@ mod tests {
     fn the_codex_key_is_required() {
         assert_eq!(
             CodexAdapter.required_secrets(),
-            [SecretName::new("CODEX_API_KEY")]
+            [SecretRequirement::named("CODEX_API_KEY")]
         );
     }
 

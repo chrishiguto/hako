@@ -3,7 +3,7 @@
 use crate::agent::AgentAdapter;
 use crate::budget::TokenUsage;
 use crate::sandbox::ExecSpec;
-use crate::secrets::SecretName;
+use crate::secrets::SecretRequirement;
 
 /// Drives `claude` headless: one-shot print mode with JSON output so
 /// token usage is parseable, permissions skipped because the microVM
@@ -39,8 +39,11 @@ impl AgentAdapter for ClaudeAdapter {
         "claude"
     }
 
-    fn required_secrets(&self) -> Vec<SecretName> {
-        vec![SecretName::new("ANTHROPIC_API_KEY")]
+    fn required_secrets(&self) -> Vec<SecretRequirement> {
+        // Either credential runs the CLI, so a daemon provisioned with
+        // one of them is enough — the subscription-shaped token is as
+        // valid a way to pay for a run as the API key.
+        vec![SecretRequirement::named("ANTHROPIC_API_KEY").or("CLAUDE_CODE_OAUTH_TOKEN")]
     }
 
     fn invocation(&self, prompt: &str) -> ExecSpec {
@@ -95,11 +98,13 @@ mod tests {
         assert_eq!(spec.cwd, None);
     }
 
+    /// One requirement, two ways to satisfy it — the API key first,
+    /// so an operator holding both gets the one the CLI prefers.
     #[test]
-    fn the_anthropic_key_is_required() {
+    fn either_the_api_key_or_the_oauth_token_satisfies_the_adapter() {
         assert_eq!(
             ClaudeAdapter.required_secrets(),
-            [SecretName::new("ANTHROPIC_API_KEY")]
+            [SecretRequirement::named("ANTHROPIC_API_KEY").or("CLAUDE_CODE_OAUTH_TOKEN")]
         );
     }
 

@@ -11,7 +11,7 @@ use engine::testkit::{self, RecordingSink, ScriptedAgent, ScriptedSandbox, exec}
 use engine::verify::{self, VerifyOutcome};
 use engine::{
     ExecEvent, ExitStatus, KernelContext, KernelError, OnFail, OutputStream, RunEvent,
-    SandboxError, SandboxHandle, TokenUsage, VerifyConfig,
+    SandboxError, SandboxHandle, ScrubbingSink, TokenUsage, VerifyConfig,
 };
 
 fn context(
@@ -514,4 +514,109 @@ async fn no_checks_means_every_iteration_passes() {
 
     assert!(matches!(outcome, VerifyOutcome::Passed), "{outcome:?}");
     assert!(sink.events().is_empty());
+}
+
+// ---------- secrets: injected once, scrubbed everywhere ----------
+
+/// The run's resolved secrets are what every sandbox is built with —
+/// the kernel spends the env it was handed and resolves nothing
+/// itself.
+#[tokio::test]
+async fn every_sandbox_is_built_with_the_runs_resolved_secrets() {
+    let sandbox = Arc::new(ScriptedSandbox::repeating(exec("working\n", 0)));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = KernelContext {
+        secrets: testkit::secret_env([("GH_TOKEN", "ghp_secret"), ("NPM_TOKEN", "npm_secret")]),
+        ..context(sandbox.clone(), sink, VerifyConfig::default())
+    };
+
+    for _ in 0..2 {
+        invocation::in_fresh_sandbox(&ctx, async |_| Ok(()))
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(sandbox.specs().len(), 2);
+    for spec in sandbox.specs() {
+        assert_eq!(spec.env["GH_TOKEN"].expose(), "ghp_secret");
+        assert_eq!(spec.env["NPM_TOKEN"].expose(), "npm_secret");
+    }
+}
+
+/// An agent printing its environment is the ordinary case: its output
+/// is logged verbatim, so the value has to be gone before the event
+/// reaches the sink the host wraps.
+#[tokio::test]
+async fn an_agent_echoing_its_environment_does_not_poison_the_log() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![vec![
+        Ok(ExecEvent::Stdout(b"GH_TOKEN=ghp_secret\n".to_vec())),
+        Ok(ExecEvent::Stderr(
+            b"warning: ghp_secret rejected\n".to_vec(),
+        )),
+        Ok(ExecEvent::Exited(ExitStatus { code: Some(0) })),
+    ]]));
+    let recorded = Arc::new(RecordingSink::default());
+    let secrets = testkit::secret_env([("GH_TOKEN", "ghp_secret")]);
+    let ctx = KernelContext {
+        secrets: secrets.clone(),
+        // What the daemon wires at launch: the log a run leaves is the
+        // scrubbed one.
+        events: Arc::new(ScrubbingSink::new(recorded.clone(), secrets)),
+        ..context(sandbox.clone(), recorded.clone(), VerifyConfig::default())
+    };
+    let handle = SandboxHandle::new("vm-0");
+
+    invocation::invoke(&ctx, 1, &handle, "do the work")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        recorded.events(),
+        [
+            RunEvent::AgentOutput {
+                iteration: 1,
+                stream: OutputStream::Stdout,
+                chunk: "GH_TOKEN=[redacted secret]\n".into(),
+            },
+            RunEvent::AgentOutput {
+                iteration: 1,
+                stream: OutputStream::Stderr,
+                chunk: "warning: [redacted secret] rejected\n".into(),
+            },
+        ]
+    );
+}
+
+/// A failing check's output goes two ways — the log and the next
+/// iteration's preamble. The sink covers the first; this covers both,
+/// because the outcome the kernel feeds back is scrubbed at capture.
+#[tokio::test]
+async fn a_check_that_prints_a_secret_carries_none_into_the_next_preamble() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec(
+        "curl: header Authorization: Bearer ghp_secret failed",
+        1,
+    )]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = KernelContext {
+        secrets: testkit::secret_env([("GH_TOKEN", "ghp_secret")]),
+        ..context(sandbox, sink.clone(), verifying(&["./deploy.sh"]))
+    };
+    let handle = SandboxHandle::new("vm-0");
+
+    let outcome = verify::run_checks(&ctx, &handle, 1).await.unwrap();
+
+    let VerifyOutcome::Failed { output, .. } = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
+    assert!(!output.contains("ghp_secret"), "{output}");
+    assert!(output.contains("Bearer [redacted secret]"), "{output}");
+    assert_eq!(
+        sink.events(),
+        [RunEvent::VerifyCheckFinished {
+            iteration: 1,
+            command: "./deploy.sh".into(),
+            passed: false,
+            output: "curl: header Authorization: Bearer [redacted secret] failed".into(),
+        }]
+    );
 }
