@@ -168,27 +168,30 @@ impl std::fmt::Debug for SecretEnv {
 }
 
 /// Resolves everything one run needs before it starts: the names its
-/// flow references, then the requirements its adapter states. Both
-/// injected under their own names, so an adapter finds its credential
-/// where its CLI looks for it.
+/// flow references, then the requirements its adapter states — one
+/// rule for both, because a flow name is exactly a requirement only
+/// that name satisfies. Every value is injected under its own name, so
+/// an adapter finds its credential where its CLI looks for it.
 ///
-/// A flow name must resolve exactly. A requirement is satisfied by any
-/// one of its names — already-resolved ones first, so a flow that
-/// lists the credential itself costs no second store read — and only a
-/// requirement with nothing provisioned fails. A provider *failure*
-/// (as opposed to a miss) never falls through to an alternative: a
-/// store that cannot be read is not a store that lacks the secret.
+/// A requirement is satisfied by any one of its names — already-
+/// resolved ones first, so a flow that lists the credential itself
+/// costs no second store read. Gaps are collected, not stopped at: a
+/// failed submission answers with *every* secret it would take to fix,
+/// one provisioning round instead of one per resubmit. A provider
+/// *failure* (as opposed to a miss) is different — it neither falls
+/// through to an alternative nor joins the gap list, because a store
+/// that cannot be read is not a store that lacks the secret.
 pub async fn resolve(
     provider: &dyn SecretsProvider,
     names: &[SecretName],
     requirements: &[SecretRequirement],
 ) -> Result<SecretEnv, SecretsError> {
+    let flow_names = names
+        .iter()
+        .map(|name| SecretRequirement::named(name.as_str()));
     let mut values = BTreeMap::new();
-    for name in names {
-        let value = provider.resolve(name).await?;
-        values.insert(name.as_str().to_owned(), value);
-    }
-    for requirement in requirements {
+    let mut unsatisfied = Vec::new();
+    for requirement in flow_names.chain(requirements.iter().cloned()) {
         if requirement
             .names()
             .any(|name| values.contains_key(name.as_str()))
@@ -208,10 +211,14 @@ pub async fn resolve(
             }
         }
         if !satisfied {
-            return Err(SecretsError::Unsatisfied(requirement.clone()));
+            unsatisfied.push(requirement);
         }
     }
-    Ok(SecretEnv::new(values))
+    if unsatisfied.is_empty() {
+        Ok(SecretEnv::new(values))
+    } else {
+        Err(SecretsError::Unsatisfied(unsatisfied))
+    }
 }
 
 /// Resolves secret names to values. A file store with restrictive
@@ -220,22 +227,39 @@ pub async fn resolve(
 /// from the [`SecretEnv`] that resolution produced.
 #[async_trait]
 pub trait SecretsProvider: Send + Sync {
-    /// Resolves one name. `NotFound` is what fails a submission that
-    /// references an unprovisioned secret.
+    /// Resolves one name. `NotFound` is the per-name miss [`resolve`]
+    /// collects into the gaps a failed submission answers with.
     async fn resolve(&self, name: &SecretName) -> Result<SecretValue, SecretsError>;
 }
 
-/// Why a run's secrets could not be resolved. `NotFound` and
-/// `Unsatisfied` are the two a submission answers for — a gap a human
-/// fixes by provisioning something — so both name what is missing.
+/// Why a run's secrets could not be resolved. `Unsatisfied` is the one
+/// a submission answers for — a gap a human fixes by provisioning
+/// something — so it names everything that is missing at once.
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
+    /// One name a provider does not hold — [`resolve`]'s vocabulary
+    /// with its provider, collected into [`Unsatisfied`] rather than
+    /// escaping on its own.
+    ///
+    /// [`Unsatisfied`]: Self::Unsatisfied
     #[error("secret `{0}` is not provisioned")]
     NotFound(SecretName),
-    #[error("the agent needs one of these secrets provisioned: {0}")]
-    Unsatisfied(SecretRequirement),
+    /// Every gap the run has, in resolution order: requirements none
+    /// of whose names is provisioned.
+    #[error("these secrets are not provisioned: {}", gaps(.0))]
+    Unsatisfied(Vec<SecretRequirement>),
     #[error("secrets provider failure: {0}")]
     Provider(String),
+}
+
+/// The gap list as an operator reads it, one requirement per clause:
+/// `GH_TOKEN; ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN`.
+fn gaps(requirements: &[SecretRequirement]) -> String {
+    requirements
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]
@@ -335,8 +359,31 @@ mod tests {
         let error = resolve(&store, &names(&["GH_TOKEN", "MISSING"]), &[])
             .await
             .unwrap_err();
-        assert!(matches!(&error, SecretsError::NotFound(name) if name.as_str() == "MISSING"));
+        assert!(
+            matches!(&error, SecretsError::Unsatisfied(gaps)
+                if gaps == &[SecretRequirement::named("MISSING")]),
+            "{error}"
+        );
         assert!(error.to_string().contains("MISSING"), "{error}");
+    }
+
+    /// One failed submit answers with every gap: a missing flow name
+    /// and an unsatisfied requirement are named together, one
+    /// provisioning round instead of one per resubmit.
+    #[tokio::test]
+    async fn every_gap_is_named_in_one_answer() {
+        let store = Store::with(&[]);
+        let error = resolve(&store, &names(&["GH_TOKEN"]), &[claude()])
+            .await
+            .unwrap_err();
+        let SecretsError::Unsatisfied(gaps) = &error else {
+            panic!("{error}");
+        };
+        assert_eq!(gaps.len(), 2, "{error}");
+        let message = error.to_string();
+        for name in ["GH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+            assert!(message.contains(name), "{message}");
+        }
     }
 
     /// The one-of set: either credential satisfies the claude adapter,
