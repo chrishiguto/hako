@@ -55,7 +55,17 @@ pub async fn run_checks(
         let (passed, output) = run_check(ctx, sandbox, command).await?;
         // Only a failure's output is worth carrying: it is what the
         // log and the next preamble need to say what went wrong.
-        let output = if passed { String::new() } else { tail(&output) };
+        // Scrubbed here rather than left to the sink, because this
+        // text goes two ways — a check that echoed the environment
+        // would otherwise re-enter the next prompt in the clear. And
+        // scrubbed before the tail is cut: the cut can land inside a
+        // value, and the fragment it leaves would slip a whole-value
+        // scrub.
+        let output = if passed {
+            String::new()
+        } else {
+            tail(ctx.secrets.scrub(&output).as_ref())
+        };
         ctx.events
             .emit(RunEvent::VerifyCheckFinished {
                 iteration,

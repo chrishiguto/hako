@@ -138,7 +138,15 @@ impl RunRegistry {
         )
         .await?;
         let events: Arc<dyn EventSink> = match dir.event_sink().await {
-            Ok(sink) => Arc::new(sink),
+            // Every event the run emits passes the scrub on its way to
+            // the log: the values the run was given are exactly what
+            // must not appear in the record of it, and an agent that
+            // echoes its environment is the ordinary case, not the
+            // adversarial one.
+            Ok(sink) => Arc::new(engine::ScrubbingSink::new(
+                Arc::new(sink),
+                resolved.secrets.clone(),
+            )),
             Err(error) => {
                 let _ = tokio::fs::remove_dir_all(dir.path()).await;
                 return Err(error);
@@ -270,7 +278,7 @@ repo = {:?}
             .unwrap();
 
         let flow = flow_over(repo.path());
-        let resolved = runtime.resolve(&flow).unwrap();
+        let resolved = runtime.resolve(&flow).await.unwrap();
         let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
 
         // Fire the cancel only once the agent exec is provably in
@@ -318,7 +326,7 @@ repo = {:?}
             .unwrap();
 
         let flow = flow_over(repo.path());
-        let resolved = runtime.resolve(&flow).unwrap();
+        let resolved = runtime.resolve(&flow).await.unwrap();
         let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
 
         // Let the run reach its own ending before any cancel exists.

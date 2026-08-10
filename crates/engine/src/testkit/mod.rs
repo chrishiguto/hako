@@ -16,7 +16,7 @@ mod sandbox;
 
 pub use fakes::{
     AGENT_BIN, MapSecrets, NoAgent, NoSecrets, RecordingNotifier, RecordingSink, ScriptedAgent,
-    StubNotifier, Transcript, exec,
+    StubNotifier, Transcript, exec, secret_env,
 };
 pub use prompt::{
     carries_handoff, carries_human_input, carries_report_from, carries_verify_feedback,
@@ -33,6 +33,7 @@ use crate::cancel::CancelToken;
 use crate::event::RunEvent;
 use crate::kernel::KernelContext;
 use crate::run::RunId;
+use crate::secrets::SecretEnv;
 use crate::workspace::Workspace;
 use proto::flow::{PromptsConfig, VerifyConfig};
 
@@ -55,9 +56,9 @@ pub fn kinds(events: &[RunEvent]) -> Vec<String> {
 /// overrides only what a test cares about, and a field the engine
 /// grows lands here once with a fake default — not in every test file
 /// that constructs a context. The defaults are inert — the sandbox
-/// and agent refuse use, the notifier and secrets are quiet, events go
-/// to a sink nobody reads — so a forgotten override is a loud panic,
-/// never silent green.
+/// and agent refuse use, the notifier is quiet, the run holds no
+/// secrets, events go to a sink nobody reads — so a forgotten
+/// override is a loud panic, never silent green.
 pub fn context() -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
@@ -71,6 +72,6 @@ pub fn context() -> KernelContext {
         agent: Arc::new(NoAgent),
         events: Arc::new(RecordingSink::default()),
         notifier: Arc::new(StubNotifier),
-        secrets: Arc::new(NoSecrets),
+        secrets: SecretEnv::default(),
     }
 }

@@ -3,7 +3,7 @@
 
 use crate::budget::TokenUsage;
 use crate::sandbox::ExecSpec;
-use crate::secrets::SecretName;
+use crate::secrets::SecretRequirement;
 
 /// How to invoke one agent headless, which secrets it needs, and how
 /// to read its token usage.
@@ -15,10 +15,12 @@ pub trait AgentAdapter: Send + Sync {
     /// The name flows select the agent by, e.g. `claude`.
     fn name(&self) -> &str;
 
-    /// Secret names that must resolve before a run may start. Checked
-    /// at submit so a provisioning gap surfaces immediately, not at
-    /// iteration N.
-    fn required_secrets(&self) -> Vec<SecretName>;
+    /// What must be provisioned before a run may start, one
+    /// [`SecretRequirement`] per credential the CLI needs — a set of
+    /// names rather than one, because an agent that takes either an
+    /// API key or an OAuth token runs on either. Checked at submit so
+    /// a provisioning gap surfaces immediately, not at iteration N.
+    fn required_secrets(&self) -> Vec<SecretRequirement>;
 
     /// The headless invocation, given the fully composed prompt — the
     /// kernel's framing already applied.

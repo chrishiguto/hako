@@ -4,8 +4,11 @@
 //!
 //! All engine I/O flows through six seams — [`Kernel`], [`Sandbox`],
 //! [`AgentAdapter`], [`EventSink`], [`Notifier`], [`SecretsProvider`] —
-//! handed to a kernel via [`KernelContext`], never reached globally.
-//! That is what makes an entire loop testable in-process with fakes.
+//! never reached globally. Five of them reach a kernel through
+//! [`KernelContext`]; [`SecretsProvider`] is spent before the kernel
+//! starts, at submit, and what the context carries is the
+//! [`SecretEnv`] that resolution produced. That is what makes an
+//! entire loop testable in-process with fakes.
 
 pub mod agent;
 pub mod agents;
@@ -38,6 +41,7 @@ pub use budget::{BudgetKind, Budgets, TokenUsage};
 pub use cancel::CancelToken;
 pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
+    ScrubbingSink,
 };
 pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
@@ -49,6 +53,8 @@ pub use sandbox::{
     ExecEvent, ExecSpec, ExecStream, ExitStatus, Sandbox, SandboxError, SandboxHandle, SandboxSpec,
     WorkspaceMount,
 };
-pub use secrets::{SecretName, SecretValue, SecretsError, SecretsProvider};
+pub use secrets::{
+    SecretEnv, SecretName, SecretRequirement, SecretValue, SecretsError, SecretsProvider,
+};
 pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
 pub use workspace::{Workspace, WorkspaceError};

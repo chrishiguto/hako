@@ -6,8 +6,8 @@ use engine::agents::{self, AgentConfigError};
 use engine::workspace;
 use engine::{
     AgentAdapter, Budgets, CancelToken, EventSink, Kernel, KernelContext, Notification, Notifier,
-    NotifierError, RunDir, RunEvent, RunState, Sandbox, SandboxError, SecretName, SecretValue,
-    SecretsError, SecretsProvider,
+    NotifierError, RunDir, RunEvent, RunState, Sandbox, SandboxError, SecretEnv, SecretsError,
+    SecretsProvider,
 };
 use futures_util::FutureExt;
 
@@ -22,13 +22,13 @@ pub struct EngineRuntime {
 
 impl EngineRuntime {
     /// The host-side collaborators used by the daemon binary. The
-    /// notifier and secrets store are inert stubs: no kernel exercises
-    /// either yet, so a real implementation would go unobserved.
-    pub fn production() -> Self {
+    /// notifier is an inert stub: no kernel notifies yet, so a real
+    /// implementation would go unobserved.
+    pub fn production(secrets: Arc<dyn SecretsProvider>) -> Self {
         Self::new(
             Arc::new(sandbox::SmolvmSandbox::new(sandbox::SmolvmConfig::default())),
             Arc::new(QuietNotifier),
-            Arc::new(EmptySecrets),
+            secrets,
         )
     }
 
@@ -48,10 +48,26 @@ impl EngineRuntime {
         self.sandbox.preflight().await
     }
 
-    pub(crate) fn resolve(&self, flow: &FlowConfig) -> Result<ResolvedRun, AgentConfigError> {
+    /// Everything a flow needs settled before a run is accepted: the
+    /// kernel and adapter it names, and the secrets both it and the
+    /// adapter require — resolved here, at submit, so a provisioning
+    /// gap is the answer to the submission that could still be fixed
+    /// rather than a failed run discovered later. Resolved once, too:
+    /// what comes back is the environment every sandbox of the run is
+    /// built with, so no iteration depends on the store still being
+    /// reachable.
+    pub(crate) async fn resolve(&self, flow: &FlowConfig) -> Result<ResolvedRun, ResolveError> {
+        let agent = agents::resolve(&flow.agent)?;
+        let secrets = engine::secrets::resolve(
+            self.secrets.as_ref(),
+            &flow.secrets.env,
+            &agent.required_secrets(),
+        )
+        .await?;
         Ok(ResolvedRun {
             kernel: engine::kernel::resolve(flow.r#loop.kernel),
-            agent: agents::resolve(&flow.agent)?,
+            agent,
+            secrets,
         })
     }
 
@@ -101,18 +117,26 @@ impl Notifier for QuietNotifier {
     }
 }
 
-struct EmptySecrets;
-
-#[async_trait]
-impl SecretsProvider for EmptySecrets {
-    async fn resolve(&self, name: &SecretName) -> Result<SecretValue, SecretsError> {
-        Err(SecretsError::NotFound(name.clone()))
-    }
+/// A flow the daemon cannot start, as the submit route answers for
+/// it: a `[agent]` table no adapter accepts, or a secret the store
+/// does not hold.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ResolveError {
+    #[error(transparent)]
+    Agent(#[from] AgentConfigError),
+    #[error(transparent)]
+    Secrets(#[from] SecretsError),
 }
 
+/// What a submitted flow resolved to, carried from the submit route to
+/// the launched run.
 pub(crate) struct ResolvedRun {
     kernel: Arc<dyn Kernel>,
     agent: Arc<dyn AgentAdapter>,
+    /// The run's secrets, resolved at submit — the environment every
+    /// sandbox is built with, and what the run's events are scrubbed
+    /// against.
+    pub(crate) secrets: SecretEnv,
 }
 
 async fn drive_run(
@@ -140,7 +164,7 @@ async fn drive_run(
         agent: resolved.agent,
         events,
         notifier: runtime.notifier.clone(),
-        secrets: runtime.secrets.clone(),
+        secrets: resolved.secrets,
     };
     resolved.kernel.run(context).await.map(|_| ())
 }

@@ -55,6 +55,14 @@ _Avoid_: run history, logs
 One pure pass over a run's Event Log reducing it to where the run stands now — state, iterations completed, last Report Core, last sequence. The single definition of how history reads back: every consumer projects the same log the same way.
 _Avoid_: status cache, materialized view
 
+**Secret**:
+A credential a run needs, referenced in a flow by name only — the value lives in the daemon's Secret Store and reaches the run as an environment variable inside its sandboxes. Resolved once, at submit: a name nothing satisfies fails the submission rather than the run. Values never appear in flow files, API responses, or the Event Log — every event a run emits is scrubbed of them before it is written.
+_Avoid_: credential, env var, token
+
+**Secret Store**:
+The daemon-side directory holding secret values, one file per name, mode `0700` and owned by the daemon's unix user — unreadable to anything else on the host, including the interactive agents sharing it. The daemon refuses to start against a store that is readable more widely.
+_Avoid_: vault, keychain
+
 ## Agent interface
 
 **Agent**:

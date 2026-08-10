@@ -70,6 +70,21 @@ impl Sandbox for NoSandbox {
     }
 }
 
+/// The [`SandboxSpec`]s a fake was asked to build, in order — what a
+/// test asserts the injected env against.
+#[derive(Default)]
+struct SpecRecorder(Mutex<Vec<SandboxSpec>>);
+
+impl SpecRecorder {
+    fn record(&self, spec: &SandboxSpec) {
+        self.0.lock().unwrap().push(spec.clone());
+    }
+
+    fn all(&self) -> Vec<SandboxSpec> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 /// Boots nothing: hands out handles, replays scripted transcripts in
 /// order, records every exec, and serves files from one in-memory map.
 ///
@@ -84,6 +99,7 @@ pub struct ScriptedSandbox {
     /// exec a loud panic instead.
     fallback: Option<Transcript>,
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+    specs: SpecRecorder,
     /// Per path, the contents successive execs write; the last entry
     /// repeats once the queue is down to it.
     on_exec: Mutex<BTreeMap<PathBuf, VecDeque<Vec<u8>>>>,
@@ -182,6 +198,12 @@ impl ScriptedSandbox {
         self.execs.lock().unwrap().clone()
     }
 
+    /// Every sandbox this fake was asked to build, in order — what a
+    /// test asserts the injected env against.
+    pub fn specs(&self) -> Vec<SandboxSpec> {
+        self.specs.all()
+    }
+
     pub fn created(&self) -> u32 {
         self.created.load(Ordering::SeqCst)
     }
@@ -198,8 +220,9 @@ impl ScriptedSandbox {
 
 #[async_trait]
 impl Sandbox for ScriptedSandbox {
-    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+    async fn create(&self, spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
         assert!(!self.panic_on_create, "scripted sandbox panic");
+        self.specs.record(spec);
         let n = self.created.fetch_add(1, Ordering::SeqCst);
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -340,6 +363,7 @@ pub struct StagedSandbox {
     checks: Mutex<VecDeque<i32>>,
     agent_prompts: Mutex<Vec<String>>,
     guest_files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+    specs: SpecRecorder,
     created: AtomicU32,
     destroyed: AtomicU32,
     work_files: AtomicU32,
@@ -353,6 +377,7 @@ impl StagedSandbox {
             checks: Mutex::new(VecDeque::new()),
             agent_prompts: Mutex::new(Vec::new()),
             guest_files: Mutex::new(BTreeMap::new()),
+            specs: SpecRecorder::default(),
             created: AtomicU32::new(0),
             destroyed: AtomicU32::new(0),
             work_files: AtomicU32::new(0),
@@ -378,6 +403,12 @@ impl StagedSandbox {
             .lock()
             .unwrap()
             .insert(path.into(), contents.into());
+    }
+
+    /// Every sandbox this fake was asked to build, in order — one per
+    /// stage, so a test can assert what each stage's VM was given.
+    pub fn specs(&self) -> Vec<SandboxSpec> {
+        self.specs.all()
     }
 
     pub fn created(&self) -> u32 {
@@ -439,7 +470,8 @@ impl StagedSandbox {
 
 #[async_trait]
 impl Sandbox for StagedSandbox {
-    async fn create(&self, _spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+    async fn create(&self, spec: &SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+        self.specs.record(spec);
         let n = self.created.fetch_add(1, Ordering::SeqCst);
         Ok(SandboxHandle::new(format!("vm-{n}")))
     }
