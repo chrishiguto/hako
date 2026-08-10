@@ -141,12 +141,10 @@ impl SecretEnv {
     /// Borrowed back untouched when nothing matched, so the common
     /// case — agent output carrying no secret — copies nothing.
     ///
-    /// Values are only caught whole within the given text; the seam
-    /// between chunks is the stream scrubber's job (see
-    /// [`stream_scrubber`]), and the emission site feeds each output
-    /// stream through one. A value printed
-    /// with other bytes through it (a line break mid-token) still
-    /// passes: the scrub is a net over an agent echoing its
+    /// Values are only caught whole within the given text; a value
+    /// split across two of them is [`stream_scrubber`]'s job. A value
+    /// printed with other bytes through it (a line break mid-token)
+    /// still passes: the scrub is a net over an agent echoing its
     /// environment, not a guarantee against one that means to smuggle
     /// its key out — the microVM boundary is what stands against that.
     ///

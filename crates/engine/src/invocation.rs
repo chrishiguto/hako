@@ -122,8 +122,9 @@ impl<'env> ScrubbedStream<'env> {
         self.scrubber.push(self.decoder.push(bytes))
     }
 
-    /// The stream is over: both held tails settle, the decoder's
-    /// through the scrubber.
+    /// The stream is over: both seams settle. The decoder's tail goes
+    /// through the scrubber, never around it — bytes it was holding
+    /// can complete a value.
     fn finish(self) -> (OutputStream, String) {
         let Self {
             stream,
@@ -187,9 +188,8 @@ pub async fn invoke(
     // token-usage parse must not read a codepoint the chunk boundary
     // split as two replacement characters.
     let mut stdout = Vec::new();
-    // One seam-holder per stream: the sink scrubs each event whole,
-    // but chunks split at arbitrary byte boundaries — a codepoint or
-    // a value bisected by one must still land whole.
+    // The sink scrubs each event whole; these hold what a chunk
+    // boundary bisects, which the sink can never see.
     let mut stdout_seam = ScrubbedStream::new(OutputStream::Stdout, &ctx.secrets);
     let mut stderr_seam = ScrubbedStream::new(OutputStream::Stderr, &ctx.secrets);
     let mut exit = None;
