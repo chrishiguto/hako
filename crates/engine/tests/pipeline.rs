@@ -8,13 +8,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::testkit::{
-    self, AgentStep, RecordingSink, ScriptedAgent, StagedSandbox, crashes, kinds, malformed,
-    omits_report, reports, seeded_repo, tracked_files,
+    self, AgentStep, RecordingSink, ScriptedAgent, StagedSandbox, carries_handoff,
+    carries_report_from, carries_verify_feedback, crashes, kinds, malformed, omits_report, reports,
+    seeded_repo, tracked_files,
 };
 use engine::{
     FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason, PipelineKernel,
     PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig, Workspace,
 };
+use proto::pipeline::Stage;
 
 // ---------- the harness ----------
 
@@ -183,21 +185,21 @@ async fn each_stage_preamble_carries_prior_reports_and_its_own_schema() {
 
     // The first plan has no hand-off — nothing came before it — but
     // still quotes its own report contract.
-    assert!(!plan.contains("## Reports so far"), "{plan}");
+    assert!(!carries_handoff(plan), "{plan}");
     assert!(plan.contains("\"title\": \"PlanReport\""), "{plan}");
 
     // Implement reads the plan's report; review reads plan and
     // implement. Each quotes its own schema, never another stage's.
-    assert!(implement.contains("## Reports so far"), "{implement}");
-    assert!(implement.contains("### plan report"), "{implement}");
+    assert!(carries_handoff(implement), "{implement}");
+    assert!(carries_report_from(implement, Stage::Plan), "{implement}");
     assert!(implement.contains("PLAN-MARKER"), "{implement}");
     assert!(
         implement.contains("\"title\": \"ImplementReport\""),
         "{implement}"
     );
 
-    assert!(review.contains("### plan report"), "{review}");
-    assert!(review.contains("### implement report"), "{review}");
+    assert!(carries_report_from(review, Stage::Plan), "{review}");
+    assert!(carries_report_from(review, Stage::Implement), "{review}");
     assert!(review.contains("IMPL-MARKER"), "{review}");
     assert!(review.contains("\"title\": \"ReviewReport\""), "{review}");
 }
@@ -332,7 +334,7 @@ async fn a_red_verify_reruns_the_stage_then_pauses_verify_failed() {
     // The re-run carried the verify failure into the agent's preamble.
     let second_implement = &ran.prompts[2];
     assert!(
-        second_implement.contains("## Verify checks failed"),
+        carries_verify_feedback(second_implement),
         "{second_implement}"
     );
     assert!(
@@ -511,7 +513,7 @@ async fn a_full_pass_starts_a_fresh_iteration_that_reads_the_last() {
     // The second iteration's plan (the fifth prompt) reads the first
     // iteration's reports.
     let second_plan = &ran.prompts[4];
-    assert!(second_plan.contains("## Reports so far"), "{second_plan}");
+    assert!(carries_handoff(second_plan), "{second_plan}");
     assert!(second_plan.contains("ITER1-SIMPLIFY"), "{second_plan}");
 }
 

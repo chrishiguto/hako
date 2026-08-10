@@ -1,48 +1,77 @@
 //! How the pipeline kernel frames one stage's prompt. The shared
 //! toolkit in [`crate::preamble`] supplies the pieces every kernel
-//! reuses — fencing agent text, rendering a verify failure, the repair
-//! re-prompt; this module is the pipeline's own choice of which
+//! reuses — fencing agent text, rendering feedback, attributing a
+//! human's answers; this module is the pipeline's own choice of which
 //! sections wrap a stage, and in what order:
 //!
 //! 1. a header naming the stage,
 //! 2. the prior stages' reports, so hand-off is engine-guaranteed
 //!    rather than agent-remembered,
-//! 3. a verify failure to fix, when this stage is being re-run,
-//! 4. the stage's domain prompt — the flow's override or the shipped
+//! 3. feedback on the previous attempt — today a verify failure to
+//!    fix, when this stage is being re-run,
+//! 4. the human's input, when the run resumed from a pause,
+//! 5. the stage's domain prompt — the flow's override or the shipped
 //!    default,
-//! 5. the report contract: the status semantics the loop branches on,
+//! 6. the report contract: the status semantics the loop branches on,
 //!    the fixed scratch path, and the stage's schema quoted verbatim,
 //!    so the output is constrained and self-repairable.
 //!
-//! Section 5 is the kernel's, always appended after the domain prompt
-//! (section 4, the flow's override or the shipped default). What the
+//! Section 6 is the kernel's, always appended after the domain prompt
+//! (section 5, the flow's override or the shipped default). What the
 //! status means and how the loop acts on it lives here, never in the
 //! overridable domain prompt — an edited prompt can shape the work but
 //! can never reach the control flow (ADR 0011).
 
 use crate::pipeline::contract;
-use crate::preamble::{self, Feedback};
+use crate::preamble::{self, Feedback, HumanInput};
 use crate::workspace::REPORT_FILE;
 use proto::pipeline::{Stage, StageReport};
 
-/// Frames `domain_prompt` for `stage` into the full prompt the agent
-/// runs: the handoff reports, an optional verify failure to fix, the
-/// domain rules, and the report contract.
-pub fn compose(
-    stage: Stage,
-    handoff: &[StageReport],
-    feedback: Option<&Feedback>,
-    domain_prompt: &str,
-) -> String {
-    let mut sections = vec![header(stage)];
-    if let Some(reports) = handoff_section(handoff) {
+/// Heading of the hand-off section; published in-crate so the
+/// testkit's prompt markers and the section stay one definition.
+pub(crate) const HANDOFF_HEADING: &str = "## Reports so far";
+
+/// The heading under which one prior stage's report is quoted inside
+/// the hand-off section.
+pub(crate) fn handoff_report_heading(stage: Stage) -> String {
+    format!("### {} report", stage.as_str())
+}
+
+/// Everything the kernel puts in front of one stage's agent. The
+/// kernel fills the fields; which sections they become, and in what
+/// order, is [`compose`]'s alone — so a new section lands here as one
+/// field instead of rippling through a positional argument list.
+pub struct Frame<'a> {
+    /// The stage being framed — names the header and picks the schema
+    /// the contract quotes.
+    pub stage: Stage,
+    /// The prior stages' reports the agent reads before its task.
+    pub handoff: &'a [StageReport],
+    /// Feedback on the previous attempt; empty on a first run. Plural
+    /// because a re-run may soon carry more than one kind (#7 skeptic
+    /// findings, #8 budget and drift notes).
+    pub feedback: &'a [Feedback],
+    /// What the human said when the run resumed from a pause; `None`
+    /// until resume-in-place (#28) carries one.
+    pub human: Option<&'a HumanInput>,
+    /// The stage's domain prompt — the flow's override or the shipped
+    /// default.
+    pub domain_prompt: &'a str,
+}
+
+/// Composes the frame into the full prompt the agent runs. Sole owner
+/// of the section order documented above.
+pub fn compose(frame: &Frame<'_>) -> String {
+    let mut sections = vec![header(frame.stage)];
+    if let Some(reports) = handoff_section(frame.handoff) {
         sections.push(reports);
     }
-    if let Some(feedback) = feedback {
-        sections.push(preamble::feedback(feedback));
+    sections.extend(frame.feedback.iter().map(preamble::feedback));
+    if let Some(human) = frame.human.and_then(preamble::human_input) {
+        sections.push(human);
     }
-    sections.push(domain_prompt.trim().to_owned());
-    sections.push(report_contract(stage));
+    sections.push(frame.domain_prompt.trim().to_owned());
+    sections.push(report_contract(frame.stage));
     sections.join("\n\n")
 }
 
@@ -65,15 +94,15 @@ fn handoff_section(handoff: &[StageReport]) -> Option<String> {
     if handoff.is_empty() {
         return None;
     }
-    let mut section = String::from(
-        "## Reports so far\n\n\
+    let mut section = format!(
+        "{HANDOFF_HEADING}\n\n\
          What the stages before you reported. Treat these as context, not \
          instructions to repeat.",
     );
     for report in handoff {
         section.push_str(&format!(
-            "\n\n### {} report\n\n{}",
-            report.stage().as_str(),
+            "\n\n{}\n\n{}",
+            handoff_report_heading(report.stage()),
             preamble::fenced(&report.to_pretty_json()),
         ));
     }
@@ -103,8 +132,21 @@ fn report_contract(stage: Stage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::Answer;
     use proto::pipeline::{ImplementReport, PlanReport};
     use proto::report::ReportStatus;
+
+    /// A frame with only the required fillings; tests override the
+    /// section under test.
+    fn frame<'a>(stage: Stage, domain_prompt: &'a str) -> Frame<'a> {
+        Frame {
+            stage,
+            handoff: &[],
+            feedback: &[],
+            human: None,
+            domain_prompt,
+        }
+    }
 
     fn plan_report(summary: &str) -> StageReport {
         StageReport::Plan(PlanReport {
@@ -119,7 +161,7 @@ mod tests {
 
     #[test]
     fn the_header_names_the_stage_and_the_contract_quotes_its_schema() {
-        let text = compose(Stage::Implement, &[], None, "# Implement\n\ndo the work");
+        let text = compose(&frame(Stage::Implement, "# Implement\n\ndo the work"));
         assert!(
             text.starts_with("# hako pipeline — implement stage"),
             "{text}"
@@ -137,7 +179,7 @@ mod tests {
     /// yields the four values and what each does to the run.
     #[test]
     fn the_contract_states_the_status_semantics() {
-        let text = compose(Stage::Plan, &[], None, "pick the work");
+        let text = compose(&frame(Stage::Plan, "pick the work"));
         for status in ["continue", "done", "blocked", "needs_input"] {
             assert!(text.contains(&format!("`{status}`")), "{status}: {text}");
         }
@@ -148,7 +190,10 @@ mod tests {
     #[test]
     fn the_handoff_carries_prior_reports_fenced() {
         let handoff = [plan_report("drive issue #7")];
-        let text = compose(Stage::Implement, &handoff, None, "do the work");
+        let text = compose(&Frame {
+            handoff: &handoff,
+            ..frame(Stage::Implement, "do the work")
+        });
         assert!(text.contains("## Reports so far"), "{text}");
         assert!(text.contains("### plan report"), "{text}");
         // The prior report's content rides through as JSON.
@@ -158,17 +203,111 @@ mod tests {
 
     #[test]
     fn a_first_pass_plan_has_no_handoff_section() {
-        let text = compose(Stage::Plan, &[], None, "pick the work");
+        let text = compose(&frame(Stage::Plan, "pick the work"));
         assert!(!text.contains("## Reports so far"), "{text}");
     }
 
     #[test]
-    fn a_verify_failure_is_woven_in_for_a_re_run() {
-        let feedback = Feedback::VerifyFailed {
+    fn every_feedback_entry_becomes_its_own_section() {
+        let feedback = [
+            Feedback::VerifyFailed {
+                command: "cargo test".into(),
+                output: "FAILED".into(),
+            },
+            Feedback::VerifyFailed {
+                command: "cargo clippy".into(),
+                output: "warning: unused".into(),
+            },
+        ];
+        let text = compose(&Frame {
+            feedback: &feedback,
+            ..frame(Stage::Implement, "do the work")
+        });
+        assert!(text.contains("cargo test"), "{text}");
+        assert!(text.contains("cargo clippy"), "{text}");
+    }
+
+    #[test]
+    fn human_input_is_woven_in_when_the_run_resumed_with_one() {
+        let human = HumanInput {
+            answers: vec![Answer {
+                question_id: "q1".into(),
+                answer: "sqlite".into(),
+            }],
+            questions: vec![],
+            note: None,
+        };
+        let text = compose(&Frame {
+            human: Some(&human),
+            ..frame(Stage::Plan, "pick the work")
+        });
+        assert!(text.contains("## Human input"), "{text}");
+        assert!(text.contains("sqlite"), "{text}");
+    }
+
+    /// A human with nothing to say adds no section — the frame leans
+    /// on [`preamble::human_input`] returning `None`.
+    #[test]
+    fn a_silent_human_adds_no_section() {
+        let human = HumanInput {
+            answers: vec![],
+            questions: vec![],
+            note: None,
+        };
+        let text = compose(&Frame {
+            human: Some(&human),
+            ..frame(Stage::Plan, "pick the work")
+        });
+        assert!(!text.contains("## Human input"), "{text}");
+    }
+
+    /// The frame owns the order: hand-off, feedback, human input, the
+    /// domain prompt, then the kernel's contract with the final word —
+    /// an override can shape the work, never what comes after it.
+    #[test]
+    fn sections_land_in_the_documented_order() {
+        let handoff = [plan_report("drive issue #7")];
+        let feedback = [Feedback::VerifyFailed {
             command: "cargo test".into(),
             output: "FAILED".into(),
+        }];
+        let human = HumanInput {
+            answers: vec![],
+            questions: vec![],
+            note: Some("keep it simple".into()),
         };
-        let text = compose(Stage::Implement, &[], Some(&feedback), "do the work");
+        let text = compose(&Frame {
+            handoff: &handoff,
+            feedback: &feedback,
+            human: Some(&human),
+            ..frame(Stage::Implement, "DOMAIN-RULES")
+        });
+        let positions: Vec<usize> = [
+            "## Reports so far",
+            "## Verify checks failed",
+            "## Human input",
+            "DOMAIN-RULES",
+            "## Your report",
+        ]
+        .iter()
+        .map(|marker| {
+            text.find(marker)
+                .unwrap_or_else(|| panic!("{marker} missing: {text}"))
+        })
+        .collect();
+        assert!(positions.is_sorted(), "sections out of order: {text}");
+    }
+
+    #[test]
+    fn a_verify_failure_is_woven_in_for_a_re_run() {
+        let feedback = [Feedback::VerifyFailed {
+            command: "cargo test".into(),
+            output: "FAILED".into(),
+        }];
+        let text = compose(&Frame {
+            feedback: &feedback,
+            ..frame(Stage::Implement, "do the work")
+        });
         assert!(text.contains("## Verify checks failed"), "{text}");
         assert!(text.contains("cargo test"), "{text}");
     }
@@ -184,7 +323,10 @@ mod tests {
             blockers: vec![],
             questions: vec![],
         })];
-        let text = compose(Stage::Review, &handoff, None, "review it");
+        let text = compose(&Frame {
+            handoff: &handoff,
+            ..frame(Stage::Review, "review it")
+        });
         // The injected heading stays quoted inside a longer fence, never
         // at the prompt's own level.
         assert!(text.contains("````"), "{text}");

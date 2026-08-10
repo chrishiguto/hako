@@ -20,7 +20,7 @@
 //! (#29). This slice is the loop those build on.
 
 mod contract;
-mod frame;
+pub(crate) mod frame;
 
 use async_trait::async_trait;
 
@@ -149,10 +149,10 @@ async fn execute_stage(
     stage: Stage,
     handoff: &[StageReport],
 ) -> Result<StageEnd, KernelError> {
-    let mut feedback: Option<Feedback> = None;
+    let mut feedback: Vec<Feedback> = Vec::new();
     let mut verify_failures: u32 = 0;
     loop {
-        let drive = match drive_stage(ctx, iteration, stage, handoff, feedback.as_ref()).await? {
+        let drive = match drive_stage(ctx, iteration, stage, handoff, &feedback).await? {
             Bracketed::Finished(drive) => drive,
             Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
         };
@@ -168,7 +168,9 @@ async fn execute_stage(
                     FailAction::Fail => StageEnd::Fail,
                 });
             }
-            feedback = Some(Feedback::VerifyFailed { command, output });
+            // Replaced, not accumulated: the re-run answers the latest
+            // failure, not a history of them.
+            feedback = vec![Feedback::VerifyFailed { command, output }];
             continue;
         }
 
@@ -204,11 +206,19 @@ async fn drive_stage(
     iteration: u32,
     stage: Stage,
     handoff: &[StageReport],
-    feedback: Option<&Feedback>,
+    feedback: &[Feedback],
 ) -> Result<Bracketed<StageDrive>, KernelError> {
     invocation::in_fresh_sandbox(ctx, async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
-        let prompt = frame::compose(stage, handoff, feedback, &domain_prompt);
+        let prompt = frame::compose(&frame::Frame {
+            stage,
+            handoff,
+            feedback,
+            // No human on this path: resume-in-place (#28) is what
+            // carries a paused run's answers back into a frame.
+            human: None,
+            domain_prompt: &domain_prompt,
+        });
         ctx.events
             .emit(RunEvent::StageStarted {
                 iteration,
