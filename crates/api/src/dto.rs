@@ -94,10 +94,12 @@ pub struct ApiError {
 }
 
 /// Every machine-readable failure code the daemon answers with — on
-/// the wire as snake_case strings, e.g. `run_not_found`. Exhaustive
-/// on both ends: the daemon's error mapping produces a variant and
-/// clients match on one, so a new failure mode adds a variant here,
-/// never a bare string.
+/// the wire as snake_case strings, e.g. `run_not_found`. Closed on the
+/// producing end: the daemon's error mapping emits a named variant, so
+/// a new failure mode adds one here, never a bare string. Open on the
+/// consuming end: a client older than its daemon reads a code it does
+/// not know as [`ErrorCode::Unknown`] and still gets the message,
+/// instead of failing the whole response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -107,6 +109,12 @@ pub enum ErrorCode {
     InvalidAgent,
     RunNotFound,
     InternalError,
+    /// Never produced by the daemon — the deserialize-side net that
+    /// catches codes newer than this build of the contract. The price
+    /// is that the published OpenAPI enum lists it alongside the real
+    /// codes.
+    #[serde(other)]
+    Unknown,
 }
 
 #[cfg(test)]
@@ -188,6 +196,7 @@ mod tests {
             ErrorCode::InvalidAgent => "invalid_agent",
             ErrorCode::RunNotFound => "run_not_found",
             ErrorCode::InternalError => "internal_error",
+            ErrorCode::Unknown => "unknown",
         };
         for code in [
             ErrorCode::Unauthorized,
@@ -196,6 +205,7 @@ mod tests {
             ErrorCode::InvalidAgent,
             ErrorCode::RunNotFound,
             ErrorCode::InternalError,
+            ErrorCode::Unknown,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(wire(code)));
         }
@@ -203,6 +213,18 @@ mod tests {
             code: ErrorCode::RunNotFound,
             message: "no such run".into(),
         });
+    }
+
+    /// A daemon newer than this client may answer with a code this
+    /// build does not name. Failing the whole response over that one
+    /// unrecognized code would hide the message explaining it.
+    #[test]
+    fn a_code_from_a_newer_daemon_still_reads_as_an_api_error() {
+        let error: ApiError =
+            serde_json::from_value(json!({"code": "not_paused", "message": "run is not paused"}))
+                .unwrap();
+        assert_eq!(error.code, ErrorCode::Unknown);
+        assert_eq!(error.message, "run is not paused");
     }
 
     /// The nested `RunSummary` must be invisible on the wire — a
