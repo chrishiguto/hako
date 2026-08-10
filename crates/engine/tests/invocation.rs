@@ -306,6 +306,69 @@ async fn a_crash_forfeits_the_repair() {
     assert!(rejections(&sink.events()).is_empty());
 }
 
+/// The point of the repair budget: a report the agent fixes on its
+/// re-prompt is as good as one it got right the first time.
+#[tokio::test]
+async fn a_repaired_report_is_accepted() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        exec("working\n", 0),
+        exec("repairing\n", 0),
+    ]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
+    // The first exec writes the rejected report, the repair exec the
+    // corrected one.
+    sandbox.write_report_on_exec(b"nope".as_slice());
+    sandbox.write_report_on_exec(b"ok".as_slice());
+    let handle = SandboxHandle::new("vm-0");
+
+    let report = invocation::invoke_to_report(&ctx, 1, &handle, "work", &OkContract)
+        .await
+        .unwrap();
+
+    assert_eq!(report.as_deref(), Some("ok"));
+    assert_eq!(sandbox.execs().len(), 2, "the repair was spent");
+    // Only the first attempt was rejected; the accepted repair adds
+    // nothing to the log.
+    assert_eq!(
+        rejections(&sink.events()),
+        [vec!["not ok: nope".to_string()]]
+    );
+}
+
+/// A clean exit that left no report is a rejection like any other:
+/// the missing-report message enters the log and earns the one
+/// repair re-prompt.
+#[tokio::test]
+async fn a_missing_report_is_rejected_and_earns_the_repair() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        exec("working\n", 0),
+        exec("forgot again\n", 0),
+    ]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
+    let handle = SandboxHandle::new("vm-0");
+
+    let report = invocation::invoke_to_report(&ctx, 1, &handle, "work", &OkContract)
+        .await
+        .unwrap();
+
+    assert_eq!(report, None);
+    assert_eq!(
+        sandbox.execs().len(),
+        2,
+        "the missing report earned its repair"
+    );
+    let rejected = rejections(&sink.events());
+    assert_eq!(rejected.len(), 2);
+    assert!(
+        rejected
+            .iter()
+            .all(|errors| errors.iter().any(|e| e.contains("report missing"))),
+        "{rejected:?}"
+    );
+}
+
 /// A verify section with the given checks; retries and on_fail stay
 /// out of scope — they are kernel policy, not check mechanism.
 fn verifying(checks: &[&str]) -> VerifyConfig {
