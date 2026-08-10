@@ -51,9 +51,8 @@ pub trait ReportContract {
 }
 
 /// How a sandbox bracket ended: the work ran to its value, or the
-/// run's cancel token fired mid-work and the rest was abandoned. The
-/// sandbox is destroyed either way — cancellation changes what comes
-/// back, never whether teardown runs.
+/// run's cancel token fired mid-work and the rest was abandoned.
+/// Cancellation changes what comes back, never whether teardown runs.
 #[derive(Debug)]
 pub enum Bracketed<T> {
     Finished(T),
@@ -67,13 +66,12 @@ pub enum Bracketed<T> {
 /// sandbox as the invocation whose work they judge. The cancel token
 /// is raced against the whole bracket body, so a cancel lands even
 /// mid-exec — dropping the work abandons the guest process with its
-/// VM, which is exactly ADR 0003's cancellation model: teardown, not
-/// a kill signal.
+/// VM, which is the whole cancellation model: teardown, not a kill
+/// signal.
 pub async fn in_fresh_sandbox<T>(
     ctx: &KernelContext,
     work: impl AsyncFnOnce(&SandboxHandle) -> Result<T, KernelError>,
 ) -> Result<Bracketed<T>, KernelError> {
-    // A token that already fired boots no sandbox at all.
     if ctx.cancel.is_cancelled() {
         return Ok(Bracketed::Cancelled);
     }

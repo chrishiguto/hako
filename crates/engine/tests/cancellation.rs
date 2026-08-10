@@ -64,7 +64,6 @@ async fn a_cancel_mid_exec_destroys_the_sandbox_and_ends_the_run_cancelled() {
         ]
     );
     assert_ended_cancelled(&sink.events());
-    // The one sandbox the hung stage booted was torn down.
     assert_eq!(sandbox.created(), 1);
     assert_eq!(sandbox.destroyed(), 1);
 }

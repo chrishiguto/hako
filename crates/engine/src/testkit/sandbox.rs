@@ -212,8 +212,6 @@ impl Sandbox for ScriptedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
-        // A hanging exec writes nothing and never exits: the stream
-        // stays pending until the sandbox is torn down around it.
         if self.hang {
             if let Some(barrier) = &self.barrier {
                 barrier.wait().await;

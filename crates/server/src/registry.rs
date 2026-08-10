@@ -32,8 +32,8 @@ struct RunRecord {
 /// the task driving the run. Cancelling means firing the token and
 /// draining the task — never `JoinHandle::abort`, which would drop
 /// the future mid-await inside the agent exec, skip the sandbox
-/// bracket's destroy, and leak the microVM (ADR 0003: teardown is the
-/// isolation guarantee).
+/// bracket's destroy, and leak the microVM that teardown is there to
+/// reclaim.
 struct Execution {
     cancel: CancelToken,
     task: tokio::task::JoinHandle<()>,
@@ -287,8 +287,7 @@ repo = {:?}
         assert_eq!(sandbox.created(), 1);
         assert_eq!(sandbox.destroyed(), 1);
 
-        // The execution is spent: a second cancel finds nothing live,
-        // and a made-up run finds nothing at all.
+        // The execution is spent — a cancel can only reap it once.
         assert!(matches!(
             registry.cancel(&run_id).await,
             CancelOutcome::NotRunning

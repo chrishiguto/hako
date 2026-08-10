@@ -131,12 +131,10 @@ enum StageEnd {
     /// The stage produced no trustworthy report — a crashed agent or a
     /// report still malformed after its one repair.
     Fail,
-    /// The run's cancel token fired — mid-stage, where the bracket
-    /// destroyed the sandbox before answering, or before the stage
-    /// booted anything. The bracket observes the token at every stage
-    /// boundary, so the kernel only translates: a finished stage's
-    /// work stands, no further stage starts, and the run ends
-    /// `Cancelled` — terminal, unlike a pause.
+    /// The run's cancel token fired, mid-stage or at the boundary
+    /// before this stage booted anything: a finished stage's work
+    /// stands, no further stage starts, and the run ends `Cancelled` —
+    /// terminal, unlike a pause.
     Cancelled,
 }
 

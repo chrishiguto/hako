@@ -1,13 +1,13 @@
 //! Cooperative run cancellation. The token rides the `KernelContext`
-//! as plain data, like budgets — not a seventh seam (ADR 0006): it is
-//! never faked and never swapped, a test fires the real thing. The
-//! host keeps a clone and signals; the engine observes it in exactly
-//! one place — the sandbox bracket, which checks at entry and races
-//! the token against the work in flight. Since every stage runs in a
+//! as plain data, like budgets — not a seventh seam: it is never
+//! faked and never swapped, a test fires the real thing. The host
+//! keeps a clone and signals; the engine observes it in exactly one
+//! place — the sandbox bracket, which checks at entry and races the
+//! token against the work in flight. Since every stage runs in a
 //! bracket, that one point covers stage boundaries and mid-stage
-//! alike, and every exit path still destroys the sandbox (ADR 0003:
-//! teardown is the isolation guarantee). Cancel is terminal — a
-//! cancelled run is over, unlike a Pause, which resumes.
+//! alike, and every exit path still destroys the sandbox, which is
+//! the isolation guarantee. Cancel is terminal — a cancelled run is
+//! over, unlike a Pause, which resumes.
 
 use tokio::sync::watch;
 
@@ -31,13 +31,11 @@ impl CancelToken {
         }
     }
 
-    /// Fires the token. Idempotent; there is no un-cancel.
+    /// Idempotent; there is no un-cancel.
     pub fn cancel(&self) {
         self.flag.send_replace(true);
     }
 
-    /// Whether the token has fired — the poll a kernel makes at a
-    /// stage boundary.
     pub fn is_cancelled(&self) -> bool {
         *self.flag.borrow()
     }
