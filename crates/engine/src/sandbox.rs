@@ -134,6 +134,62 @@ pub(crate) fn into_text(bytes: Vec<u8>) -> String {
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
+/// Decodes a stream of raw chunks whose boundaries can split a
+/// multibyte codepoint: the incomplete sequence a chunk ends with is
+/// held — at most three bytes — and completed by the next chunk, so a
+/// split codepoint decodes whole instead of as two replacement
+/// characters. Truly invalid bytes still fall through to the lossy
+/// replacement, exactly as [`into_text`] leaves them.
+#[derive(Default)]
+pub(crate) struct StreamDecoder {
+    held: Vec<u8>,
+}
+
+impl StreamDecoder {
+    /// Decodes `bytes` in the context of the previous chunk's held
+    /// tail and returns the text that is complete so far.
+    pub(crate) fn push(&mut self, bytes: Vec<u8>) -> String {
+        let mut bytes = if self.held.is_empty() {
+            bytes
+        } else {
+            let mut joined = std::mem::take(&mut self.held);
+            joined.extend_from_slice(&bytes);
+            joined
+        };
+        self.held = bytes.split_off(bytes.len() - incomplete_utf8_suffix(&bytes));
+        into_text(bytes)
+    }
+
+    /// The stream is over: an incomplete sequence can no longer
+    /// complete, so it decodes lossily — output is never dropped.
+    pub(crate) fn finish(self) -> String {
+        into_text(self.held)
+    }
+}
+
+/// The length of the longest suffix of `bytes` that is an incomplete —
+/// but so far valid — UTF-8 sequence a next chunk could complete. Zero
+/// when the tail is complete or already invalid; a next chunk fixes
+/// neither.
+fn incomplete_utf8_suffix(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let byte = bytes[bytes.len() - back];
+        // A continuation byte: the sequence's lead sits further back.
+        if byte & 0b1100_0000 == 0b1000_0000 {
+            continue;
+        }
+        let need = match byte {
+            0b1100_0000..=0b1101_1111 => 2,
+            0b1110_0000..=0b1110_1111 => 3,
+            0b1111_0000..=0b1111_0111 => 4,
+            // ASCII, or a lead no valid sequence starts with.
+            _ => return 0,
+        };
+        return if need > back { back } else { 0 };
+    }
+    0
+}
+
 /// A sandbox operation that failed. Opaque by design: kernels react to
 /// sandbox failure uniformly (fail the iteration), never to its cause.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -149,5 +205,54 @@ mod tests {
         assert!(ExitStatus { code: Some(0) }.success());
         assert!(!ExitStatus { code: Some(1) }.success());
         assert!(!ExitStatus { code: None }.success());
+    }
+
+    /// A chunk boundary can land inside a codepoint; the held bytes
+    /// complete on the next chunk instead of decoding as two
+    /// replacement characters.
+    #[test]
+    fn a_codepoint_split_across_chunks_decodes_whole() {
+        let mut decoder = StreamDecoder::default();
+        let mut out = String::new();
+        // "naïve" chopped inside the two-byte 'ï'.
+        for chunk in [&b"na\xC3"[..], &b"\xAFve"[..]] {
+            out.push_str(&decoder.push(chunk.to_vec()));
+        }
+        out.push_str(&decoder.finish());
+        assert_eq!(out, "na\u{ef}ve");
+    }
+
+    /// Bytes no next chunk can complete — a bad lead, a lone
+    /// continuation — are not held: they decode lossily right away,
+    /// byte for byte what [`into_text`] produces.
+    #[test]
+    fn invalid_bytes_are_not_held() {
+        let mut decoder = StreamDecoder::default();
+        assert_eq!(decoder.push(b"\xFFa".to_vec()), "\u{fffd}a");
+        assert_eq!(decoder.push(b"\x80b".to_vec()), "\u{fffd}b");
+        assert_eq!(decoder.finish(), "");
+    }
+
+    /// The stream ending settles a held tail: incomplete for good, it
+    /// decodes lossily rather than vanishing.
+    #[test]
+    fn an_incomplete_tail_flushes_lossily_at_stream_end() {
+        let mut decoder = StreamDecoder::default();
+        assert_eq!(decoder.push(b"a\xC3".to_vec()), "a");
+        assert_eq!(decoder.finish(), "\u{fffd}");
+    }
+
+    /// A four-byte sequence can straddle three chunks; the held tail
+    /// carries across every boundary until the codepoint completes.
+    #[test]
+    fn a_four_byte_codepoint_survives_two_boundaries() {
+        let mut decoder = StreamDecoder::default();
+        let mut out = String::new();
+        // "🦀" (F0 9F A6 80) one byte at a time.
+        for chunk in [&b"\xF0"[..], &b"\x9F"[..], &b"\xA6"[..], &b"\x80"[..]] {
+            out.push_str(&decoder.push(chunk.to_vec()));
+        }
+        out.push_str(&decoder.finish());
+        assert_eq!(out, "\u{1f980}");
     }
 }
