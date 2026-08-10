@@ -245,8 +245,8 @@ async fn a_parsed_report_needs_no_repair() {
     assert!(rejections(&sink.events()).is_empty());
 }
 
-/// The one-repair budget of ADR 0011: a rejected report earns exactly
-/// one re-prompt — the errors and the schema quoted back, in the same
+/// The one-repair budget: a rejected report earns exactly one
+/// re-prompt — the errors and the schema quoted back, in the same
 /// sandbox — and a second rejection ends the invocation with nothing.
 #[tokio::test]
 async fn a_rejected_report_earns_one_logged_repair_then_fails() {

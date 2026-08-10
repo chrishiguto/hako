@@ -261,8 +261,6 @@ impl Sandbox for ScriptedSandbox {
     }
 }
 
-// ---------- the staged sandbox and its scripted attempts ----------
-
 /// One agent exec [`StagedSandbox`] will serve: what it prints, how it
 /// exits, and the report it leaves (or `None` to leave none, so the
 /// kernel sees a missing report).

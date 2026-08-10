@@ -21,7 +21,7 @@ use crate::invocation::ReportContract;
 /// strict dialect parse — what the pipeline hands
 /// [`crate::invocation::invoke_to_report`]. The impl lives here, not
 /// in proto, keeping the dialect types on the kernel's side of the
-/// seam (ADR 0010).
+/// seam.
 impl ReportContract for Stage {
     type Report = StageReport;
 

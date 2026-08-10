@@ -4,7 +4,7 @@
 //! fetched back and read against the kernel's [`ReportContract`].
 //! What shape a report takes is kernel policy; the loop that enforces
 //! it — strict parse, exactly one repair re-prompt, every rejection
-//! logged — is ADR 0011 mechanism and lives here, so every kernel's
+//! logged — is engine mechanism and lives here, so every kernel's
 //! agent-boundary read behaves identically. When to checkpoint the
 //! workspace remains kernel policy.
 
@@ -35,7 +35,7 @@ pub enum InvocationEnd {
 /// The kernel-supplied half of the report boundary: one report shape —
 /// its schema and its strict parse. [`invoke_to_report`] is generic
 /// over this, so dialect types stay with the kernel that owns them
-/// (ADR 0010) while the engine owns the repair loop (ADR 0011).
+/// while the engine owns the repair loop.
 pub trait ReportContract {
     /// What a report parses into — a kernel dialect type.
     type Report;
@@ -138,11 +138,11 @@ pub async fn invoke(
 }
 
 /// Drives the agent to a parsed report, spending the one repair
-/// re-prompt a rejected report earns (ADR 0011) in the same sandbox —
-/// the work is done, only the report needs fixing. `None` means the
-/// invocation is out of chances: a crash (no report to trust) or a
-/// report still malformed after repair. Every rejection is logged for
-/// the repair to answer.
+/// re-prompt a rejected report earns in the same sandbox — the work is
+/// done, only the report needs fixing. `None` means the invocation is
+/// out of chances: a crash (no report to trust) or a report still
+/// malformed after repair. Every rejection is logged for the repair to
+/// answer.
 pub async fn invoke_to_report<C: ReportContract>(
     ctx: &KernelContext,
     iteration: u32,

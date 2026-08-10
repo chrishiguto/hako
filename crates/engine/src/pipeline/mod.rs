@@ -120,11 +120,8 @@ enum StageEnd {
     Advance(StageReport),
     /// A stage claimed `done` and cleared its verify gate — the run is
     /// complete. Carries the claiming report so the Verified Done
-    /// skeptic (#7) has a claim to interrogate.
-    Done(
-        #[expect(dead_code, reason = "read once the #7 skeptic interrogates the claim")]
-        StageReport,
-    ),
+    /// skeptic has a claim to interrogate.
+    Done(#[expect(dead_code, reason = "read once the skeptic interrogates the claim")] StageReport),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
     Pause(PauseReason),
