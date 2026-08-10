@@ -183,11 +183,11 @@ impl RunDir {
         Ok((events, terminated as u64))
     }
 
-    /// Where the run stands per the log, in one pass: state, last
-    /// report core, counters, and the resume cursor — the
-    /// [`RunProjection`] fold applied to this run's events. A report
-    /// that cannot yield its core is corruption: every logged report
-    /// was strict-parsed against its dialect before it was appended.
+    /// Where the run stands per the log: the [`RunProjection`] fold
+    /// applied to this run's events. A report that cannot yield its
+    /// core is corruption, not a run in some odd state — every logged
+    /// report was strict-parsed against its dialect before it was
+    /// appended.
     pub async fn project(&self) -> Result<RunProjection, StoreError> {
         let events = self.events().await?;
         RunProjection::of(&events).map_err(|error| StoreError::corrupt(&self.log_path(), error))

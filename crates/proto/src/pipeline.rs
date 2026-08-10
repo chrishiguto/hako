@@ -477,9 +477,7 @@ mod tests {
     /// wire shape deserializes into the shared core, carrying exactly
     /// the uniform fields whatever payload surrounds them. Stated
     /// against literal cores, so the expectation cannot drift along
-    /// with the report structs it is meant to pin. This agreement is
-    /// what lets a dialect-blind reader — the engine's run projection
-    /// — read any logged report without importing this dialect.
+    /// with the report structs it is meant to pin.
     #[test]
     fn every_stage_report_flattens_into_the_shared_core() {
         let expected = [

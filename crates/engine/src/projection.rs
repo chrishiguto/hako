@@ -204,8 +204,6 @@ mod tests {
         assert!(core.questions.is_empty());
     }
 
-    /// History replays forward: of several state changes and reports,
-    /// the last of each is the run's present.
     #[test]
     fn the_last_state_change_and_the_last_report_win() {
         let events = log(vec![
@@ -226,8 +224,8 @@ mod tests {
         assert_eq!(core.status, ReportStatus::Done);
     }
 
-    /// The questions a pausing report asked ride the core, whichever
-    /// dialect asked them — with the dialect's own payload skipped.
+    /// The core keeps the questions and skips the dialect payload the
+    /// report carried alongside them.
     #[test]
     fn a_pausing_reports_questions_ride_the_core() {
         let events = log(vec![
@@ -249,8 +247,6 @@ mod tests {
         assert_eq!(core.questions[0].options, ["a", "b"]);
     }
 
-    /// Questions are an ask only while the run waits on a human: the
-    /// same report read past the pause answers with none.
     #[test]
     fn questions_are_pending_only_while_awaiting_a_human() {
         let asked = vec![

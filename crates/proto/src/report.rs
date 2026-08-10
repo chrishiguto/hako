@@ -117,8 +117,6 @@ mod tests {
         assert_eq!(serde_json::from_str::<Answer>(&wire).unwrap(), answer);
     }
 
-    /// The core reads a dialect's full wire shape — here a plan-like
-    /// report — keeping the uniform fields and skipping the payload.
     #[test]
     fn the_core_reads_any_dialect_report_ignoring_its_payload() {
         let core: ReportCore = serde_json::from_value(json!({
