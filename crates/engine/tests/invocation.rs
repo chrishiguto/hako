@@ -284,6 +284,28 @@ async fn a_rejected_report_earns_one_logged_repair_then_fails() {
     );
 }
 
+/// A crash forfeits the repair: an agent that exited badly cannot be
+/// trusted to have done the work, so the loop spends no re-prompt on
+/// it — even when a parseable report sits at the report path.
+#[tokio::test]
+async fn a_crash_forfeits_the_repair() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec("boom\n", 1)]));
+    let sink = Arc::new(RecordingSink::default());
+    let ctx = context(sandbox.clone(), sink.clone(), VerifyConfig::default());
+    sandbox.write_report_on_exec(b"ok".as_slice());
+    let handle = SandboxHandle::new("vm-0");
+
+    let report = invocation::invoke_to_report(&ctx, 1, &handle, "work", &OkContract)
+        .await
+        .unwrap();
+
+    assert_eq!(report, None);
+    assert_eq!(sandbox.execs().len(), 1, "no repair was spent");
+    // A crash is not a rejection — there is nothing for a repair to
+    // answer, so nothing enters the log as one.
+    assert!(rejections(&sink.events()).is_empty());
+}
+
 /// A verify section with the given checks; retries and on_fail stay
 /// out of scope — they are kernel policy, not check mechanism.
 fn verifying(checks: &[&str]) -> VerifyConfig {
