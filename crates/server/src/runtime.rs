@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use engine::agents::{self, AgentConfigError};
 use engine::workspace;
 use engine::{
-    AgentAdapter, Budgets, EventSink, Kernel, KernelContext, Notification, Notifier, NotifierError,
-    RunDir, RunEvent, RunState, Sandbox, SandboxError, SecretName, SecretValue, SecretsError,
-    SecretsProvider,
+    AgentAdapter, Budgets, CancelToken, EventSink, Kernel, KernelContext, Notification, Notifier,
+    NotifierError, RunDir, RunEvent, RunState, Sandbox, SandboxError, SecretName, SecretValue,
+    SecretsError, SecretsProvider,
 };
 use futures_util::FutureExt;
 
@@ -61,6 +61,7 @@ impl EngineRuntime {
         flow: FlowConfig,
         resolved: ResolvedRun,
         events: Arc<dyn EventSink>,
+        cancel: CancelToken,
     ) -> tokio::task::JoinHandle<()> {
         let runtime = self.clone();
         tokio::spawn(async move {
@@ -70,6 +71,7 @@ impl EngineRuntime {
                 flow,
                 resolved,
                 events.clone(),
+                cancel,
             ))
             .catch_unwind()
             .await;
@@ -119,6 +121,7 @@ async fn drive_run(
     flow: FlowConfig,
     resolved: ResolvedRun,
     events: Arc<dyn EventSink>,
+    cancel: CancelToken,
 ) -> Result<(), engine::KernelError> {
     let workspace = workspace::prepare(
         &flow.workspace,
@@ -129,6 +132,7 @@ async fn drive_run(
     let context = KernelContext {
         run_id: dir.meta().run_id.clone(),
         budgets: Budgets::from(&flow.budget),
+        cancel,
         verify: flow.verify,
         prompts: flow.prompts,
         workspace,

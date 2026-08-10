@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod agents;
 pub mod budget;
+pub mod cancel;
 pub mod event;
 pub mod invocation;
 pub mod kernel;
@@ -34,6 +35,7 @@ pub use proto::flow::{FailAction, OnFail, PromptsConfig, VerifyConfig};
 
 pub use agent::AgentAdapter;
 pub use budget::{BudgetKind, Budgets, TokenUsage};
+pub use cancel::CancelToken;
 pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
 };

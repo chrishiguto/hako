@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::agent::AgentAdapter;
 use crate::budget::Budgets;
+use crate::cancel::CancelToken;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
@@ -47,6 +48,16 @@ pub fn resolve(name: KernelName) -> Arc<dyn Kernel> {
 pub struct KernelContext {
     pub run_id: RunId,
     pub budgets: Budgets,
+    /// The run's cooperative cancel flag — a value like [`budgets`],
+    /// not a seventh seam: nothing fakes it, the host fires the same
+    /// token a test would. The sandbox bracket is its single
+    /// observation point, so a kernel never checks it; it only answers
+    /// a cancelled bracket with [`RunOutcome::Cancelled`] through its
+    /// normal exit, and teardown and the terminal event happen exactly
+    /// as for any other ending.
+    ///
+    /// [`budgets`]: Self::budgets
+    pub cancel: CancelToken,
     /// The verify checks an iteration must pass to count as progress,
     /// and what to do when they keep failing. Empty checks means every
     /// iteration counts. Lifted straight from the flow — no engine-side

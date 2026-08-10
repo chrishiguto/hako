@@ -91,6 +91,8 @@ pub struct ScriptedSandbox {
     /// Every exec waits here before streaming — how a test holds two
     /// runs in flight at once to observe their overlap.
     barrier: Option<Arc<Barrier>>,
+    /// Execs begin and never finish — see [`Self::hanging`].
+    hang: bool,
     panic_on_create: bool,
     created: AtomicU32,
     destroyed: AtomicU32,
@@ -111,6 +113,17 @@ impl ScriptedSandbox {
     pub fn repeating(transcript: Transcript) -> Self {
         Self {
             fallback: Some(transcript),
+            ..Self::default()
+        }
+    }
+
+    /// Serves execs that begin and never finish — the minutes-long
+    /// agent exec in miniature, for cancellation tests. Pair with
+    /// [`Self::with_barrier`] so the test knows the exec is in flight
+    /// before it fires the cancel.
+    pub fn hanging() -> Self {
+        Self {
+            hang: true,
             ..Self::default()
         }
     }
@@ -199,6 +212,12 @@ impl Sandbox for ScriptedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         self.execs.lock().unwrap().push(command.clone());
+        if self.hang {
+            if let Some(barrier) = &self.barrier {
+                barrier.wait().await;
+            }
+            return Ok(stream::pending().boxed());
+        }
         for (path, queue) in self.on_exec.lock().unwrap().iter_mut() {
             // Advance the queue only while another entry waits behind;
             // the last one serves every exec from then on.
