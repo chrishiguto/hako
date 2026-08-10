@@ -10,9 +10,10 @@
 //! same user, which on a mothership is the interactive lane.
 //!
 //! The permission bar is the whole security story here, so it is
-//! checked at startup rather than trusted: the store must be `0700`
-//! and readable by the daemon's own user. A run that starts is a run
-//! whose secrets were never readable by the yolo agents next door.
+//! checked at startup rather than trusted: the store must be owned by
+//! the daemon's own user and closed to group and world. A run that
+//! starts is a run whose secrets were never readable by the yolo
+//! agents next door.
 
 use std::path::{Path, PathBuf};
 
@@ -36,43 +37,32 @@ impl FileSecrets {
     /// to read. Fails startup rather than the first run that needs a
     /// secret: a daemon with an exposed store should not come up at
     /// all.
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self, SecretStoreError> {
         let root = root.into();
         create(&root)?;
-        let metadata = std::fs::metadata(&root).map_err(|source| StoreError {
+        let metadata = std::fs::metadata(&root).map_err(|source| SecretStoreError {
             path: root.clone(),
             problem: format!("cannot be read: {source}"),
         })?;
         if !metadata.is_dir() {
-            return Err(StoreError {
+            return Err(SecretStoreError {
                 path: root,
                 problem: "is not a directory".to_owned(),
             });
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
             let mode = metadata.permissions().mode() & 0o777;
-            if mode != STORE_MODE {
-                return Err(StoreError {
+            // SAFETY: geteuid touches no memory and cannot fail.
+            let daemon = unsafe { libc::geteuid() };
+            if let Some(problem) = refusal(mode, metadata.uid(), daemon) {
+                return Err(SecretStoreError {
                     path: root,
-                    problem: format!(
-                        "must be mode {STORE_MODE:04o} so only the daemon's user can read it, \
-                         but is {mode:04o} — run `chmod {STORE_MODE:o}` on it"
-                    ),
+                    problem,
                 });
             }
-            // Mode alone says owner-only; that the *daemon* is that
-            // owner is what listing proves — a store belonging to
-            // another user would deny this, and every later read.
-            std::fs::read_dir(&root).map_err(|source| StoreError {
-                path: root.clone(),
-                problem: format!(
-                    "is mode {STORE_MODE:04o} but the daemon's user cannot read it \
-                     — it belongs to another user ({source})"
-                ),
-            })?;
         }
         Ok(Self { root })
     }
@@ -91,16 +81,47 @@ impl FileSecrets {
     }
 }
 
+/// Why the daemon must refuse this store, or `None` for one only the
+/// daemon's own user can touch. A mode at least as strict as `0700`
+/// passes; any group or world bit fails. Ownership is judged as a uid
+/// comparison, never by probing a read: root reads through any mode,
+/// so under a root-run daemon a successful read would prove nothing —
+/// a `0700` store owned by the interactive-lane user must fail here.
+/// Pure over what `stat` reports, so the judgement is testable for
+/// users the test suite cannot become.
+#[cfg(unix)]
+fn refusal(mode: u32, owner: u32, daemon: u32) -> Option<String> {
+    if mode & 0o077 != 0 {
+        return Some(format!(
+            "must be closed to group and world so only the daemon's user can read it, \
+             but is {mode:04o} — run `chmod {STORE_MODE:o}` on it"
+        ));
+    }
+    if mode & 0o500 != 0o500 {
+        return Some(format!(
+            "must let its owner read and enter it, but is {mode:04o} — \
+             run `chmod {STORE_MODE:o}` on it"
+        ));
+    }
+    if owner != daemon {
+        return Some(format!(
+            "belongs to uid {owner} while the daemon runs as uid {daemon} \
+             — the store must be owned by the daemon's user"
+        ));
+    }
+    None
+}
+
 /// Creates the store at `0700` when it is absent — a daemon's first
 /// start should leave a store to provision into, not an error. An
 /// existing directory is left exactly as it is: the checks above judge
 /// it, and silently tightening someone's directory is not this
 /// function's call.
-fn create(root: &Path) -> Result<(), StoreError> {
+fn create(root: &Path) -> Result<(), SecretStoreError> {
     if root.exists() {
         return Ok(());
     }
-    let failed = |source: std::io::Error| StoreError {
+    let failed = |source: std::io::Error| SecretStoreError {
         path: root.to_path_buf(),
         problem: format!("cannot be created: {source}"),
     };
@@ -149,7 +170,7 @@ impl SecretsProvider for FileSecrets {
 /// the operator's next action is on that directory.
 #[derive(Debug, thiserror::Error)]
 #[error("the secret store at {} {problem}", path.display())]
-pub struct StoreError {
+pub struct SecretStoreError {
     path: PathBuf,
     problem: String,
 }
@@ -273,6 +294,51 @@ mod tests {
         assert!(message.contains(&root.display().to_string()), "{message}");
         assert!(message.contains("0755"), "{message}");
         assert!(message.contains("chmod 700"), "{message}");
+    }
+
+    /// Stricter than `0700` is not a misconfiguration: the daemon only
+    /// reads the store after creating it, so an owner who dropped the
+    /// write bit gets a running daemon, not advice to loosen modes.
+    #[cfg(unix)]
+    #[test]
+    fn a_stricter_than_0700_store_is_accepted() {
+        assert_eq!(refusal(0o700, 42, 42), None);
+        assert_eq!(refusal(0o500, 42, 42), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn any_group_or_world_bit_is_refused() {
+        for mode in [0o755, 0o770, 0o707, 0o750, 0o710, 0o701] {
+            let Some(problem) = refusal(mode, 42, 42) else {
+                panic!("{mode:04o} was accepted");
+            };
+            assert!(problem.contains("chmod 700"), "{problem}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_owner_who_cannot_read_or_enter_is_refused() {
+        for mode in [0o300, 0o400, 0o200, 0o000] {
+            let Some(problem) = refusal(mode, 42, 42) else {
+                panic!("{mode:04o} was accepted");
+            };
+            assert!(problem.contains("owner"), "{problem}");
+        }
+    }
+
+    /// The case a read-probe cannot catch: root reads through any
+    /// mode, so a `0700` store owned by the interactive-lane user
+    /// would have passed a probe and handed that user every secret.
+    /// Ownership is a uid comparison, and the message names both
+    /// sides.
+    #[cfg(unix)]
+    #[test]
+    fn a_store_owned_by_another_user_is_refused_even_for_root() {
+        let problem = refusal(0o700, 1000, 0).unwrap();
+        assert!(problem.contains("uid 1000"), "{problem}");
+        assert!(problem.contains("uid 0"), "{problem}");
     }
 
     #[test]
