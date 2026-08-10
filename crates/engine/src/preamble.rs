@@ -13,8 +13,8 @@ use crate::report::{Answer, Question};
 
 /// The headings that open this module's sections. Published in-crate
 /// so the testkit's prompt markers and the prose here stay one
-/// definition — tests assert a section is present by its marker, and
-/// a reworded section lands in one place.
+/// definition — a test asserts a section is present by its marker
+/// rather than by spelling its wording out a second time.
 pub(crate) const VERIFY_FAILED_HEADING: &str = "## Verify checks failed";
 pub(crate) const HUMAN_INPUT_HEADING: &str = "## Human input";
 
@@ -69,8 +69,7 @@ pub fn fenced(text: &str) -> String {
 /// What a human sent back to a paused run — their answers and
 /// free-form note — paired with the questions of the report that
 /// paused it, so each answer renders attributed to what it addressed.
-/// A kernel fills this from its resume path; today only
-/// resume-in-place (#28) will.
+/// A kernel fills this from its resume path.
 pub struct HumanInput {
     pub answers: Vec<Answer>,
     pub questions: Vec<Question>,

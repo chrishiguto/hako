@@ -214,8 +214,8 @@ async fn drive_stage(
             stage,
             handoff,
             feedback,
-            // No human on this path: resume-in-place (#28) is what
-            // carries a paused run's answers back into a frame.
+            // No human on this path: only a resume carries a paused
+            // run's answers back into a frame.
             human: None,
             domain_prompt: &domain_prompt,
         });

@@ -27,12 +27,11 @@ use crate::preamble::{self, Feedback, HumanInput};
 use crate::workspace::REPORT_FILE;
 use proto::pipeline::{Stage, StageReport};
 
-/// Heading of the hand-off section; published in-crate so the
+/// The hand-off section's headings — the section's own and the one
+/// opening each prior stage's report. Published in-crate so the
 /// testkit's prompt markers and the section stay one definition.
 pub(crate) const HANDOFF_HEADING: &str = "## Reports so far";
 
-/// The heading under which one prior stage's report is quoted inside
-/// the hand-off section.
 pub(crate) fn handoff_report_heading(stage: Stage) -> String {
     format!("### {} report", stage.as_str())
 }
@@ -47,12 +46,13 @@ pub struct Frame<'a> {
     pub stage: Stage,
     /// The prior stages' reports the agent reads before its task.
     pub handoff: &'a [StageReport],
-    /// Feedback on the previous attempt; empty on a first run. Plural
-    /// because a re-run may soon carry more than one kind (#7 skeptic
-    /// findings, #8 budget and drift notes).
+    /// Feedback on the previous attempt; empty on a first run. A
+    /// slice because one attempt can draw more than one kind of
+    /// correction — a failed check, a skeptic's finding, a budget
+    /// note.
     pub feedback: &'a [Feedback],
     /// What the human said when the run resumed from a pause; `None`
-    /// until resume-in-place (#28) carries one.
+    /// on a run that never paused.
     pub human: Option<&'a HumanInput>,
     /// The stage's domain prompt — the flow's override or the shipped
     /// default.
@@ -245,8 +245,8 @@ mod tests {
         assert!(text.contains("sqlite"), "{text}");
     }
 
-    /// A human with nothing to say adds no section — the frame leans
-    /// on [`preamble::human_input`] returning `None`.
+    /// The frame leans on [`preamble::human_input`] returning `None`
+    /// rather than judging emptiness itself.
     #[test]
     fn a_silent_human_adds_no_section() {
         let human = HumanInput {
@@ -261,9 +261,9 @@ mod tests {
         assert!(!text.contains(preamble::HUMAN_INPUT_HEADING), "{text}");
     }
 
-    /// The frame owns the order: hand-off, feedback, human input, the
-    /// domain prompt, then the kernel's contract with the final word —
-    /// an override can shape the work, never what comes after it.
+    /// Order is the frame's, not the caller's, and the contract has
+    /// the final word — an override can shape the work, never what
+    /// comes after it.
     #[test]
     fn sections_land_in_the_documented_order() {
         let handoff = [plan_report("drive issue #7")];
