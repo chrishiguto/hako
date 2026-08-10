@@ -15,7 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
+# `rt` because the event sink spawns each append into its own task:
+# a caller dropped mid-emit (a select! losing a race) detaches from
+# the write instead of tearing the log.
+tokio = { workspace = true, features = ["fs", "io-util", "process", "rt", "sync", "time"] }
 
 [features]
 # The seam fakes, defaulted KernelContext, and real-git fixtures under

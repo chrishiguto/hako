@@ -12,9 +12,13 @@
 //! saw acknowledged. An event exists once its whole line is on disk,
 //! and not before: an append cut short — crash, full disk — leaves a
 //! torn tail that readers ignore and the sink truncates before
-//! continuing.
+//! continuing. An emit whose *caller* dies mid-await — a future
+//! dropped by a `select!` — is not cut short: the append runs in its
+//! own task and completes whole, line and sequence together, so the
+//! log's integrity never depends on the caller surviving.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -213,10 +217,12 @@ impl RunDir {
             .await
             .map_err(|source| StoreError::io(&path, source))?;
         Ok(FileEventSink {
-            run_id: self.meta.run_id.clone(),
-            log_path: path,
-            state_path: self.state_path(),
-            inner: Mutex::new(SinkInner { log, next_seq }),
+            shared: Arc::new(SinkShared {
+                run_id: self.meta.run_id.clone(),
+                log_path: path,
+                state_path: self.state_path(),
+                inner: Mutex::new(SinkInner { log, next_seq }),
+            }),
         })
     }
 
@@ -238,7 +244,21 @@ impl RunDir {
 /// flushed before the emit returns. The envelope written here is the
 /// exact shape the daemon later streams, so serving a client is
 /// tailing this file.
+///
+/// `emit` runs each append in its own task and awaits it, so the
+/// normal path still holds the flushed-before-return guarantee — but
+/// a caller dropped mid-await (a `select!` losing a race) merely
+/// detaches from an append that completes anyway. Without that, a
+/// dropped emit could land its line without advancing the sequence,
+/// and the next append would reuse the number: a log corrupt forever,
+/// from a cancellation that worked.
 pub struct FileEventSink {
+    shared: Arc<SinkShared>,
+}
+
+/// The half of the sink an in-flight append owns — everything the
+/// spawned task needs to finish without its caller.
+struct SinkShared {
     run_id: RunId,
     log_path: PathBuf,
     state_path: PathBuf,
@@ -250,9 +270,12 @@ struct SinkInner {
     next_seq: u64,
 }
 
-#[async_trait]
-impl EventSink for FileEventSink {
-    async fn emit(&self, event: RunEvent) -> Result<(), EventSinkError> {
+impl SinkShared {
+    /// One whole append: envelope sealed under the lock, line written
+    /// and flushed, sequence advanced, mirror refreshed. Runs as a
+    /// spawned task so it completes as a unit even when the emit that
+    /// requested it is gone.
+    async fn append(&self, event: RunEvent) -> Result<(), EventSinkError> {
         let mut inner = self.inner.lock().await;
         let envelope = EventEnvelope {
             seq: inner.next_seq,
@@ -281,6 +304,17 @@ impl EventSink for FileEventSink {
             write_json(&self.state_path, state).await?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl EventSink for FileEventSink {
+    async fn emit(&self, event: RunEvent) -> Result<(), EventSinkError> {
+        let shared = self.shared.clone();
+        let append = tokio::spawn(async move { shared.append(event).await });
+        append
+            .await
+            .map_err(|error| EventSinkError(format!("event append task failed: {error}")))?
     }
 }
 
@@ -595,6 +629,43 @@ mod tests {
         sink.emit(started()).await.unwrap();
 
         assert_eq!(dir.project().await.unwrap().state, RunState::Running);
+    }
+
+    /// An emit whose caller is dropped mid-await — how a `select!`
+    /// abandons a losing branch — must still land whole: line on disk
+    /// *and* sequence advanced, or neither. The regression this pins:
+    /// one poll of the old emit handed the line to the file's
+    /// background writer and parked in `flush`; dropping it there let
+    /// the line land with the sequence never advanced, so the next
+    /// emit reused the number and every later read of the run failed.
+    #[tokio::test]
+    async fn an_emit_dropped_mid_await_still_lands_whole() {
+        use std::future::Future;
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+
+        {
+            let mut abandoned = pin!(sink.emit(started()));
+            let mut cx = Context::from_waker(Waker::noop());
+            if let Poll::Ready(done) = abandoned.as_mut().poll(&mut cx) {
+                // A single-poll completion means the append never left
+                // the caller — nothing to abandon, nothing to tear.
+                done.unwrap();
+            }
+            // Dropped here, mid-flight.
+        }
+
+        sink.emit(paused()).await.unwrap();
+
+        // Whatever landed, the log must read back: whole lines, gapless
+        // monotonic seqs (events() enforces both), ending in the event
+        // the surviving emit acknowledged.
+        let events = dir.events().await.unwrap();
+        assert_eq!(events.last().unwrap().event, paused());
     }
 
     /// An append cut short by a crash or a full disk leaves a torn
