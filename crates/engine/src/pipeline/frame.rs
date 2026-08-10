@@ -241,7 +241,7 @@ mod tests {
             human: Some(&human),
             ..frame(Stage::Plan, "pick the work")
         });
-        assert!(text.contains("## Human input"), "{text}");
+        assert!(text.contains(preamble::HUMAN_INPUT_HEADING), "{text}");
         assert!(text.contains("sqlite"), "{text}");
     }
 
@@ -258,7 +258,7 @@ mod tests {
             human: Some(&human),
             ..frame(Stage::Plan, "pick the work")
         });
-        assert!(!text.contains("## Human input"), "{text}");
+        assert!(!text.contains(preamble::HUMAN_INPUT_HEADING), "{text}");
     }
 
     /// The frame owns the order: hand-off, feedback, human input, the
@@ -284,8 +284,8 @@ mod tests {
         });
         let positions: Vec<usize> = [
             "## Reports so far",
-            "## Verify checks failed",
-            "## Human input",
+            preamble::VERIFY_FAILED_HEADING,
+            preamble::HUMAN_INPUT_HEADING,
             "DOMAIN-RULES",
             "## Your report",
         ]
@@ -308,7 +308,7 @@ mod tests {
             feedback: &feedback,
             ..frame(Stage::Implement, "do the work")
         });
-        assert!(text.contains("## Verify checks failed"), "{text}");
+        assert!(text.contains(preamble::VERIFY_FAILED_HEADING), "{text}");
         assert!(text.contains("cargo test"), "{text}");
     }
 
