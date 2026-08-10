@@ -1,8 +1,8 @@
 //! Every environment variable `hakod` reads, read in one place.
 //!
-//! The daemon's configuration surface is env-only by design (ADR 0002:
-//! the daemon is the deployment unit, and a systemd unit or a container
-//! spec is where an operator already writes this down). One module owns
+//! The daemon's configuration surface is env-only by design: the
+//! daemon is the deployment unit, and a systemd unit or a container
+//! spec is where an operator already writes this down. One module owns
 //! the reads so the answer to "what can I set on a hako host?" is one
 //! file rather than a grep, and so an invalid value fails startup —
 //! naming the variable — instead of surfacing as odd behaviour on the
@@ -37,12 +37,11 @@ pub struct HostConfig {
     pub secrets_root: PathBuf,
     /// What the daemon's microVMs boot and whether they reach the
     /// network. One baked image per daemon: image selection is an
-    /// operator concern, so no flow key answers it (#45).
+    /// operator concern, so no flow key answers it.
     pub sandbox: SmolvmConfig,
 }
 
 impl HostConfig {
-    /// Reads the process environment.
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_vars(|name: &str| std::env::var_os(name))
     }
@@ -164,7 +163,7 @@ mod tests {
 
         assert_eq!(config.address.to_string(), DEFAULT_ADDR);
         assert_eq!(config.secrets_root, PathBuf::from(DEFAULT_SECRETS_ROOT));
-        // No image and no network: today's bare rootfs, unchanged.
+        // No image means a bare rootfs.
         assert_eq!(config.sandbox.image, None);
         assert!(!config.sandbox.net);
     }
