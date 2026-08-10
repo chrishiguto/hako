@@ -51,12 +51,15 @@ impl HostConfig {
     /// environment: env vars are global mutable state, and a test that
     /// set them would race every other test in the binary.
     fn from_vars(lookup: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
+        // Empty and absent mean the same thing: `HAKO_VM_IMAGE=` in a
+        // unit file is how an operator clears a value, not how they
+        // ask for an empty one.
         let text = |variable: &'static str| -> Result<Option<String>, ConfigError> {
             match lookup(variable) {
                 None => Ok(None),
                 Some(raw) => raw
                     .into_string()
-                    .map(Some)
+                    .map(|value| Some(value).filter(|value| !value.is_empty()))
                     .map_err(|_| ConfigError::new(variable, "is not valid UTF-8")),
             }
         };
@@ -67,7 +70,6 @@ impl HostConfig {
         };
 
         let token = text(TOKEN)?
-            .filter(|token| !token.is_empty())
             .ok_or_else(|| ConfigError::new(TOKEN, "must hold the daemon's bearer token"))?;
         let address = match text(ADDR)? {
             None => DEFAULT_ADDR.parse().expect("the default address parses"),
@@ -78,13 +80,7 @@ impl HostConfig {
                 )
             })?,
         };
-        let image = match text(VM_IMAGE)? {
-            // Absent and empty mean the same thing an operator means
-            // by `HAKO_VM_IMAGE=`: no image, boot the bare rootfs.
-            None => None,
-            Some(image) if image.is_empty() => None,
-            Some(image) => Some(image),
-        };
+        let image = text(VM_IMAGE)?;
         let net = match text(VM_NET)? {
             None => false,
             Some(raw) => flag(VM_NET, &raw)?,
@@ -234,32 +230,35 @@ mod tests {
     }
 
     /// `HAKO_VM_IMAGE=` in a unit file is how an operator unsets an
-    /// image, not how they ask for one named "".
+    /// image, not how they ask for one named "" — and the same reading
+    /// applies to every optional variable, the validated ones included.
     #[test]
     fn an_empty_optional_value_reads_as_unset() {
         let config = config(&[
             (TOKEN, "t0ken"),
+            (ADDR, ""),
             (VM_IMAGE, ""),
+            (VM_NET, ""),
             (SECRETS_DIR, ""),
             (RUNS_DIR, ""),
         ]);
+        assert_eq!(config.address.to_string(), DEFAULT_ADDR);
         assert_eq!(config.sandbox.image, None);
+        assert!(!config.sandbox.net);
         assert_eq!(config.secrets_root, PathBuf::from(DEFAULT_SECRETS_ROOT));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_value_that_is_not_utf8_names_its_variable() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::ffi::OsStringExt;
 
-            let vars = BTreeMap::from([(TOKEN.to_owned(), OsString::from_vec(vec![0xff, 0xfe]))]);
-            let error = HostConfig::from_vars(|name| vars.get(name).cloned())
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(error.contains(TOKEN), "{error}");
-            assert!(error.contains("UTF-8"), "{error}");
-        }
+        let vars = BTreeMap::from([(TOKEN.to_owned(), OsString::from_vec(vec![0xff, 0xfe]))]);
+        let error = HostConfig::from_vars(|name| vars.get(name).cloned())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(TOKEN), "{error}");
+        assert!(error.contains("UTF-8"), "{error}");
     }
 }
