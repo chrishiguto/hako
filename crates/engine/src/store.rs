@@ -244,14 +244,6 @@ impl RunDir {
 /// flushed before the emit returns. The envelope written here is the
 /// exact shape the daemon later streams, so serving a client is
 /// tailing this file.
-///
-/// `emit` runs each append in its own task and awaits it, so the
-/// normal path still holds the flushed-before-return guarantee — but
-/// a caller dropped mid-await (a `select!` losing a race) merely
-/// detaches from an append that completes anyway. Without that, a
-/// dropped emit could land its line without advancing the sequence,
-/// and the next append would reuse the number: a log corrupt forever,
-/// from a cancellation that worked.
 pub struct FileEventSink {
     shared: Arc<SinkShared>,
 }
@@ -271,10 +263,10 @@ struct SinkInner {
 }
 
 impl SinkShared {
-    /// One whole append: envelope sealed under the lock, line written
-    /// and flushed, sequence advanced, mirror refreshed. Runs as a
-    /// spawned task so it completes as a unit even when the emit that
-    /// requested it is gone.
+    /// Spawned as its own task so it completes as a unit even when the
+    /// emit that requested it is gone: a line that landed without
+    /// advancing the sequence would let the next append reuse the
+    /// number, and every later read of the run would fail.
     async fn append(&self, event: RunEvent) -> Result<(), EventSinkError> {
         let mut inner = self.inner.lock().await;
         let envelope = EventEnvelope {
@@ -633,11 +625,7 @@ mod tests {
 
     /// An emit whose caller is dropped mid-await — how a `select!`
     /// abandons a losing branch — must still land whole: line on disk
-    /// *and* sequence advanced, or neither. The regression this pins:
-    /// one poll of the old emit handed the line to the file's
-    /// background writer and parked in `flush`; dropping it there let
-    /// the line land with the sequence never advanced, so the next
-    /// emit reused the number and every later read of the run failed.
+    /// *and* sequence advanced, or neither.
     #[tokio::test]
     async fn an_emit_dropped_mid_await_still_lands_whole() {
         use std::future::Future;
