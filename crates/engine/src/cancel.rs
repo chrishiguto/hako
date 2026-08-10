@@ -9,8 +9,6 @@
 //! teardown is the isolation guarantee). Cancel is terminal — a
 //! cancelled run is over, unlike a Pause, which resumes.
 
-use std::sync::Arc;
-
 use tokio::sync::watch;
 
 /// A level-triggered cancel flag: once fired it stays fired, and a
@@ -19,17 +17,17 @@ use tokio::sync::watch;
 /// reaches only whoever is already parked. Built on tokio features
 /// the engine already carries; `tokio-util`'s `CancellationToken`
 /// would buy hierarchy the engine has no use for at the price of a
-/// new dependency. Cloning shares the flag: any clone fires it, every
-/// clone sees it.
+/// new dependency. Cloning shares the flag — a cloned `Sender` sends
+/// to the same channel — so any clone fires it, every clone sees it.
 #[derive(Debug, Clone)]
 pub struct CancelToken {
-    flag: Arc<watch::Sender<bool>>,
+    flag: watch::Sender<bool>,
 }
 
 impl CancelToken {
     pub fn new() -> Self {
         Self {
-            flag: Arc::new(watch::Sender::new(false)),
+            flag: watch::Sender::new(false),
         }
     }
 
