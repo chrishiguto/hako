@@ -9,25 +9,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine::testkit::{
-    self, RecordingSink, ScriptedAgent, ScriptedSandbox, StagedSandbox, reports, seeded_repo,
+    self, RecordingSink, ScriptedAgent, ScriptedSandbox, StagedSandbox, kinds, reports, seeded_repo,
 };
 use engine::{
     CancelToken, EventSink, EventSinkError, Kernel, KernelContext, PipelineKernel, RunEvent,
     RunOutcome, RunState, Workspace,
 };
 use tokio::sync::Barrier;
-
-fn kinds(events: &[RunEvent]) -> Vec<String> {
-    events
-        .iter()
-        .map(|event| {
-            serde_json::to_value(event).unwrap()["type"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect()
-}
 
 fn assert_ended_cancelled(events: &[RunEvent]) {
     assert!(

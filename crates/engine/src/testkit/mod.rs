@@ -26,10 +26,25 @@ use std::sync::Arc;
 
 use crate::budget::Budgets;
 use crate::cancel::CancelToken;
+use crate::event::RunEvent;
 use crate::kernel::KernelContext;
 use crate::run::RunId;
 use crate::workspace::Workspace;
 use proto::flow::{PromptsConfig, VerifyConfig};
+
+/// Each event's wire `type` tag, in order — the compact sequence
+/// event-flow assertions compare against.
+pub fn kinds(events: &[RunEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| {
+            serde_json::to_value(event).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
 
 /// A [`KernelContext`] with every collaborator defaulted, for
 /// struct-update syntax: `KernelContext { sandbox, ..context() }`

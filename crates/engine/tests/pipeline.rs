@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::testkit::{
-    self, AgentStep, RecordingSink, ScriptedAgent, StagedSandbox, crashes, malformed, omits_report,
-    reports, seeded_repo, tracked_files,
+    self, AgentStep, RecordingSink, ScriptedAgent, StagedSandbox, crashes, kinds, malformed,
+    omits_report, reports, seeded_repo, tracked_files,
 };
 use engine::{
     FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason, PipelineKernel,
@@ -87,17 +87,6 @@ async fn run_default(agent_steps: Vec<AgentStep>, checks: Vec<i32>) -> Ran {
         checks,
     )
     .await
-}
-
-fn kinds(events: &[RunEvent]) -> Vec<String> {
-    events.iter().map(kind).collect()
-}
-
-fn kind(event: &RunEvent) -> String {
-    serde_json::to_value(event).unwrap()["type"]
-        .as_str()
-        .unwrap()
-        .to_owned()
 }
 
 /// The stage-scoped events in order, as `(kind, stage)` pairs.
