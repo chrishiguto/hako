@@ -660,6 +660,41 @@ async fn a_chunk_boundary_inside_a_codepoint_neither_mangles_nor_leaks() {
     assert_eq!(log, "na\u{ef}ve KEY=[redacted secret]\n");
 }
 
+/// A stream that breaks mid-command still flushes what the seams held
+/// before the error propagates — output already received is never
+/// lost to a boundary.
+#[tokio::test]
+async fn a_broken_stream_flushes_held_output_before_the_error() {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![vec![
+        // The tail "ghp_sec" is a prefix of the known value, so the
+        // scrubber holds it when the stream breaks.
+        Ok(ExecEvent::Stdout(b"ends in ghp_sec".to_vec())),
+        Err(SandboxError("pipe torn".into())),
+    ]]));
+    let recorded = Arc::new(RecordingSink::default());
+    let secrets = testkit::secret_env([("GH_TOKEN", "ghp_secret")]);
+    let ctx = KernelContext {
+        secrets: secrets.clone(),
+        events: Arc::new(ScrubbingSink::new(recorded.clone(), secrets)),
+        ..context(sandbox.clone(), recorded.clone(), VerifyConfig::default())
+    };
+
+    let error = invocation::invoke(&ctx, 1, &SandboxHandle::new("vm-0"), "work")
+        .await
+        .expect_err("the stream error must propagate");
+    assert!(error.to_string().contains("pipe torn"), "{error}");
+
+    let log: String = recorded
+        .events()
+        .into_iter()
+        .map(|event| match event {
+            RunEvent::AgentOutput { chunk, .. } => chunk,
+            other => panic!("unexpected event {other:?}"),
+        })
+        .collect();
+    assert_eq!(log, "ends in ghp_sec");
+}
+
 /// A failing check's output goes two ways — the log and the next
 /// iteration's preamble. The sink covers the first; this covers both,
 /// because the outcome the kernel feeds back is scrubbed at capture.

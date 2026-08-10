@@ -142,6 +142,12 @@ impl<'env> ScrubbedStream<'env> {
 /// scratch is read through the guest's view, never the host's.
 /// One exec, no enforcement — a kernel reads the agent boundary
 /// through [`invoke_to_report`], which drives this.
+///
+/// Every path that ends the streams — clean end or a stream error —
+/// flushes what the seams held, so received output is never lost to a
+/// boundary. The one exception is cancellation, which drops this
+/// future whole: output still in flight is abandoned with the VM,
+/// deliberately (see [`in_fresh_sandbox`]).
 pub async fn invoke(
     ctx: &KernelContext,
     iteration: u32,
@@ -166,8 +172,19 @@ pub async fn invoke(
     let mut stdout_seam = ScrubbedStream::new(OutputStream::Stdout, &ctx.secrets);
     let mut stderr_seam = ScrubbedStream::new(OutputStream::Stderr, &ctx.secrets);
     let mut exit = None;
+    let mut stream_error = None;
     while let Some(event) = output.next().await {
-        let (stream, chunk) = match event? {
+        let event = match event {
+            Ok(event) => event,
+            // The sandbox broke mid-command. Not returned yet: text
+            // already received may sit held at a seam, and it belongs
+            // in the log before the error propagates.
+            Err(error) => {
+                stream_error = Some(error);
+                break;
+            }
+        };
+        let (stream, chunk) = match event {
             ExecEvent::Stdout(bytes) => {
                 stdout.extend_from_slice(&bytes);
                 (OutputStream::Stdout, stdout_seam.push(bytes))
@@ -188,7 +205,10 @@ pub async fn invoke(
                 .await?;
         }
     }
-    // The streams are over: whatever sat on a boundary flushes now.
+    // The streams are over — cleanly or not: whatever sat on a
+    // boundary flushes now. A flushed tail lands after any events the
+    // other stream logged meanwhile: the log records emission order,
+    // which trails byte-arrival order by at most the held tail.
     for (stream, tail) in [stdout_seam.finish(), stderr_seam.finish()] {
         if !tail.is_empty() {
             ctx.events
@@ -199,6 +219,9 @@ pub async fn invoke(
                 })
                 .await?;
         }
+    }
+    if let Some(error) = stream_error {
+        return Err(error.into());
     }
 
     let stdout = into_text(stdout);
