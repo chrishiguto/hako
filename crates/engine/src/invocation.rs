@@ -14,7 +14,8 @@ use futures_util::StreamExt;
 
 use crate::event::{OutputStream, RunEvent};
 use crate::kernel::{KernelContext, KernelError};
-use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec, into_text};
+use crate::sandbox::{ExecEvent, SandboxHandle, SandboxSpec, StreamDecoder, into_text};
+use crate::secrets::{SecretEnv, StreamScrubber};
 use crate::workspace::REPORT_FILE;
 
 /// What one agent invocation left behind.
@@ -95,6 +96,46 @@ pub async fn in_fresh_sandbox<T>(
     Ok(result)
 }
 
+/// One output stream's path from raw bytes to loggable text. Chunks
+/// arrive at arbitrary byte boundaries, and both things a boundary can
+/// bisect settle here before anything is emitted: a codepoint split
+/// mid-sequence reassembles, then a secret value split mid-token
+/// redacts whole.
+struct ScrubbedStream<'env> {
+    stream: OutputStream,
+    decoder: StreamDecoder,
+    scrubber: StreamScrubber<'env>,
+}
+
+impl<'env> ScrubbedStream<'env> {
+    fn new(stream: OutputStream, secrets: &'env SecretEnv) -> Self {
+        Self {
+            stream,
+            decoder: StreamDecoder::default(),
+            scrubber: secrets.stream_scrubber(),
+        }
+    }
+
+    /// What of this chunk is safe to emit — possibly empty while a
+    /// split codepoint or a would-be value sits on the boundary.
+    fn push(&mut self, bytes: Vec<u8>) -> String {
+        self.scrubber.push(self.decoder.push(bytes))
+    }
+
+    /// The stream is over: both held tails settle, the decoder's
+    /// through the scrubber.
+    fn finish(self) -> (OutputStream, String) {
+        let Self {
+            stream,
+            decoder,
+            mut scrubber,
+        } = self;
+        let mut tail = scrubber.push(decoder.finish());
+        tail.push_str(&scrubber.finish());
+        (stream, tail)
+    }
+}
+
 /// Runs the agent once in the sandbox: exec-stream the invocation,
 /// emit every output chunk and the token usage as events, then fetch
 /// the report the agent wrote — through the sandbox seam, because
@@ -115,21 +156,23 @@ pub async fn invoke(
 
     let invocation = ctx.agent.invocation(prompt);
     let mut output = ctx.sandbox.exec_stream(sandbox, &invocation).await?;
-    let mut stdout = String::new();
-    // One scrubber per stream: the sink scrubs each event whole, but
-    // chunks split at arbitrary byte boundaries and a value bisected
-    // by one must still redact — the scrubber holds the seam.
-    let mut stdout_scrub = ctx.secrets.stream_scrubber();
-    let mut stderr_scrub = ctx.secrets.stream_scrubber();
+    // Raw stdout, decoded whole once the stream ends: the adapter's
+    // token-usage parse must not read a codepoint the chunk boundary
+    // split as two replacement characters.
+    let mut stdout = Vec::new();
+    // One seam-holder per stream: the sink scrubs each event whole,
+    // but chunks split at arbitrary byte boundaries — a codepoint or
+    // a value bisected by one must still land whole.
+    let mut stdout_seam = ScrubbedStream::new(OutputStream::Stdout, &ctx.secrets);
+    let mut stderr_seam = ScrubbedStream::new(OutputStream::Stderr, &ctx.secrets);
     let mut exit = None;
     while let Some(event) = output.next().await {
         let (stream, chunk) = match event? {
             ExecEvent::Stdout(bytes) => {
-                let chunk = into_text(bytes);
-                stdout.push_str(&chunk);
-                (OutputStream::Stdout, stdout_scrub.push(chunk))
+                stdout.extend_from_slice(&bytes);
+                (OutputStream::Stdout, stdout_seam.push(bytes))
             }
-            ExecEvent::Stderr(bytes) => (OutputStream::Stderr, stderr_scrub.push(into_text(bytes))),
+            ExecEvent::Stderr(bytes) => (OutputStream::Stderr, stderr_seam.push(bytes)),
             ExecEvent::Exited(status) => {
                 exit = Some(status);
                 continue;
@@ -146,10 +189,7 @@ pub async fn invoke(
         }
     }
     // The streams are over: whatever sat on a boundary flushes now.
-    for (stream, tail) in [
-        (OutputStream::Stdout, stdout_scrub.finish()),
-        (OutputStream::Stderr, stderr_scrub.finish()),
-    ] {
+    for (stream, tail) in [stdout_seam.finish(), stderr_seam.finish()] {
         if !tail.is_empty() {
             ctx.events
                 .emit(RunEvent::AgentOutput {
@@ -161,6 +201,7 @@ pub async fn invoke(
         }
     }
 
+    let stdout = into_text(stdout);
     if let Some(usage) = ctx.agent.token_usage(&stdout) {
         ctx.events
             .emit(RunEvent::TokensUsed { iteration, usage })
