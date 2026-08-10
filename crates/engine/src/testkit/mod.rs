@@ -10,12 +10,16 @@
 //! patterns.
 
 mod fakes;
+mod prompt;
 mod repo;
 mod sandbox;
 
 pub use fakes::{
     AGENT_BIN, MapSecrets, NoAgent, NoSecrets, RecordingNotifier, RecordingSink, ScriptedAgent,
     StubNotifier, Transcript, exec,
+};
+pub use prompt::{
+    carries_handoff, carries_human_input, carries_report_from, carries_verify_feedback,
 };
 pub use repo::{SEED_FILE, commit, git, git_stdout, head, seeded_repo, tracked_files};
 pub use sandbox::{

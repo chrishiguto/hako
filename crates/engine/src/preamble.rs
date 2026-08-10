@@ -11,6 +11,13 @@ use std::fmt::Write;
 
 use crate::report::{Answer, Question};
 
+/// The headings that open this module's sections. Published in-crate
+/// so the testkit's prompt markers and the prose here stay one
+/// definition — a test asserts a section is present by its marker
+/// rather than by spelling its wording out a second time.
+pub(crate) const VERIFY_FAILED_HEADING: &str = "## Verify checks failed";
+pub(crate) const HUMAN_INPUT_HEADING: &str = "## Human input";
+
 /// Why the previous work did not count as progress — machine feedback
 /// a kernel puts in front of the agent so it corrects the cause
 /// rather than repeating it.
@@ -29,7 +36,7 @@ pub fn feedback(feedback: &Feedback) -> String {
     match feedback {
         Feedback::VerifyFailed { command, output } => {
             format!(
-                "## Verify checks failed\n\n\
+                "{VERIFY_FAILED_HEADING}\n\n\
                  Your previous work did not pass the verify checks, so it did not \
                  count as progress. Fix the cause before reporting done.\n\n\
                  Failing check: `{command}`\n\n\
@@ -59,32 +66,38 @@ pub fn fenced(text: &str) -> String {
     format!("{fence}\n{text}\n{fence}")
 }
 
+/// What a human sent back to a paused run — their answers and
+/// free-form note — paired with the questions of the report that
+/// paused it, so each answer renders attributed to what it addressed.
+/// A kernel fills this from its resume path.
+pub struct HumanInput {
+    pub answers: Vec<Answer>,
+    pub questions: Vec<Question>,
+    pub note: Option<String>,
+}
+
 /// The human-input section: answers attributed to the questions they
-/// addressed — looked up in the questions of the report that paused
-/// the run; an answer to a question no longer carried keeps its id as
-/// the handle — then the free-form resume note. `None` when the human
-/// said nothing, so a kernel adds no empty section.
-pub fn human_input(
-    answers: &[Answer],
-    questions: &[Question],
-    note: Option<&str>,
-) -> Option<String> {
-    if answers.is_empty() && note.is_none() {
+/// addressed — an answer to a question no longer carried keeps its id
+/// as the handle — then the free-form resume note. `None` when the
+/// human said nothing, so a kernel adds no empty section.
+pub fn human_input(input: &HumanInput) -> Option<String> {
+    if input.answers.is_empty() && input.note.is_none() {
         return None;
     }
-    let mut text = String::from(
-        "## Human input\n\n\
+    let mut text = format!(
+        "{HUMAN_INPUT_HEADING}\n\n\
          The run paused and a human responded; treat their words as \
          authoritative.\n",
     );
-    for answer in answers {
-        let question = questions
+    for answer in &input.answers {
+        let question = input
+            .questions
             .iter()
             .find(|question| question.id == answer.question_id)
             .map_or(answer.question_id.as_str(), |question| &question.text);
         let _ = write!(text, "\n- Q: {question}\n  A: {}\n", answer.answer);
     }
-    if let Some(note) = note {
+    if let Some(note) = &input.note {
         let _ = write!(text, "\nNote: {note}\n");
     }
     Some(text)
@@ -113,6 +126,14 @@ mod tests {
                 answer: (*answer).into(),
             })
             .collect()
+    }
+
+    fn input(answers: Vec<Answer>, questions: Vec<Question>, note: Option<&str>) -> HumanInput {
+        HumanInput {
+            answers,
+            questions,
+            note: note.map(str::to_owned),
+        }
     }
 
     #[test]
@@ -144,7 +165,7 @@ mod tests {
     fn answers_are_attributed_to_their_questions() {
         let questions = questions(&[("q1", "sqlite or plain files?"), ("q2", "branch name?")]);
         let answers = answers(&[("q1", "sqlite"), ("q2", "run/1")]);
-        let text = human_input(&answers, &questions, None).unwrap();
+        let text = human_input(&input(answers, questions, None)).unwrap();
         assert!(
             text.contains("- Q: sqlite or plain files?\n  A: sqlite\n"),
             "{text}"
@@ -154,13 +175,13 @@ mod tests {
 
     #[test]
     fn an_answer_to_an_unknown_question_keeps_its_id_as_the_handle() {
-        let text = human_input(&answers(&[("q9", "yes")]), &[], None).unwrap();
+        let text = human_input(&input(answers(&[("q9", "yes")]), vec![], None)).unwrap();
         assert!(text.contains("- Q: q9\n  A: yes\n"), "{text}");
     }
 
     #[test]
     fn a_note_alone_still_forms_the_section() {
-        let text = human_input(&[], &[], Some("go with the simplest thing")).unwrap();
+        let text = human_input(&input(vec![], vec![], Some("go with the simplest thing"))).unwrap();
         assert!(text.starts_with("## Human input"), "{text}");
         assert!(text.contains("Note: go with the simplest thing"), "{text}");
     }
@@ -168,7 +189,7 @@ mod tests {
     #[test]
     fn a_human_with_nothing_to_say_adds_no_section() {
         assert_eq!(
-            human_input(&[], &questions(&[("q1", "ignored?")]), None),
+            human_input(&input(vec![], questions(&[("q1", "ignored?")]), None)),
             None
         );
     }
