@@ -110,9 +110,9 @@ pub enum ErrorCode {
     RunNotFound,
     InternalError,
     /// Never produced by the daemon — the deserialize-side net that
-    /// catches codes newer than this build of the contract. Listed in
-    /// the published OpenAPI enum like every variant, where this doc
-    /// explains it.
+    /// catches codes newer than this build of the contract. The price
+    /// is that the published OpenAPI enum lists it alongside the real
+    /// codes.
     #[serde(other)]
     Unknown,
 }
@@ -216,9 +216,8 @@ mod tests {
     }
 
     /// A daemon newer than this client may answer with a code this
-    /// build does not name. The error must still parse — code lands
-    /// on `Unknown`, the message stays readable — because failing the
-    /// whole response over an unrecognized code would hide it.
+    /// build does not name. Failing the whole response over that one
+    /// unrecognized code would hide the message explaining it.
     #[test]
     fn a_code_from_a_newer_daemon_still_reads_as_an_api_error() {
         let error: ApiError =
