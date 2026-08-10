@@ -2,6 +2,7 @@
 //! registry, and the wiring that drives engine kernels detached from
 //! request lifetimes.
 
+mod config;
 mod http;
 mod projection;
 mod registry;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 
 use axum::Router;
 
+pub use config::{ConfigError, HostConfig};
 pub use http::{SERVED_ROUTES, ServedRoute};
 pub use runtime::EngineRuntime;
 pub use secrets::FileSecrets;

@@ -10,6 +10,7 @@ use engine::{
     SecretsProvider,
 };
 use futures_util::FutureExt;
+use sandbox::SmolvmConfig;
 
 /// The engine collaborators shared by every run. Each launched run
 /// gets its own kernel, workspace, file sink, and context.
@@ -21,12 +22,13 @@ pub struct EngineRuntime {
 }
 
 impl EngineRuntime {
-    /// The host-side collaborators used by the daemon binary. The
-    /// notifier is an inert stub: no kernel notifies yet, so a real
-    /// implementation would go unobserved.
-    pub fn production(secrets: Arc<dyn SecretsProvider>) -> Self {
+    /// The host-side collaborators used by the daemon binary, over the
+    /// microVM configuration the host was started with. The notifier is
+    /// an inert stub: no kernel notifies yet, so a real implementation
+    /// would go unobserved.
+    pub fn production(sandbox: SmolvmConfig, secrets: Arc<dyn SecretsProvider>) -> Self {
         Self::new(
-            Arc::new(sandbox::SmolvmSandbox::new(sandbox::SmolvmConfig::default())),
+            Arc::new(sandbox::SmolvmSandbox::new(sandbox)),
             Arc::new(QuietNotifier),
             secrets,
         )
