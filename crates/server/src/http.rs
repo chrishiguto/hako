@@ -22,7 +22,7 @@ use engine::RunId;
 use futures_util::stream;
 
 use crate::projection;
-use crate::registry::{AnswerOutcome, CancelOutcome, ResumeOutcome, RunRegistry};
+use crate::registry::{AnswerOutcome, CancelOutcome, CommandError, ResumeOutcome, RunRegistry};
 use crate::runtime::{EngineRuntime, ResolveError};
 
 pub(crate) struct AppState {
@@ -123,11 +123,7 @@ async fn run_status(
         .get(&run_id)
         .await
         .ok_or(HttpError::RunNotFound)?;
-    Ok(Json(
-        projection::status(&dir)
-            .await
-            .map_err(HttpError::run_store)?,
-    ))
+    status_json(&dir).await
 }
 
 async fn run_events(
@@ -200,24 +196,16 @@ async fn cancel_run(
     Path(run_id): Path<String>,
 ) -> Result<Json<api::RunStatusResponse>, HttpError> {
     let run_id = RunId::new(run_id);
-    match state.registry.cancel(&run_id).await {
-        CancelOutcome::UnknownRun => return Err(HttpError::RunNotFound),
-        CancelOutcome::NotRunning => return Err(HttpError::RunNotRunning),
-        CancelOutcome::Failed(error) => return Err(HttpError::run_command(error)),
-        CancelOutcome::Drained => {}
-    }
-    let dir = state
+    match state
         .registry
-        .get(&run_id)
+        .cancel(&run_id)
         .await
-        .ok_or(HttpError::RunNotFound)?;
-    let status = projection::status(&dir)
-        .await
-        .map_err(HttpError::run_store)?;
-    if status.run.state != engine::RunState::Cancelled {
-        return Err(HttpError::RunNotRunning);
+        .map_err(HttpError::command)?
+    {
+        CancelOutcome::Cancelled(status) => Ok(Json(*status)),
+        CancelOutcome::NotRunning => Err(HttpError::RunNotRunning),
+        CancelOutcome::UnknownRun => Err(HttpError::RunNotFound),
     }
-    Ok(Json(status))
 }
 
 async fn answer_run(
@@ -236,7 +224,7 @@ async fn answer_run(
         .registry
         .answer(&run_id, request.answers)
         .await
-        .map_err(HttpError::run_command)?
+        .map_err(HttpError::command)?
     {
         AnswerOutcome::Recorded(dir) => dir,
         AnswerOutcome::NotAwaitingInput => return Err(HttpError::NotAwaitingInput),
@@ -246,11 +234,7 @@ async fn answer_run(
         AnswerOutcome::Detached => return Err(HttpError::NotResumable),
         AnswerOutcome::UnknownRun => return Err(HttpError::RunNotFound),
     };
-    Ok(Json(
-        projection::status(&dir)
-            .await
-            .map_err(HttpError::run_store)?,
-    ))
+    status_json(&dir).await
 }
 
 async fn resume_run(
@@ -269,15 +253,21 @@ async fn resume_run(
             state.runtime.as_ref(),
         )
         .await
-        .map_err(HttpError::run_command)?
+        .map_err(HttpError::command)?
     {
         ResumeOutcome::Resumed(dir) => dir,
         ResumeOutcome::NotPaused => return Err(HttpError::NotPaused),
         ResumeOutcome::Detached => return Err(HttpError::NotResumable),
         ResumeOutcome::UnknownRun => return Err(HttpError::RunNotFound),
     };
+    status_json(&dir).await
+}
+
+/// The status body every successful run command answers with, so the
+/// client sees the effect without a second request.
+async fn status_json(dir: &engine::RunDir) -> Result<Json<api::RunStatusResponse>, HttpError> {
     Ok(Json(
-        projection::status(&dir)
+        projection::status(dir)
             .await
             .map_err(HttpError::run_store)?,
     ))
@@ -348,9 +338,16 @@ impl HttpError {
         }
     }
 
-    fn run_command(message: String) -> Self {
-        tracing::error!(%message, "daemon run-command failure");
-        Self::Internal
+    /// For a run command: a vanished run answers `run_not_found` like
+    /// every other route; a sink failure is the daemon's fault.
+    fn command(error: CommandError) -> Self {
+        match error {
+            CommandError::Store(error) => Self::run_store(error),
+            CommandError::Sink(error) => {
+                tracing::error!(%error, "daemon event-sink failure");
+                Self::Internal
+            }
+        }
     }
 }
 

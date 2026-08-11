@@ -317,6 +317,39 @@ async fn paused_mount_run() -> (TestHost, SubmitRunResponse, std::path::PathBuf)
     (host, submitted, lock)
 }
 
+/// A run whose directory vanished under a live entry answers 404 from
+/// every command, exactly as it does from a status read — never a
+/// daemon fault.
+#[tokio::test]
+async fn commands_on_a_vanished_run_directory_answer_not_found() {
+    let host = TestHost::new(done_report()).await;
+    let submitted = host.submit().await;
+    host.wait_for_state(&submitted.run_id, "done").await;
+    tokio::fs::remove_dir_all(host.runs.path().join(&submitted.run_id))
+        .await
+        .unwrap();
+
+    for (uri, payload) in [
+        (format!("/v1/runs/{}/cancel", submitted.run_id), None),
+        (
+            format!("/v1/runs/{}/answer", submitted.run_id),
+            Some(json!({"answers": [{"question_id": "q1", "answer": "a"}]})),
+        ),
+        (
+            format!("/v1/runs/{}/resume", submitted.run_id),
+            Some(json!({"note": null, "extend": null})),
+        ),
+    ] {
+        let response = request(&host.app, Method::POST, &uri, Some(TOKEN), payload).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(
+            body::<ApiError>(response).await.code,
+            ErrorCode::RunNotFound,
+            "{uri}"
+        );
+    }
+}
+
 /// A restart drops the relaunch material — resolved agent, secrets,
 /// flow — so a reloaded paused run still reports `paused`, but answer
 /// and resume refuse honestly instead of lying about its state or
