@@ -113,6 +113,10 @@ pub enum ErrorCode {
     /// names what to provision.
     MissingSecret,
     RunNotFound,
+    RunNotRunning,
+    NotAwaitingInput,
+    UnknownQuestion,
+    NotPaused,
     InternalError,
     /// Never produced by the daemon — the deserialize-side net that
     /// catches codes newer than this build of the contract. The price
@@ -201,6 +205,10 @@ mod tests {
             ErrorCode::InvalidAgent => "invalid_agent",
             ErrorCode::MissingSecret => "missing_secret",
             ErrorCode::RunNotFound => "run_not_found",
+            ErrorCode::RunNotRunning => "run_not_running",
+            ErrorCode::NotAwaitingInput => "not_awaiting_input",
+            ErrorCode::UnknownQuestion => "unknown_question",
+            ErrorCode::NotPaused => "not_paused",
             ErrorCode::InternalError => "internal_error",
             ErrorCode::Unknown => "unknown",
         };
@@ -211,6 +219,10 @@ mod tests {
             ErrorCode::InvalidAgent,
             ErrorCode::MissingSecret,
             ErrorCode::RunNotFound,
+            ErrorCode::RunNotRunning,
+            ErrorCode::NotAwaitingInput,
+            ErrorCode::UnknownQuestion,
+            ErrorCode::NotPaused,
             ErrorCode::InternalError,
             ErrorCode::Unknown,
         ] {
@@ -227,11 +239,13 @@ mod tests {
     /// unrecognized code would hide the message explaining it.
     #[test]
     fn a_code_from_a_newer_daemon_still_reads_as_an_api_error() {
-        let error: ApiError =
-            serde_json::from_value(json!({"code": "not_paused", "message": "run is not paused"}))
-                .unwrap();
+        let error: ApiError = serde_json::from_value(json!({
+            "code": "newer_daemon_code",
+            "message": "upgrade the client"
+        }))
+        .unwrap();
         assert_eq!(error.code, ErrorCode::Unknown);
-        assert_eq!(error.message, "run is not paused");
+        assert_eq!(error.message, "upgrade the client");
     }
 
     /// The nested `RunSummary` must be invisible on the wire — a

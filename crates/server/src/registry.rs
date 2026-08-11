@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use api::RunSummary;
 use api::proto::flow::FlowConfig;
-use engine::{CancelToken, EventSink, RunDir, RunId};
+use api::{BudgetExtension, RunSummary};
+use engine::{Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume};
 use futures_util::future::join_all;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::ServerError;
 use crate::projection;
-use crate::runtime::{EngineRuntime, ResolvedRun};
+use crate::runtime::{EngineRuntime, ResolvedRun, RunLaunch};
 
 /// The live index over durable run directories. The map owns no run
 /// state: status is reduced from each event log whenever it is read.
@@ -21,11 +21,16 @@ pub(crate) struct RunRegistry {
 }
 
 /// One registry entry. Published status is reduced from the event
-/// log, never from the execution — the live half exists only so a
-/// cancel can reach the run.
+/// log, never from these live handles; they only let commands reach
+/// the execution and relaunch material that cannot be reconstructed
+/// from the run directory yet.
 struct RunRecord {
     dir: RunDir,
+    commands: Arc<Mutex<()>>,
     execution: Option<Execution>,
+    flow: Option<FlowConfig>,
+    resolved: Option<ResolvedRun>,
+    budgets: Budgets,
 }
 
 /// The live half of a record: the cancel token the kernel watches and
@@ -45,7 +50,6 @@ struct Execution {
 /// the token to its own ending, and a completed run's execution stays
 /// in its record until a cancel reaps it. The run's actual ending is
 /// read from the log, like all published status.
-#[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
 pub(crate) enum CancelOutcome {
     /// An execution existed and has fully wound down: its terminal
     /// event is on disk and every sandbox torn down before this comes
@@ -57,20 +61,48 @@ pub(crate) enum CancelOutcome {
     NotRunning,
     /// No such run.
     UnknownRun,
+    Failed(String),
+}
+
+pub(crate) enum ResumeOutcome {
+    Resumed(RunDir),
+    NotPaused,
+    UnknownRun,
+}
+
+pub(crate) enum AnswerOutcome {
+    Recorded(RunDir),
+    NotAwaitingInput,
+    UnknownQuestion(String),
+    UnknownRun,
 }
 
 impl RunRecord {
     fn persisted(dir: RunDir) -> Self {
         Self {
             dir,
+            commands: Arc::new(Mutex::new(())),
             execution: None,
+            flow: None,
+            resolved: None,
+            budgets: Budgets::default(),
         }
     }
 
-    fn live(dir: RunDir, execution: Execution) -> Self {
+    fn live(
+        dir: RunDir,
+        execution: Execution,
+        flow: FlowConfig,
+        resolved: ResolvedRun,
+        budgets: Budgets,
+    ) -> Self {
         Self {
             dir,
+            commands: Arc::new(Mutex::new(())),
             execution: Some(execution),
+            flow: Some(flow),
+            resolved: Some(resolved),
+            budgets,
         }
     }
 }
@@ -158,12 +190,176 @@ impl RunRegistry {
         // awaits, so the lock is not held across a suspension point.
         let mut runs = self.runs.write().await;
         let cancel = CancelToken::new();
-        let task = runtime.launch(dir.clone(), flow, resolved, events, cancel.clone());
+        let budgets = Budgets::from(&flow.budget);
+        let task = runtime.launch(RunLaunch::fresh(
+            dir.clone(),
+            flow.clone(),
+            resolved.clone(),
+            events,
+            cancel.clone(),
+        ));
         runs.insert(
             run_id.clone(),
-            RunRecord::live(dir, Execution { cancel, task }),
+            RunRecord::live(dir, Execution { cancel, task }, flow, resolved, budgets),
         );
         Ok(run_id)
+    }
+
+    pub(crate) async fn resume(
+        &self,
+        run_id: &RunId,
+        note: Option<String>,
+        extend: Option<BudgetExtension>,
+        runtime: &EngineRuntime,
+    ) -> Result<ResumeOutcome, String> {
+        let (dir, commands) = {
+            let runs = self.runs.read().await;
+            let Some(record) = runs.get(run_id) else {
+                return Ok(ResumeOutcome::UnknownRun);
+            };
+            (record.dir.clone(), record.commands.clone())
+        };
+        let _command = commands.lock().await;
+        let history = dir.events().await.map_err(|error| error.to_string())?;
+        let projected = dir.project().await.map_err(|error| error.to_string())?;
+        if !matches!(projected.state, engine::RunState::Paused { .. }) {
+            return Ok(ResumeOutcome::NotPaused);
+        }
+
+        let (execution, flow, resolved, mut budgets) = {
+            let mut runs = self.runs.write().await;
+            let record = runs.get_mut(run_id).expect("run remained indexed");
+            let (Some(flow), Some(resolved)) = (record.flow.clone(), record.resolved.clone())
+            else {
+                return Ok(ResumeOutcome::NotPaused);
+            };
+            (
+                record.execution.take(),
+                flow,
+                resolved,
+                record.budgets.clone(),
+            )
+        };
+        if let Some(execution) = execution {
+            let _ = execution.task.await;
+        }
+        apply_extension(&mut budgets, extend);
+
+        let pause_at = history
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event.event,
+                    engine::RunEvent::StateChanged {
+                        state: engine::RunState::Paused { .. }
+                    }
+                )
+            })
+            .unwrap_or(0);
+        let answers = history[pause_at..]
+            .iter()
+            .filter_map(|event| match &event.event {
+                engine::RunEvent::QuestionAnswered {
+                    question_id,
+                    answer,
+                } => Some(engine::Answer {
+                    question_id: question_id.clone(),
+                    answer: answer.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        let next_iteration = history
+            .iter()
+            .filter_map(|event| match event.event {
+                engine::RunEvent::IterationStarted { iteration } => Some(iteration),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let resume = RunResume {
+            next_iteration,
+            human: HumanInput {
+                answers,
+                questions: projected.pending_questions().to_vec(),
+                note: note.clone(),
+            },
+        };
+        let sink: Arc<dyn EventSink> = Arc::new(engine::ScrubbingSink::new(
+            Arc::new(dir.event_sink().await.map_err(|error| error.to_string())?),
+            resolved.secrets.clone(),
+        ));
+        sink.emit(engine::RunEvent::RunResumed { note })
+            .await
+            .map_err(|error| error.to_string())?;
+        let cancel = CancelToken::new();
+        let task = runtime.launch(RunLaunch::resumed(
+            dir.clone(),
+            flow,
+            resolved,
+            sink,
+            cancel.clone(),
+            budgets.clone(),
+            resume,
+        ));
+        let mut runs = self.runs.write().await;
+        let record = runs.get_mut(run_id).expect("run remained indexed");
+        record.execution = Some(Execution { cancel, task });
+        record.budgets = budgets;
+        Ok(ResumeOutcome::Resumed(dir))
+    }
+
+    pub(crate) async fn answer(
+        &self,
+        run_id: &RunId,
+        answers: Vec<engine::Answer>,
+    ) -> Result<AnswerOutcome, String> {
+        let (dir, commands, secrets) = {
+            let runs = self.runs.read().await;
+            let Some(record) = runs.get(run_id) else {
+                return Ok(AnswerOutcome::UnknownRun);
+            };
+            let Some(resolved) = &record.resolved else {
+                return Err("run cannot accept answers after daemon restart".into());
+            };
+            (
+                record.dir.clone(),
+                record.commands.clone(),
+                resolved.secrets.clone(),
+            )
+        };
+        let _command = commands.lock().await;
+        let projected = dir.project().await.map_err(|error| error.to_string())?;
+        if projected.state
+            != (engine::RunState::Paused {
+                reason: engine::PauseReason::AwaitingHuman,
+            })
+        {
+            return Ok(AnswerOutcome::NotAwaitingInput);
+        }
+        for answer in &answers {
+            if !projected
+                .pending_questions()
+                .iter()
+                .any(|question| question.id == answer.question_id)
+            {
+                return Ok(AnswerOutcome::UnknownQuestion(answer.question_id.clone()));
+            }
+        }
+        let sink = engine::ScrubbingSink::new(
+            Arc::new(dir.event_sink().await.map_err(|error| error.to_string())?),
+            secrets,
+        );
+        for answer in answers {
+            sink.emit(engine::RunEvent::QuestionAnswered {
+                question_id: answer.question_id,
+                answer: answer.answer,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(AnswerOutcome::Recorded(dir))
     }
 
     /// Cancels a run cooperatively: fire the token the kernel watches,
@@ -172,10 +368,21 @@ impl RunRegistry {
     /// `state_changed` is on disk before the caller answers. What the
     /// run ended as is the log's to say, per [`CancelOutcome`]. The
     /// execution is taken out of the record first, outside any await:
-    /// a second cancel finds `NotRunning`, and the lock is never held
-    /// while the run winds down.
-    #[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
+    /// a second cancel finds `NotRunning`, and the registry index is
+    /// never held while the run winds down.
     pub(crate) async fn cancel(&self, run_id: &RunId) -> CancelOutcome {
+        let (dir, commands) = {
+            let runs = self.runs.read().await;
+            let Some(record) = runs.get(run_id) else {
+                return CancelOutcome::UnknownRun;
+            };
+            (record.dir.clone(), record.commands.clone())
+        };
+        let _command = commands.lock().await;
+        let state = match dir.project().await {
+            Ok(projected) => projected.state,
+            Err(error) => return CancelOutcome::Failed(error.to_string()),
+        };
         let execution = {
             let mut runs = self.runs.write().await;
             match runs.get_mut(run_id) {
@@ -183,6 +390,24 @@ impl RunRegistry {
                 Some(record) => record.execution.take(),
             }
         };
+        if matches!(state, engine::RunState::Paused { .. }) {
+            if let Some(execution) = execution {
+                let _ = execution.task.await;
+            }
+            let sink = match dir.event_sink().await {
+                Ok(sink) => sink,
+                Err(error) => return CancelOutcome::Failed(error.to_string()),
+            };
+            if let Err(error) = sink
+                .emit(engine::RunEvent::StateChanged {
+                    state: engine::RunState::Cancelled,
+                })
+                .await
+            {
+                return CancelOutcome::Failed(error.to_string());
+            }
+            return CancelOutcome::Drained;
+        }
         let Some(execution) = execution else {
             return CancelOutcome::NotRunning;
         };
@@ -230,6 +455,21 @@ impl RunRegistry {
                 .then_with(|| right.run_id.cmp(&left.run_id))
         });
         Ok(summaries)
+    }
+}
+
+fn apply_extension(budgets: &mut Budgets, extend: Option<BudgetExtension>) {
+    let Some(extend) = extend else {
+        return;
+    };
+    if let Some(max_iterations) = extend.max_iterations {
+        budgets.max_iterations = Some(max_iterations);
+    }
+    if let Some(seconds) = extend.max_wall_clock_seconds {
+        budgets.max_wall_clock = Some(std::time::Duration::from_secs(seconds));
+    }
+    if let Some(max_tokens) = extend.max_tokens {
+        budgets.max_tokens = Some(max_tokens);
     }
 }
 

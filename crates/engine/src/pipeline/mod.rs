@@ -52,24 +52,38 @@ pub struct PipelineKernel;
 #[async_trait]
 impl Kernel for PipelineKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
-        ctx.events
-            .emit(RunEvent::RunStarted {
-                kernel: KernelName::Pipeline.as_str().into(),
-                agent: ctx.agent.name().into(),
-            })
-            .await?;
+        let (mut iteration, mut human) = match &ctx.resume {
+            Some(resume) => (resume.next_iteration, Some(resume.human.clone())),
+            None => {
+                ctx.events
+                    .emit(RunEvent::RunStarted {
+                        kernel: KernelName::Pipeline.as_str().into(),
+                        agent: ctx.agent.name().into(),
+                    })
+                    .await?;
+                (1, None)
+            }
+        };
 
         // The reports the plan stage of the next iteration reads —
         // remaining work and unfixed findings carrying forward. Empty
         // for the first iteration; nothing came before it.
         let mut prior: Vec<StageReport> = Vec::new();
         let mut plan_feedback: Vec<Feedback> = Vec::new();
-        let mut iteration: u32 = 1;
         loop {
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
-            match run_iteration(&ctx, iteration, &prior, std::mem::take(&mut plan_feedback)).await?
+            // The resumed answers belong to the iteration the pause
+            // interrupted, so only that first iteration carries them.
+            match run_iteration(
+                &ctx,
+                iteration,
+                &prior,
+                std::mem::take(&mut plan_feedback),
+                human.take(),
+            )
+            .await?
             {
                 IterationEnd::Continue { pass, feedback } => {
                     ctx.events
@@ -134,12 +148,14 @@ enum IterationEnd {
 /// Drives one iteration through the stages. Plan opens a fresh unit,
 /// so it reads the previous iteration's reports and the feedback the
 /// loop carried in; every later stage reads what this iteration
-/// produced before it.
+/// produced before it. A resumed run's human input reaches the first
+/// stage of this iteration and no other.
 async fn run_iteration(
     ctx: &KernelContext,
     iteration: u32,
     prior: &[StageReport],
     mut plan_feedback: Vec<Feedback>,
+    mut human: Option<crate::preamble::HumanInput>,
 ) -> Result<IterationEnd, KernelError> {
     let mut pass: Vec<StageReport> = Vec::new();
     for (index, &stage) in STAGES.iter().enumerate() {
@@ -149,7 +165,17 @@ async fn run_iteration(
         } else {
             Vec::new()
         };
-        match execute_stage(ctx, iteration, stage, handoff, feedback).await? {
+        let stage_human = human.take();
+        match execute_stage(
+            ctx,
+            iteration,
+            stage,
+            handoff,
+            feedback,
+            stage_human.as_ref(),
+        )
+        .await?
+        {
             StageEnd::Advance(report) => pass.push(report),
             StageEnd::Done(claim) => {
                 return Ok(match skeptic::judge(ctx, iteration, &claim).await? {
@@ -211,10 +237,11 @@ async fn execute_stage(
     stage: Stage,
     handoff: &[StageReport],
     mut feedback: Vec<Feedback>,
+    human: Option<&crate::preamble::HumanInput>,
 ) -> Result<StageEnd, KernelError> {
     let mut verify_failures: u32 = 0;
     loop {
-        let drive = match drive_stage(ctx, iteration, stage, handoff, &feedback).await? {
+        let drive = match drive_stage(ctx, iteration, stage, handoff, &feedback, human).await? {
             Bracketed::Finished(drive) => drive,
             Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
         };
@@ -269,6 +296,7 @@ async fn drive_stage(
     stage: Stage,
     handoff: &[StageReport],
     feedback: &[Feedback],
+    human: Option<&crate::preamble::HumanInput>,
 ) -> Result<Bracketed<StageDrive>, KernelError> {
     invocation::in_fresh_sandbox(ctx, async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
@@ -276,9 +304,7 @@ async fn drive_stage(
             stage,
             handoff,
             feedback,
-            // No human on this path: only a resume carries a paused
-            // run's answers back into a frame.
-            human: None,
+            human,
             domain_prompt: &domain_prompt,
         });
         ctx.events

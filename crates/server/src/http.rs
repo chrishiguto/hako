@@ -1,11 +1,16 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use api::proto::flow::FlowConfig;
-use api::{ApiError, ErrorCode, ListRunsResponse, SubmitRunRequest, SubmitRunResponse};
+use api::{
+    AnswerRequest, ApiError, ErrorCode, EventEnvelope, ListRunsResponse, ResumeRequest,
+    SubmitRunRequest, SubmitRunResponse,
+};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -14,9 +19,10 @@ use axum_extra::headers::{Authorization, authorization::Bearer};
 use axum_extra::typed_header::TypedHeaderRejection;
 use constant_time_eq::constant_time_eq;
 use engine::RunId;
+use futures_util::stream;
 
 use crate::projection;
-use crate::registry::RunRegistry;
+use crate::registry::{AnswerOutcome, CancelOutcome, ResumeOutcome, RunRegistry};
 use crate::runtime::{EngineRuntime, ResolveError};
 
 pub(crate) struct AppState {
@@ -50,6 +56,10 @@ define_routes!(
     (POST, post, "/v1/runs", submit_run),
     (GET, get, "/v1/runs", list_runs),
     (GET, get, "/v1/runs/{run_id}", run_status),
+    (GET, get, "/v1/runs/{run_id}/events", run_events),
+    (POST, post, "/v1/runs/{run_id}/answer", answer_run),
+    (POST, post, "/v1/runs/{run_id}/cancel", cancel_run),
+    (POST, post, "/v1/runs/{run_id}/resume", resume_run),
 );
 
 pub(crate) fn router(state: Arc<AppState>) -> Router {
@@ -120,6 +130,172 @@ async fn run_status(
     ))
 }
 
+async fn run_events(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, HttpError> {
+    let run_id = RunId::new(run_id);
+    let dir = state
+        .registry
+        .get(&run_id)
+        .await
+        .ok_or(HttpError::RunNotFound)?;
+    let after = headers
+        .get("last-event-id")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    HttpError::InvalidRequest("Last-Event-ID must be an unsigned integer".into())
+                })
+        })
+        .transpose()?;
+    let events = dir.events().await.map_err(HttpError::run_store)?;
+    let next_seq = after.map_or(0, |seq| seq.saturating_add(1));
+    let stream = stream::unfold(
+        EventStream {
+            dir,
+            events,
+            next_seq,
+        },
+        |mut state| async move {
+            loop {
+                if let Some(envelope) = usize::try_from(state.next_seq)
+                    .ok()
+                    .and_then(|index| state.events.get(index))
+                    .cloned()
+                {
+                    state.next_seq = state.next_seq.saturating_add(1);
+                    let event = Event::default()
+                        .id(envelope.seq.to_string())
+                        .data(serde_json::to_string(&envelope).expect("event envelope serializes"));
+                    return Some((Ok::<_, std::convert::Infallible>(event), state));
+                }
+                if state
+                    .events
+                    .last()
+                    .is_some_and(|event| is_terminal_event(&event.event))
+                {
+                    return None;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match state.dir.events().await {
+                    Ok(events) => state.events = events,
+                    Err(error) => {
+                        tracing::error!(%error, "event stream stopped reading run log");
+                        return None;
+                    }
+                }
+            }
+        },
+    );
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn cancel_run(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<api::RunStatusResponse>, HttpError> {
+    let run_id = RunId::new(run_id);
+    match state.registry.cancel(&run_id).await {
+        CancelOutcome::UnknownRun => return Err(HttpError::RunNotFound),
+        CancelOutcome::NotRunning => return Err(HttpError::RunNotRunning),
+        CancelOutcome::Failed(error) => return Err(HttpError::run_command(error)),
+        CancelOutcome::Drained => {}
+    }
+    let dir = state
+        .registry
+        .get(&run_id)
+        .await
+        .ok_or(HttpError::RunNotFound)?;
+    let status = projection::status(&dir)
+        .await
+        .map_err(HttpError::run_store)?;
+    if status.run.state != engine::RunState::Cancelled {
+        return Err(HttpError::RunNotRunning);
+    }
+    Ok(Json(status))
+}
+
+async fn answer_run(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<AnswerRequest>, JsonRejection>,
+) -> Result<Json<api::RunStatusResponse>, HttpError> {
+    let Json(request) = payload.map_err(|error| HttpError::InvalidRequest(error.body_text()))?;
+    if request.answers.is_empty() {
+        return Err(HttpError::InvalidRequest(
+            "at least one answer is required".into(),
+        ));
+    }
+    let run_id = RunId::new(run_id);
+    let dir = match state
+        .registry
+        .answer(&run_id, request.answers)
+        .await
+        .map_err(HttpError::run_command)?
+    {
+        AnswerOutcome::Recorded(dir) => dir,
+        AnswerOutcome::NotAwaitingInput => return Err(HttpError::NotAwaitingInput),
+        AnswerOutcome::UnknownQuestion(question_id) => {
+            return Err(HttpError::UnknownQuestion(question_id));
+        }
+        AnswerOutcome::UnknownRun => return Err(HttpError::RunNotFound),
+    };
+    Ok(Json(
+        projection::status(&dir)
+            .await
+            .map_err(HttpError::run_store)?,
+    ))
+}
+
+async fn resume_run(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<ResumeRequest>, JsonRejection>,
+) -> Result<Json<api::RunStatusResponse>, HttpError> {
+    let Json(request) = payload.map_err(|error| HttpError::InvalidRequest(error.body_text()))?;
+    let run_id = RunId::new(run_id);
+    let dir = match state
+        .registry
+        .resume(
+            &run_id,
+            request.note,
+            request.extend,
+            state.runtime.as_ref(),
+        )
+        .await
+        .map_err(HttpError::run_command)?
+    {
+        ResumeOutcome::Resumed(dir) => dir,
+        ResumeOutcome::NotPaused => return Err(HttpError::NotPaused),
+        ResumeOutcome::UnknownRun => return Err(HttpError::RunNotFound),
+    };
+    Ok(Json(
+        projection::status(&dir)
+            .await
+            .map_err(HttpError::run_store)?,
+    ))
+}
+
+struct EventStream {
+    dir: engine::RunDir,
+    events: Vec<EventEnvelope>,
+    next_seq: u64,
+}
+
+fn is_terminal_event(event: &engine::RunEvent) -> bool {
+    matches!(
+        event,
+        engine::RunEvent::StateChanged {
+            state: engine::RunState::Done | engine::RunState::Failed | engine::RunState::Cancelled
+        }
+    )
+}
+
 enum HttpError {
     Unauthorized,
     InvalidRequest(String),
@@ -127,6 +303,10 @@ enum HttpError {
     UnrunnableFlow(String),
     MissingSecret(String),
     RunNotFound,
+    RunNotRunning,
+    NotAwaitingInput,
+    UnknownQuestion(String),
+    NotPaused,
     Internal,
 }
 
@@ -164,6 +344,11 @@ impl HttpError {
             error => Self::store(error),
         }
     }
+
+    fn run_command(message: String) -> Self {
+        tracing::error!(%message, "daemon run-command failure");
+        Self::Internal
+    }
 }
 
 impl IntoResponse for HttpError {
@@ -195,6 +380,26 @@ impl IntoResponse for HttpError {
                 StatusCode::NOT_FOUND,
                 ErrorCode::RunNotFound,
                 "no such run".to_owned(),
+            ),
+            Self::RunNotRunning => (
+                StatusCode::CONFLICT,
+                ErrorCode::RunNotRunning,
+                "run is not running".to_owned(),
+            ),
+            Self::NotAwaitingInput => (
+                StatusCode::CONFLICT,
+                ErrorCode::NotAwaitingInput,
+                "run is not awaiting human input".to_owned(),
+            ),
+            Self::UnknownQuestion(question_id) => (
+                StatusCode::BAD_REQUEST,
+                ErrorCode::UnknownQuestion,
+                format!("unknown pending question `{question_id}`"),
+            ),
+            Self::NotPaused => (
+                StatusCode::CONFLICT,
+                ErrorCode::NotPaused,
+                "run is not paused".to_owned(),
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,

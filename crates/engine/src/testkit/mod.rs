@@ -65,6 +65,7 @@ pub fn context() -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
+        resume: None,
         // A fresh token nobody holds the other end of: never fires.
         cancel: CancelToken::new(),
         verify: VerifyConfig::default(),

@@ -56,6 +56,7 @@ impl RunProjection {
         for envelope in events {
             match &envelope.event {
                 RunEvent::StateChanged { state: changed } => state = *changed,
+                RunEvent::RunResumed { .. } => state = RunState::Running,
                 RunEvent::IterationFinished { .. } => {
                     iterations_completed = iterations_completed.saturating_add(1);
                 }
@@ -265,8 +266,8 @@ mod tests {
         assert_eq!(waiting.pending_questions()[0].id, "q1");
 
         let mut answered = asked;
-        answered.push(RunEvent::StateChanged {
-            state: RunState::Running,
+        answered.push(RunEvent::RunResumed {
+            note: Some("use a".into()),
         });
         let resumed = RunProjection::of(&log(answered)).unwrap();
         assert!(resumed.pending_questions().is_empty());

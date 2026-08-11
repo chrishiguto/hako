@@ -84,6 +84,7 @@ pub fn fenced(text: &str) -> String {
 /// free-form note — paired with the questions of the report that
 /// paused it, so each answer renders attributed to what it addressed.
 /// A kernel fills this from its resume path.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HumanInput {
     pub answers: Vec<Answer>,
     pub questions: Vec<Question>,
