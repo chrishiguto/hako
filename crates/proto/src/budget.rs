@@ -13,6 +13,18 @@ pub enum BudgetKind {
     Tokens,
 }
 
+/// New caps granted when a paused run resumes. Integer seconds rather
+/// than fractional hours: a float on a frozen wire admits negatives
+/// and precision junk that every consumer would have to police
+/// forever. Absent fields keep their current cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct BudgetExtension {
+    pub max_iterations: Option<u32>,
+    pub max_wall_clock_seconds: Option<u64>,
+    pub max_tokens: Option<u64>,
+}
+
 /// Tokens one agent invocation consumed, as reported by its adapter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

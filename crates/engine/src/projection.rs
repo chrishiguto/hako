@@ -268,6 +268,7 @@ mod tests {
         let mut answered = asked;
         answered.push(RunEvent::RunResumed {
             note: Some("use a".into()),
+            extend: None,
         });
         let resumed = RunProjection::of(&log(answered)).unwrap();
         assert!(resumed.pending_questions().is_empty());

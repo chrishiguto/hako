@@ -282,13 +282,15 @@ impl RunRegistry {
         let mut runs = self.runs.write().await;
         let cancel = CancelToken::new();
         let budgets = Budgets::from(&flow.budget);
-        let task = runtime.launch(RunLaunch::fresh(
-            dir.clone(),
-            flow.clone(),
-            resolved.clone(),
+        let task = runtime.launch(RunLaunch {
+            dir: dir.clone(),
+            flow: flow.clone(),
+            resolved: resolved.clone(),
             events,
-            cancel.clone(),
-        ));
+            cancel: cancel.clone(),
+            budgets: budgets.clone(),
+            resume: None,
+        });
         runs.insert(
             run_id.clone(),
             RunRecord::live(dir, Execution { cancel, task }, flow, resolved, budgets),
@@ -326,7 +328,7 @@ impl RunRegistry {
         if let Some(execution) = execution {
             let _ = execution.task.await;
         }
-        apply_extension(&mut budgets, extend);
+        apply_extension(&mut budgets, extend.clone());
 
         let history = guard.dir.events().await?;
         let pause_at = history
@@ -371,17 +373,21 @@ impl RunRegistry {
             },
         };
         let sink = guard.scrubbed_sink().await?;
-        sink.emit(engine::RunEvent::RunResumed { note }).await?;
+        // The command lands in the log like everything else — the
+        // granted extension included, so the record of how far this
+        // run may go survives the daemon that granted it.
+        sink.emit(engine::RunEvent::RunResumed { note, extend })
+            .await?;
         let cancel = CancelToken::new();
-        let task = runtime.launch(RunLaunch::resumed(
-            guard.dir.clone(),
+        let task = runtime.launch(RunLaunch {
+            dir: guard.dir.clone(),
             flow,
             resolved,
-            sink,
-            cancel.clone(),
-            budgets.clone(),
-            resume,
-        ));
+            events: sink,
+            cancel: cancel.clone(),
+            budgets: budgets.clone(),
+            resume: Some(resume),
+        });
         let mut runs = self.runs.write().await;
         let record = runs.get_mut(run_id).expect("run remained indexed");
         // Still live: nothing detaches a record while its command

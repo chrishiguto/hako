@@ -548,14 +548,23 @@ mod tests {
 
         let dir = RunDir::open(root.path(), &run_id).await.unwrap();
         let sink = dir.event_sink().await.unwrap();
-        sink.emit(RunEvent::RunResumed { note: None })
-            .await
-            .unwrap();
+        sink.emit(RunEvent::RunResumed {
+            note: None,
+            extend: None,
+        })
+        .await
+        .unwrap();
 
         let events = dir.events().await.unwrap();
         assert_eq!(events.len(), 3);
         assert_eq!(events[2].seq, 2);
-        assert_eq!(events[2].event, RunEvent::RunResumed { note: None });
+        assert_eq!(
+            events[2].event,
+            RunEvent::RunResumed {
+                note: None,
+                extend: None
+            }
+        );
     }
 
     /// The store's side of the projection, stated as the contract

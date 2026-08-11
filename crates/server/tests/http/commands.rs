@@ -244,8 +244,9 @@ async fn resume_injects_recorded_answers_and_note_into_the_next_preamble() {
     assert!(events.iter().any(|event| matches!(
         event.event,
         RunEvent::RunResumed {
-            note: Some(ref note)
-        } if note == "prefer the smaller design"
+            note: Some(ref note),
+            extend: Some(ref extend),
+        } if note == "prefer the smaller design" && extend.max_iterations == Some(20)
     )));
 }
 

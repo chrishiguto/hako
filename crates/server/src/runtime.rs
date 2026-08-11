@@ -98,55 +98,18 @@ impl EngineRuntime {
     }
 }
 
+/// Everything one kernel launch needs, fresh or resumed. A carrier,
+/// not an abstraction: the registry owns the values — budgets
+/// included, derived exactly once where the record keeps them — and
+/// the runtime only drives.
 pub(crate) struct RunLaunch {
-    dir: RunDir,
-    flow: FlowConfig,
-    resolved: ResolvedRun,
-    events: Arc<dyn EventSink>,
-    cancel: CancelToken,
-    budgets: Budgets,
-    resume: Option<RunResume>,
-}
-
-impl RunLaunch {
-    pub(crate) fn fresh(
-        dir: RunDir,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        events: Arc<dyn EventSink>,
-        cancel: CancelToken,
-    ) -> Self {
-        let budgets = Budgets::from(&flow.budget);
-        Self {
-            dir,
-            flow,
-            resolved,
-            events,
-            cancel,
-            budgets,
-            resume: None,
-        }
-    }
-
-    pub(crate) fn resumed(
-        dir: RunDir,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        events: Arc<dyn EventSink>,
-        cancel: CancelToken,
-        budgets: Budgets,
-        resume: RunResume,
-    ) -> Self {
-        Self {
-            dir,
-            flow,
-            resolved,
-            events,
-            cancel,
-            budgets,
-            resume: Some(resume),
-        }
-    }
+    pub(crate) dir: RunDir,
+    pub(crate) flow: FlowConfig,
+    pub(crate) resolved: ResolvedRun,
+    pub(crate) events: Arc<dyn EventSink>,
+    pub(crate) cancel: CancelToken,
+    pub(crate) budgets: Budgets,
+    pub(crate) resume: Option<RunResume>,
 }
 
 struct QuietNotifier;

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub use proto::budget::BudgetExtension;
 use proto::report::{Answer, Question};
 use proto::run::RunState;
 
@@ -73,16 +74,6 @@ pub struct ResumeRequest {
     /// New caps for a run paused on `budget`; absent fields keep their
     /// current cap.
     pub extend: Option<BudgetExtension>,
-}
-
-/// Integer seconds rather than fractional hours: a float on a frozen
-/// wire admits negatives and precision junk that every consumer would
-/// have to police forever.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct BudgetExtension {
-    pub max_iterations: Option<u32>,
-    pub max_wall_clock_seconds: Option<u64>,
-    pub max_tokens: Option<u64>,
 }
 
 /// Every non-2xx response carries this body.
