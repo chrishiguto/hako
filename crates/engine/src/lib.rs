@@ -43,9 +43,10 @@ pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
     ScrubbingSink,
 };
-pub use kernel::{Kernel, KernelContext, KernelError};
+pub use kernel::{Kernel, KernelContext, KernelError, RunResume};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use pipeline::PipelineKernel;
+pub use preamble::HumanInput;
 pub use projection::{ProjectionError, RunProjection};
 pub use report::{Answer, Question, ReportCore, ReportStatus};
 pub use run::{PauseReason, RunId, RunOutcome, RunState};
@@ -56,5 +57,5 @@ pub use sandbox::{
 pub use secrets::{
     SecretEnv, SecretName, SecretRequirement, SecretValue, SecretsError, SecretsProvider,
 };
-pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
+pub use store::{FileEventSink, LogCursor, RunDir, RunMeta, StoreError};
 pub use workspace::{Workspace, WorkspaceError};

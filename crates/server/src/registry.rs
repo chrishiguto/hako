@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use api::RunSummary;
 use api::proto::flow::FlowConfig;
-use engine::{CancelToken, EventSink, RunDir, RunId};
+use api::{BudgetExtension, RunSummary};
+use engine::{Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume, SecretEnv};
 use futures_util::future::join_all;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::ServerError;
 use crate::projection;
-use crate::runtime::{EngineRuntime, ResolvedRun};
+use crate::runtime::{EngineRuntime, ResolvedRun, RunLaunch};
 
 /// The live index over durable run directories. The map owns no run
 /// state: status is reduced from each event log whenever it is read.
@@ -21,15 +21,36 @@ pub(crate) struct RunRegistry {
 }
 
 /// One registry entry. Published status is reduced from the event
-/// log, never from the execution — the live half exists only so a
-/// cancel can reach the run.
+/// log, never from the live half; it only lets commands reach the
+/// execution and the relaunch material.
 struct RunRecord {
     dir: RunDir,
-    execution: Option<Execution>,
+    commands: Arc<Mutex<()>>,
+    liveness: Liveness,
 }
 
-/// The live half of a record: the cancel token the kernel watches and
-/// the task driving the run. Cancelling means firing the token and
+/// What the daemon holds for a run beyond its directory. A record
+/// loaded from disk after a restart is detached: status still reduces
+/// from the log, but the relaunch material — resolved agent, secrets,
+/// flow — died with the old process and cannot be reconstructed from
+/// the run directory yet, so the commands that need it answer that
+/// honestly instead of misreporting the run's state.
+enum Liveness {
+    Live(Box<LiveRun>),
+    Detached,
+}
+
+/// The live half of a record: the relaunch material and, while one
+/// runs, the execution.
+struct LiveRun {
+    execution: Option<Execution>,
+    flow: FlowConfig,
+    resolved: ResolvedRun,
+    budgets: Budgets,
+}
+
+/// A running execution: the cancel token the kernel watches and the
+/// task driving the run. Cancelling means firing the token and
 /// draining the task — never `JoinHandle::abort`, which would drop
 /// the future mid-await inside the agent exec, skip the sandbox
 /// bracket's destroy, and leak the microVM that teardown is there to
@@ -39,23 +60,51 @@ struct Execution {
     task: tokio::task::JoinHandle<()>,
 }
 
-/// How a cancel request landed against the registry's live view. The
-/// registry reports only what it knows — whether an execution was
-/// drained — and never mints a state: a drained run may have beaten
-/// the token to its own ending, and a completed run's execution stays
-/// in its record until a cancel reaps it. The run's actual ending is
-/// read from the log, like all published status.
-#[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
+/// How a cancel landed. The registry never mints a state — the log
+/// holds whichever ending won — but it does read the verdict after
+/// the drain, so the policy for a run that beat the token to its own
+/// ending lives here, in one place, not half in the HTTP layer.
 pub(crate) enum CancelOutcome {
-    /// An execution existed and has fully wound down: its terminal
-    /// event is on disk and every sandbox torn down before this comes
-    /// back. The log holds whichever ending won the race — usually
-    /// `cancelled`, but a run already finished keeps what it earned.
-    Drained,
-    /// Nothing was executing — a prior cancel already drained the run,
-    /// or the daemon restarted and only the directory remains.
+    /// The run is terminal at `cancelled`: any execution has fully
+    /// wound down, every sandbox is torn down, and the terminal event
+    /// is on disk — reflected in this status — before this comes back.
+    Cancelled(Box<api::RunStatusResponse>),
+    /// Nothing ended `cancelled`: the run had already earned its own
+    /// ending, a prior cancel drained it, or the daemon restarted and
+    /// only the directory remains.
     NotRunning,
     /// No such run.
+    UnknownRun,
+}
+
+/// A failure inside a run command — the daemon's fault or a vanished
+/// run, never the client's request. Typed, so the HTTP layer keeps
+/// its one rule for missing runs: a directory that is gone answers
+/// `run_not_found` from a command exactly as it does from a status
+/// read, instead of masquerading as an internal fault.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CommandError {
+    #[error(transparent)]
+    Store(#[from] engine::StoreError),
+    #[error(transparent)]
+    Sink(#[from] engine::EventSinkError),
+}
+
+pub(crate) enum ResumeOutcome {
+    Resumed(RunDir),
+    NotPaused,
+    /// The run predates a daemon restart; see [`Liveness::Detached`].
+    Detached,
+    UnknownRun,
+}
+
+pub(crate) enum AnswerOutcome {
+    Recorded(RunDir),
+    NotAwaitingInput,
+    UnknownQuestion(String),
+    /// The run predates a daemon restart. Its answers exist to feed a
+    /// resume that can never happen, so they are refused up front.
+    Detached,
     UnknownRun,
 }
 
@@ -63,19 +112,93 @@ impl RunRecord {
     fn persisted(dir: RunDir) -> Self {
         Self {
             dir,
-            execution: None,
+            commands: Arc::new(Mutex::new(())),
+            liveness: Liveness::Detached,
         }
     }
 
-    fn live(dir: RunDir, execution: Execution) -> Self {
+    fn live(
+        dir: RunDir,
+        execution: Execution,
+        flow: FlowConfig,
+        resolved: ResolvedRun,
+        budgets: Budgets,
+    ) -> Self {
         Self {
             dir,
-            execution: Some(execution),
+            commands: Arc::new(Mutex::new(())),
+            liveness: Liveness::Live(Box::new(LiveRun {
+                execution: Some(execution),
+                flow,
+                resolved,
+                budgets,
+            })),
         }
     }
 }
 
+/// One command's grip on a run: the per-run serialization lock, the
+/// run's directory, and a projection read under that lock. Answer,
+/// resume, and cancel each hold one for their whole span, so commands
+/// on one run never interleave and each judges state no other command
+/// can shift beneath it.
+struct CommandGuard {
+    dir: RunDir,
+    /// The run's secret values while the record is live; `None` once
+    /// detached — a restarted daemon has nothing left to scrub.
+    secrets: Option<SecretEnv>,
+    projected: engine::RunProjection,
+    _serial: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl CommandGuard {
+    fn is_detached(&self) -> bool {
+        self.secrets.is_none()
+    }
+
+    /// The sink a command writes through — scrubbing, like every sink
+    /// the daemon hands a run: what the run was given must never
+    /// appear in the record of it. A detached record scrubs nothing,
+    /// which is an empty scrub, not a bare sink.
+    async fn scrubbed_sink(&self) -> Result<Arc<dyn EventSink>, CommandError> {
+        Ok(scrubbed(
+            self.dir.event_sink().await?,
+            &self.secrets.clone().unwrap_or_default(),
+        ))
+    }
+}
+
+/// Wraps a fresh sink in the scrub every daemon-held sink carries.
+fn scrubbed(sink: impl EventSink + 'static, secrets: &SecretEnv) -> Arc<dyn EventSink> {
+    Arc::new(engine::ScrubbingSink::new(Arc::new(sink), secrets.clone()))
+}
+
 impl RunRegistry {
+    /// Opens a command against a run: takes the run's command lock,
+    /// then reads where the run stands under it. `None` is no such
+    /// run.
+    async fn command(&self, run_id: &RunId) -> Result<Option<CommandGuard>, CommandError> {
+        let (dir, commands, secrets) = {
+            let runs = self.runs.read().await;
+            let Some(record) = runs.get(run_id) else {
+                return Ok(None);
+            };
+            let secrets = match &record.liveness {
+                Liveness::Live(live) => Some(live.resolved.secrets.clone()),
+                Liveness::Detached => None,
+            };
+            (record.dir.clone(), record.commands.clone(), secrets)
+        };
+        let serial = commands.lock_owned().await;
+        let projected = dir.project().await?;
+        Ok(Some(CommandGuard {
+            dir,
+            secrets,
+            projected,
+            _serial: serial,
+        }))
+    }
+
     pub(crate) async fn load(runs_root: PathBuf) -> Result<Self, ServerError> {
         let io_error = |source| ServerError::registry_io(&runs_root, source);
         tokio::fs::create_dir_all(&runs_root)
@@ -158,40 +281,222 @@ impl RunRegistry {
         // awaits, so the lock is not held across a suspension point.
         let mut runs = self.runs.write().await;
         let cancel = CancelToken::new();
-        let task = runtime.launch(dir.clone(), flow, resolved, events, cancel.clone());
+        let budgets = Budgets::from(&flow.budget);
+        let task = runtime.launch(RunLaunch {
+            dir: dir.clone(),
+            flow: flow.clone(),
+            resolved: resolved.clone(),
+            events,
+            cancel: cancel.clone(),
+            budgets: budgets.clone(),
+            resume: None,
+        });
         runs.insert(
             run_id.clone(),
-            RunRecord::live(dir, Execution { cancel, task }),
+            RunRecord::live(dir, Execution { cancel, task }, flow, resolved, budgets),
         );
         Ok(run_id)
+    }
+
+    pub(crate) async fn resume(
+        &self,
+        run_id: &RunId,
+        note: Option<String>,
+        extend: Option<BudgetExtension>,
+        runtime: &EngineRuntime,
+    ) -> Result<ResumeOutcome, CommandError> {
+        let Some(guard) = self.command(run_id).await? else {
+            return Ok(ResumeOutcome::UnknownRun);
+        };
+        if !matches!(guard.projected.state, engine::RunState::Paused { .. }) {
+            return Ok(ResumeOutcome::NotPaused);
+        }
+
+        let (execution, flow, resolved, mut budgets) = {
+            let mut runs = self.runs.write().await;
+            let record = runs.get_mut(run_id).expect("run remained indexed");
+            match &mut record.liveness {
+                Liveness::Live(live) => (
+                    live.execution.take(),
+                    live.flow.clone(),
+                    live.resolved.clone(),
+                    live.budgets.clone(),
+                ),
+                Liveness::Detached => return Ok(ResumeOutcome::Detached),
+            }
+        };
+        if let Some(execution) = execution {
+            let _ = execution.task.await;
+        }
+        apply_extension(&mut budgets, extend.clone());
+
+        let history = guard.dir.events().await?;
+        let pause_at = history
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event.event,
+                    engine::RunEvent::StateChanged {
+                        state: engine::RunState::Paused { .. }
+                    }
+                )
+            })
+            .unwrap_or(0);
+        // Re-answering a question before the resume is a correction:
+        // the latest answer wins, and the preamble carries each
+        // question exactly once.
+        let mut answers: Vec<engine::Answer> = Vec::new();
+        for event in &history[pause_at..] {
+            let engine::RunEvent::QuestionAnswered {
+                question_id,
+                answer,
+            } = &event.event
+            else {
+                continue;
+            };
+            match answers
+                .iter_mut()
+                .find(|answered| answered.question_id == *question_id)
+            {
+                Some(answered) => answered.answer = answer.clone(),
+                None => answers.push(engine::Answer {
+                    question_id: question_id.clone(),
+                    answer: answer.clone(),
+                }),
+            }
+        }
+        let next_iteration = history
+            .iter()
+            .filter_map(|event| match event.event {
+                engine::RunEvent::IterationStarted { iteration } => Some(iteration),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let resume = RunResume {
+            next_iteration,
+            human: HumanInput {
+                answers,
+                questions: guard.projected.pending_questions().to_vec(),
+                note: note.clone(),
+            },
+        };
+        let sink = guard.scrubbed_sink().await?;
+        // The command lands in the log like everything else — the
+        // granted extension included, so the record of how far this
+        // run may go survives the daemon that granted it.
+        sink.emit(engine::RunEvent::RunResumed { note, extend })
+            .await?;
+        let cancel = CancelToken::new();
+        let task = runtime.launch(RunLaunch {
+            dir: guard.dir.clone(),
+            flow,
+            resolved,
+            events: sink,
+            cancel: cancel.clone(),
+            budgets: budgets.clone(),
+            resume: Some(resume),
+        });
+        let mut runs = self.runs.write().await;
+        let record = runs.get_mut(run_id).expect("run remained indexed");
+        // Still live: nothing detaches a record while its command
+        // lock — held right here — serializes every mutation.
+        if let Liveness::Live(live) = &mut record.liveness {
+            live.execution = Some(Execution { cancel, task });
+            live.budgets = budgets;
+        }
+        Ok(ResumeOutcome::Resumed(guard.dir))
+    }
+
+    pub(crate) async fn answer(
+        &self,
+        run_id: &RunId,
+        answers: Vec<engine::Answer>,
+    ) -> Result<AnswerOutcome, CommandError> {
+        let Some(guard) = self.command(run_id).await? else {
+            return Ok(AnswerOutcome::UnknownRun);
+        };
+        if guard.is_detached() {
+            return Ok(AnswerOutcome::Detached);
+        }
+        if guard.projected.state
+            != (engine::RunState::Paused {
+                reason: engine::PauseReason::AwaitingHuman,
+            })
+        {
+            return Ok(AnswerOutcome::NotAwaitingInput);
+        }
+        for answer in &answers {
+            if !guard
+                .projected
+                .pending_questions()
+                .iter()
+                .any(|question| question.id == answer.question_id)
+            {
+                return Ok(AnswerOutcome::UnknownQuestion(answer.question_id.clone()));
+            }
+        }
+        let sink = guard.scrubbed_sink().await?;
+        for answer in answers {
+            sink.emit(engine::RunEvent::QuestionAnswered {
+                question_id: answer.question_id,
+                answer: answer.answer,
+            })
+            .await?;
+        }
+        Ok(AnswerOutcome::Recorded(guard.dir))
     }
 
     /// Cancels a run cooperatively: fire the token the kernel watches,
     /// then drain its task, so the run unwinds through the sandbox
     /// bracket — teardown on every exit path — and its terminal
-    /// `state_changed` is on disk before the caller answers. What the
-    /// run ended as is the log's to say, per [`CancelOutcome`]. The
-    /// execution is taken out of the record first, outside any await:
-    /// a second cancel finds `NotRunning`, and the lock is never held
-    /// while the run winds down.
-    #[allow(dead_code, reason = "#14 wires the HTTP cancel route to this")]
-    pub(crate) async fn cancel(&self, run_id: &RunId) -> CancelOutcome {
+    /// `state_changed` is on disk before the caller answers. A paused
+    /// run holds no execution to signal; its ending is written
+    /// directly. Either way the verdict is read back from the log —
+    /// a run that beat the token to its own ending keeps what it
+    /// earned and reads as [`CancelOutcome::NotRunning`]. The
+    /// execution is taken out of the record outside any await: a
+    /// second cancel finds `NotRunning`, and the registry index is
+    /// never held while the run winds down.
+    pub(crate) async fn cancel(&self, run_id: &RunId) -> Result<CancelOutcome, CommandError> {
+        let Some(guard) = self.command(run_id).await? else {
+            return Ok(CancelOutcome::UnknownRun);
+        };
         let execution = {
             let mut runs = self.runs.write().await;
             match runs.get_mut(run_id) {
-                None => return CancelOutcome::UnknownRun,
-                Some(record) => record.execution.take(),
+                None => return Ok(CancelOutcome::UnknownRun),
+                Some(record) => match &mut record.liveness {
+                    Liveness::Live(live) => live.execution.take(),
+                    Liveness::Detached => None,
+                },
             }
         };
-        let Some(execution) = execution else {
-            return CancelOutcome::NotRunning;
-        };
-        execution.cancel.cancel();
-        // A run that beat the token to a terminal state stays what it
-        // was — the event log holds whichever ending won. A join error
-        // is a panic `launch` already logged and published as failed.
-        let _ = execution.task.await;
-        CancelOutcome::Drained
+        if matches!(guard.projected.state, engine::RunState::Paused { .. }) {
+            if let Some(execution) = execution {
+                let _ = execution.task.await;
+            }
+            let sink = guard.scrubbed_sink().await?;
+            sink.emit(engine::RunEvent::StateChanged {
+                state: engine::RunState::Cancelled,
+            })
+            .await?;
+        } else {
+            let Some(execution) = execution else {
+                return Ok(CancelOutcome::NotRunning);
+            };
+            execution.cancel.cancel();
+            // A join error is a panic `launch` already logged and
+            // published as failed; the log still holds the verdict.
+            let _ = execution.task.await;
+        }
+        let status = projection::status(&guard.dir).await?;
+        if status.run.state == engine::RunState::Cancelled {
+            Ok(CancelOutcome::Cancelled(Box::new(status)))
+        } else {
+            Ok(CancelOutcome::NotRunning)
+        }
     }
 
     pub(crate) async fn get(&self, run_id: &RunId) -> Option<RunDir> {
@@ -230,6 +535,21 @@ impl RunRegistry {
                 .then_with(|| right.run_id.cmp(&left.run_id))
         });
         Ok(summaries)
+    }
+}
+
+fn apply_extension(budgets: &mut Budgets, extend: Option<BudgetExtension>) {
+    let Some(extend) = extend else {
+        return;
+    };
+    if let Some(max_iterations) = extend.max_iterations {
+        budgets.max_iterations = Some(max_iterations);
+    }
+    if let Some(seconds) = extend.max_wall_clock_seconds {
+        budgets.max_wall_clock = Some(std::time::Duration::from_secs(seconds));
+    }
+    if let Some(max_tokens) = extend.max_tokens {
+        budgets.max_tokens = Some(max_tokens);
     }
 }
 
@@ -286,10 +606,10 @@ repo = {:?}
         // Fire the cancel only once the agent exec is provably in
         // flight — the mid-exec case, where an abort would leak.
         barrier.wait().await;
-        assert!(matches!(
-            registry.cancel(&run_id).await,
-            CancelOutcome::Drained
-        ));
+        let CancelOutcome::Cancelled(status) = registry.cancel(&run_id).await.unwrap() else {
+            panic!("the drained run did not read back cancelled");
+        };
+        assert_eq!(status.run.state, RunState::Cancelled);
 
         let dir = registry.get(&run_id).await.unwrap();
         let status = projection::status(&dir).await.unwrap();
@@ -299,20 +619,19 @@ repo = {:?}
 
         // The execution is spent — a cancel can only reap it once.
         assert!(matches!(
-            registry.cancel(&run_id).await,
+            registry.cancel(&run_id).await.unwrap(),
             CancelOutcome::NotRunning
         ));
         assert!(matches!(
-            registry.cancel(&RunId::new("no-such-run")).await,
+            registry.cancel(&RunId::new("no-such-run")).await.unwrap(),
             CancelOutcome::UnknownRun
         ));
     }
 
     /// A run that already ended keeps its ending: cancelling it drains
-    /// the spent execution — `Drained`, because the registry reports
-    /// only what it drained, never a state — while the log still says
-    /// `done`. The route reads status for the truth, like every
-    /// caller.
+    /// the spent execution, reads `done` back from the log, and
+    /// reports `NotRunning` — nothing ended `cancelled`, and the
+    /// registry, not its callers, owns that verdict.
     #[tokio::test]
     async fn cancelling_a_finished_run_drains_it_but_the_log_keeps_its_ending() {
         let runs_root = tempfile::tempdir().unwrap();
@@ -348,8 +667,8 @@ repo = {:?}
         }
 
         assert!(matches!(
-            registry.cancel(&run_id).await,
-            CancelOutcome::Drained
+            registry.cancel(&run_id).await.unwrap(),
+            CancelOutcome::NotRunning
         ));
         assert_eq!(
             projection::status(&dir).await.unwrap().run.state,

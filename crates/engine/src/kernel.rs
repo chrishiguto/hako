@@ -11,6 +11,7 @@ use crate::cancel::CancelToken;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
+use crate::preamble::HumanInput;
 use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretEnv, SecretsError};
@@ -48,6 +49,11 @@ pub fn resolve(name: KernelName) -> Arc<dyn Kernel> {
 pub struct KernelContext {
     pub run_id: RunId,
     pub budgets: Budgets,
+    /// Present when the host starts this context from a paused run.
+    /// The shared boundary carries only the next iteration and the
+    /// human's words; interpreting a kernel-specific resume point is
+    /// the owning kernel's job.
+    pub resume: Option<RunResume>,
     /// The run's cooperative cancel flag — a value like [`budgets`],
     /// not a seventh seam: nothing fakes it, the host fires the same
     /// token a test would. The sandbox bracket is its single
@@ -85,6 +91,15 @@ pub struct KernelContext {
     ///
     /// [`budgets`]: Self::budgets
     pub secrets: SecretEnv,
+}
+
+/// The dialect-free part of resuming a kernel. Keeping only the cursor
+/// and shared human conversation here lets each kernel derive any
+/// richer resume point without teaching the host its dialect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResume {
+    pub next_iteration: u32,
+    pub human: HumanInput,
 }
 
 /// An infrastructure failure the kernel cannot recover from — distinct

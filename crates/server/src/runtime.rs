@@ -6,8 +6,8 @@ use engine::agents::{self, AgentConfigError};
 use engine::workspace;
 use engine::{
     AgentAdapter, Budgets, CancelToken, EventSink, Kernel, KernelContext, Notification, Notifier,
-    NotifierError, RunDir, RunEvent, RunState, Sandbox, SandboxError, SecretEnv, SecretsError,
-    SecretsProvider,
+    NotifierError, RunDir, RunEvent, RunResume, RunState, Sandbox, SandboxError, SecretEnv,
+    SecretsError, SecretsProvider,
 };
 use futures_util::FutureExt;
 use sandbox::SmolvmConfig;
@@ -73,26 +73,14 @@ impl EngineRuntime {
         })
     }
 
-    pub(crate) fn launch(
-        &self,
-        dir: RunDir,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        events: Arc<dyn EventSink>,
-        cancel: CancelToken,
-    ) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn launch(&self, launch: RunLaunch) -> tokio::task::JoinHandle<()> {
         let runtime = self.clone();
         tokio::spawn(async move {
-            let result = std::panic::AssertUnwindSafe(drive_run(
-                &runtime,
-                &dir,
-                flow,
-                resolved,
-                events.clone(),
-                cancel,
-            ))
-            .catch_unwind()
-            .await;
+            let dir = launch.dir.clone();
+            let events = launch.events.clone();
+            let result = std::panic::AssertUnwindSafe(drive_run(&runtime, launch))
+                .catch_unwind()
+                .await;
             let failure = match result {
                 Ok(Ok(())) => None,
                 Ok(Err(error)) => Some(error.to_string()),
@@ -108,6 +96,20 @@ impl EngineRuntime {
             }
         })
     }
+}
+
+/// Everything one kernel launch needs, fresh or resumed. A carrier,
+/// not an abstraction: the registry owns the values — budgets
+/// included, derived exactly once where the record keeps them — and
+/// the runtime only drives.
+pub(crate) struct RunLaunch {
+    pub(crate) dir: RunDir,
+    pub(crate) flow: FlowConfig,
+    pub(crate) resolved: ResolvedRun,
+    pub(crate) events: Arc<dyn EventSink>,
+    pub(crate) cancel: CancelToken,
+    pub(crate) budgets: Budgets,
+    pub(crate) resume: Option<RunResume>,
 }
 
 struct QuietNotifier;
@@ -132,6 +134,7 @@ pub(crate) enum ResolveError {
 
 /// What a submitted flow resolved to, carried from the submit route to
 /// the launched run.
+#[derive(Clone)]
 pub(crate) struct ResolvedRun {
     kernel: Arc<dyn Kernel>,
     agent: Arc<dyn AgentAdapter>,
@@ -141,32 +144,30 @@ pub(crate) struct ResolvedRun {
     pub(crate) secrets: SecretEnv,
 }
 
-async fn drive_run(
-    runtime: &EngineRuntime,
-    dir: &RunDir,
-    flow: FlowConfig,
-    resolved: ResolvedRun,
-    events: Arc<dyn EventSink>,
-    cancel: CancelToken,
-) -> Result<(), engine::KernelError> {
-    let workspace = workspace::prepare(
-        &flow.workspace,
-        &dir.meta().run_id,
-        &dir.path().join("workspace"),
-    )
-    .await?;
+async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), engine::KernelError> {
+    let run_id = &launch.dir.meta().run_id;
+    let clone_dest = launch.dir.path().join("workspace");
+    // Which mode means what — and mount mode's one-active-run lock,
+    // which a resume must take back — is the workspace module's
+    // knowledge, not this crate's.
+    let workspace = if launch.resume.is_some() {
+        workspace::reattach(&launch.flow.workspace, run_id, &clone_dest).await?
+    } else {
+        workspace::prepare(&launch.flow.workspace, run_id, &clone_dest).await?
+    };
     let context = KernelContext {
-        run_id: dir.meta().run_id.clone(),
-        budgets: Budgets::from(&flow.budget),
-        cancel,
-        verify: flow.verify,
-        prompts: flow.prompts,
+        run_id: launch.dir.meta().run_id.clone(),
+        budgets: launch.budgets,
+        resume: launch.resume,
+        cancel: launch.cancel,
+        verify: launch.flow.verify,
+        prompts: launch.flow.prompts,
         workspace,
         sandbox: runtime.sandbox.clone(),
-        agent: resolved.agent,
-        events,
+        agent: launch.resolved.agent,
+        events: launch.events,
         notifier: runtime.notifier.clone(),
-        secrets: resolved.secrets,
+        secrets: launch.resolved.secrets,
     };
-    resolved.kernel.run(context).await.map(|_| ())
+    launch.resolved.kernel.run(context).await.map(|_| ())
 }

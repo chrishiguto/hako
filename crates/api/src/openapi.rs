@@ -133,7 +133,7 @@ mod paths {
         (status = 400, description = "Unknown question id", body = ApiError),
         (status = 401, description = "Missing or invalid bearer token", body = ApiError),
         (status = 404, description = "No such run", body = ApiError),
-        (status = 409, description = "Run is not awaiting input", body = ApiError),
+        (status = 409, description = "Run is not awaiting input, or predates a daemon restart", body = ApiError),
     )
 )]
     fn answer_run() {}
@@ -149,7 +149,7 @@ mod paths {
         (status = 200, description = "Run resumed", body = RunStatusResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ApiError),
         (status = 404, description = "No such run", body = ApiError),
-        (status = 409, description = "Run is not paused", body = ApiError),
+        (status = 409, description = "Run is not paused, or predates a daemon restart", body = ApiError),
     )
 )]
     fn resume_run() {}

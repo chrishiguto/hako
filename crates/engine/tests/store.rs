@@ -160,11 +160,14 @@ async fn a_restarted_host_reconstructs_the_run_from_disk_alone() {
     assert_eq!(*kinds(&events).last().unwrap(), "state_changed");
 
     // A resume appends to the same log; ids stay stable across the
-    // restart, which is what SSE Last-Event-ID replay will lean on.
+    // restart, which is what SSE Last-Event-ID replay leans on.
     let sink = run_dir.event_sink().await.unwrap();
-    sink.emit(RunEvent::RunResumed { note: None })
-        .await
-        .unwrap();
+    sink.emit(RunEvent::RunResumed {
+        note: None,
+        extend: None,
+    })
+    .await
+    .unwrap();
     let resumed = run_dir.events().await.unwrap();
     assert_eq!(resumed.len(), events.len() + 1);
     assert_eq!(resumed.last().unwrap().seq, events.len() as u64);

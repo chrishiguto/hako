@@ -27,3 +27,4 @@
 {"type":"question_answered","question_id":"q1","answer":"plain files"}
 {"type":"run_resumed","note":"skip the flaky suite"}
 {"type":"run_resumed","note":null}
+{"type":"run_resumed","note":"one more pass","extend":{"max_iterations":30,"max_wall_clock_seconds":7200,"max_tokens":null}}

@@ -129,8 +129,41 @@ async fn clone(
     })
 }
 
-async fn mount(config: &WorkspaceConfig, run_id: &RunId) -> Result<Workspace, WorkspaceError> {
-    let root = Path::new(&config.repo);
+/// Reattaches a resumed run to the workspace [`prepare`] made for it.
+/// Nothing is cloned or validated against the flow again — that
+/// happened at first preparation, and the working tree now carries the
+/// run's own half-done work, so no dirty-check either. Mount mode
+/// re-acquires the checkout's one-active-run lock: the lock died with
+/// the paused execution, and the guarantee must hold for the resumed
+/// life exactly as it did for the first — a checkout another run
+/// claimed in the meantime refuses the resume loudly instead of
+/// working in it anyway.
+pub async fn reattach(
+    config: &WorkspaceConfig,
+    run_id: &RunId,
+    clone_dest: &Path,
+) -> Result<Workspace, WorkspaceError> {
+    match config.mode {
+        WorkspaceMode::Clone => {
+            let root = clone_dest.canonicalize().map_err(|error| {
+                WorkspaceError(format!("cannot resolve {}: {error}", clone_dest.display()))
+            })?;
+            Ok(Workspace { root, lock: None })
+        }
+        WorkspaceMode::Mount => {
+            let (root, git_dir) = resolve_mount(&config.repo).await?;
+            let lock = MountLock::acquire(git_dir.join(MOUNT_LOCK_FILE), &root, run_id).await?;
+            Ok(Workspace {
+                root,
+                lock: Some(Arc::new(lock)),
+            })
+        }
+    }
+}
+
+/// The half of mounting that first preparation and reattachment share.
+async fn resolve_mount(repo: &str) -> Result<(PathBuf, PathBuf), WorkspaceError> {
+    let root = Path::new(repo);
     if !root.is_dir() {
         return Err(WorkspaceError(format!(
             "mount path {} is not a directory",
@@ -146,6 +179,11 @@ async fn mount(config: &WorkspaceConfig, run_id: &RunId) -> Result<Workspace, Wo
     // the path is a repository at all.
     let git_dir = git_ok(Some(&root), &["rev-parse", "--git-dir"]).await?;
     let git_dir = root.join(git_dir.trim());
+    Ok((root, git_dir))
+}
+
+async fn mount(config: &WorkspaceConfig, run_id: &RunId) -> Result<Workspace, WorkspaceError> {
+    let (root, git_dir) = resolve_mount(&config.repo).await?;
 
     let status = git_ok(Some(&root), &["status", "--porcelain"]).await?;
     if !status.trim().is_empty() && !config.force {
@@ -566,6 +604,63 @@ mod tests {
         prepare(&config, &RunId::new("r2"), unused.path())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reattach_returns_the_clone_where_preparation_left_it() {
+        let source = seeded_repo();
+        let dest = tempfile::tempdir().unwrap();
+        let dest = dest.path().join("workspace");
+        let config = clone_config(source.path().to_str().unwrap());
+        let prepared = prepare(&config, &run_id(), &dest).await.unwrap();
+        let root = prepared.mount().host;
+        drop(prepared);
+
+        let reattached = reattach(&config, &run_id(), &dest).await.unwrap();
+        assert_eq!(reattached.mount().host, root);
+    }
+
+    /// A pause drops the execution and with it the mount lock; the
+    /// resumed life must hold the checkout again, and the run's own
+    /// half-done work must not block it the way a dirty first mount
+    /// would.
+    #[tokio::test]
+    async fn reattach_reacquires_the_mount_lock_for_the_resumed_life() {
+        let checkout = seeded_repo();
+        let unused = tempfile::tempdir().unwrap();
+        let config = mount_config(checkout.path().to_str().unwrap());
+        let first = prepare(&config, &run_id(), unused.path()).await.unwrap();
+        drop(first);
+
+        let resumed = reattach(&config, &run_id(), unused.path()).await.unwrap();
+
+        let refused = prepare(&config, &RunId::new("r2"), unused.path())
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("run r1"), "{refused}");
+
+        // The run's own half-done work never blocks a reattach the
+        // way a dirty first mount would.
+        std::fs::write(checkout.path().join(SEED_FILE), "half-done work\n").unwrap();
+        drop(resumed);
+        reattach(&config, &RunId::new("r2"), unused.path())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reattach_refuses_a_checkout_another_run_claimed_meanwhile() {
+        let checkout = seeded_repo();
+        let unused = tempfile::tempdir().unwrap();
+        let config = mount_config(checkout.path().to_str().unwrap());
+        let _holder = prepare(&config, &RunId::new("r2"), unused.path())
+            .await
+            .unwrap();
+
+        let refused = reattach(&config, &run_id(), unused.path())
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("run r2"), "{refused}");
     }
 
     #[tokio::test]

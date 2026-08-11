@@ -2,7 +2,7 @@
 //! Log reads back. One pure pass reduces the whole history to where
 //! the run stands now: state, counters, the last report's shared
 //! core, and the resume cursor. Every consumer — the store's state
-//! read, the daemon's status endpoint, a future SSE resume — projects
+//! read, the daemon's status endpoint, its SSE replay — projects
 //! through this fold, so no two can disagree about the same log.
 //! Events in, value out: no I/O, testable with fixture logs.
 //!
@@ -56,6 +56,7 @@ impl RunProjection {
         for envelope in events {
             match &envelope.event {
                 RunEvent::StateChanged { state: changed } => state = *changed,
+                RunEvent::RunResumed { .. } => state = RunState::Running,
                 RunEvent::IterationFinished { .. } => {
                     iterations_completed = iterations_completed.saturating_add(1);
                 }
@@ -265,8 +266,9 @@ mod tests {
         assert_eq!(waiting.pending_questions()[0].id, "q1");
 
         let mut answered = asked;
-        answered.push(RunEvent::StateChanged {
-            state: RunState::Running,
+        answered.push(RunEvent::RunResumed {
+            note: Some("use a".into()),
+            extend: None,
         });
         let resumed = RunProjection::of(&log(answered)).unwrap();
         assert!(resumed.pending_questions().is_empty());

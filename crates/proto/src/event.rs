@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::budget::{BudgetKind, TokenUsage};
+use crate::budget::{BudgetExtension, BudgetKind, TokenUsage};
 use crate::run::RunState;
 
 /// One thing a run did. The append-only sequence of these is the run's
@@ -98,9 +98,14 @@ pub enum RunEvent {
         answer: String,
     },
     /// A human resumed a paused run; the note becomes part of the next
-    /// iteration's preamble.
+    /// iteration's preamble. Commands land in the log like everything
+    /// else, so a budget extension granted at resume is recorded here —
+    /// the audit trail of how far the run was allowed to go.
     RunResumed {
         note: Option<String>,
+        /// Caps granted at resume; absent from the wire when none were.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extend: Option<BudgetExtension>,
     },
 }
 
