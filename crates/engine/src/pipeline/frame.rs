@@ -20,7 +20,7 @@
 //! (section 5, the flow's override or the shipped default). What the
 //! status means and how the loop acts on it lives here, never in the
 //! overridable domain prompt — an edited prompt can shape the work but
-//! can never reach the control flow.
+//! can never reach the control flow (ADR 0011).
 
 use crate::pipeline::contract;
 use crate::preamble::{self, Feedback, HumanInput};

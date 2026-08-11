@@ -399,10 +399,11 @@ mod tests {
         assert!(!is_mutating(Stage::Deliver));
     }
 
-    /// Verify judges fresh work only: a mutating stage that claims
-    /// progress. A pausing status skips its checks, whatever the stage.
+    /// Verify judges mutating progress and every completion claim: a
+    /// mutating stage claiming `continue`, or a `done` claim from any
+    /// stage. A pausing status skips its checks, whatever the stage.
     #[test]
-    fn verify_runs_only_on_mutating_stages_that_claim_progress() {
+    fn verify_gates_mutating_progress_and_every_done_claim() {
         assert!(runs_verify(Stage::Implement, ReportStatus::Continue));
         assert!(runs_verify(Stage::Implement, ReportStatus::Done));
         assert!(!runs_verify(Stage::Implement, ReportStatus::Blocked));
