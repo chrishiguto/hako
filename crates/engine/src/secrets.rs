@@ -91,8 +91,9 @@ impl SecretRequirement {
     }
 }
 
-/// A flow name is exactly a requirement only that name satisfies —
-/// already validated at parse, so it skips the literal door's check.
+/// A flow name arrived through deserialization, which already
+/// enforced the shape — so it becomes a requirement without the parse
+/// [`SecretRequirement::named`] does on a raw literal.
 impl From<SecretName> for SecretRequirement {
     fn from(name: SecretName) -> Self {
         Self {
@@ -436,9 +437,6 @@ mod tests {
         )
     }
 
-    /// A requirement literal is an env-var key at injection, and a
-    /// malformed one would surface as a gap no provisioning fixes —
-    /// so it dies at construction, where the adapter's tests run.
     #[test]
     #[should_panic(expected = "env-var shaped")]
     fn a_malformed_requirement_literal_panics_naming_the_shape() {
