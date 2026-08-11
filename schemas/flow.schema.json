@@ -153,7 +153,7 @@
       "type": "object",
       "properties": {
         "webhook": {
-          "description": "URL POSTed to when the run pauses, finishes, or fails.",
+          "description": "URL POSTed to whenever the run pauses.",
           "type": "string"
         }
       },

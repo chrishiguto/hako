@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use api::proto::flow::FlowConfig;
 use api::{BudgetExtension, RunListEntry};
-use engine::{Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume, SecretEnv};
+use engine::{
+    BudgetUsage, Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume, SecretEnv,
+};
 use futures_util::future::join_all;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -47,6 +49,7 @@ struct LiveRun {
     flow: FlowConfig,
     resolved: ResolvedRun,
     budgets: Budgets,
+    budget_usage: BudgetUsage,
 }
 
 /// A running execution: the cancel token the kernel watches and the
@@ -123,6 +126,7 @@ impl RunRecord {
         flow: FlowConfig,
         resolved: ResolvedRun,
         budgets: Budgets,
+        budget_usage: BudgetUsage,
     ) -> Self {
         Self {
             dir,
@@ -132,6 +136,7 @@ impl RunRecord {
                 flow,
                 resolved,
                 budgets,
+                budget_usage,
             })),
         }
     }
@@ -282,6 +287,7 @@ impl RunRegistry {
         let mut runs = self.runs.write().await;
         let cancel = CancelToken::new();
         let budgets = Budgets::from(&flow.budget);
+        let budget_usage = BudgetUsage::default();
         let task = runtime.launch(RunLaunch {
             dir: dir.clone(),
             flow: flow.clone(),
@@ -289,11 +295,19 @@ impl RunRegistry {
             events,
             cancel: cancel.clone(),
             budgets: budgets.clone(),
+            budget_usage: budget_usage.clone(),
             resume: None,
         });
         runs.insert(
             run_id.clone(),
-            RunRecord::live(dir, Execution { cancel, task }, flow, resolved, budgets),
+            RunRecord::live(
+                dir,
+                Execution { cancel, task },
+                flow,
+                resolved,
+                budgets,
+                budget_usage,
+            ),
         );
         Ok(run_id)
     }
@@ -312,7 +326,7 @@ impl RunRegistry {
             return Ok(ResumeOutcome::NotPaused);
         }
 
-        let (execution, flow, resolved, mut budgets) = {
+        let (execution, flow, resolved, mut budgets, budget_usage) = {
             let mut runs = self.runs.write().await;
             let record = runs.get_mut(run_id).expect("run remained indexed");
             match &mut record.liveness {
@@ -321,6 +335,7 @@ impl RunRegistry {
                     live.flow.clone(),
                     live.resolved.clone(),
                     live.budgets.clone(),
+                    live.budget_usage.clone(),
                 ),
                 Liveness::Detached => return Ok(ResumeOutcome::Detached),
             }
@@ -396,6 +411,7 @@ impl RunRegistry {
             events: sink,
             cancel: cancel.clone(),
             budgets: budgets.clone(),
+            budget_usage,
             resume: Some(resume),
         });
         let mut runs = self.runs.write().await;

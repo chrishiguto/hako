@@ -28,6 +28,7 @@ jiff = { version = "0.2.32", default-features = false, features = ["std"] }
 # Schema-agreement tests only (product code parses with proto's flow
 # types); the resolve-* defaults would pull HTTP/TLS.
 jsonschema = { version = "0.47.0", default-features = false }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "native-tls"] }
 # The secret store's ownership check: geteuid, to compare against the
 # store directory's uid. Already in the tree transitively via tokio.
 libc = "0.2.186"

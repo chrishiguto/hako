@@ -299,7 +299,7 @@ pub struct SecretsConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NotifyConfig {
-    /// URL POSTed to when the run pauses, finishes, or fails.
+    /// URL POSTed to whenever the run pauses.
     pub webhook: String,
 }
 

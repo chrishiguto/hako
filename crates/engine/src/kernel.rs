@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::agent::AgentAdapter;
-use crate::budget::Budgets;
+use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
 use crate::event::{EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
@@ -49,6 +49,9 @@ pub fn resolve(name: KernelName) -> Arc<dyn Kernel> {
 pub struct KernelContext {
     pub run_id: RunId,
     pub budgets: Budgets,
+    /// Consumption retained across pause/resume launches. Like
+    /// [`budgets`](Self::budgets), this is run data rather than a seam.
+    pub budget_usage: BudgetUsage,
     /// Present when the host starts this context from a paused run.
     /// The shared boundary carries only the next iteration and the
     /// human's words; interpreting a kernel-specific resume point is

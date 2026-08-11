@@ -37,7 +37,7 @@ pub use proto::flow;
 pub use proto::flow::{FailAction, OnFail, PromptsConfig, VerifyConfig};
 
 pub use agent::AgentAdapter;
-pub use budget::{BudgetKind, Budgets, TokenUsage};
+pub use budget::{BudgetKind, BudgetUsage, Budgets, TokenUsage};
 pub use cancel::CancelToken;
 pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,

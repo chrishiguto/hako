@@ -117,7 +117,7 @@ A resumable run state carrying a reason: blocked, verify_failed, drift, budget, 
 _Avoid_: stop, halt
 
 **Drift**:
-Consecutive iterations producing no commits and an unchanged remaining list — the loop is spinning without progress, so it pauses.
+Consecutive iterations producing no commits — the loop is spinning without durable progress, so it pauses.
 _Avoid_: stuck, stall
 
 ## Topology

@@ -4,6 +4,7 @@
 
 mod config;
 mod http;
+mod notifier;
 mod projection;
 mod registry;
 mod runtime;

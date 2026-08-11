@@ -350,6 +350,7 @@ impl From<ResolveError> for HttpError {
                 Self::Internal
             }
             ResolveError::Secrets(error) => Self::MissingSecret(error.to_string()),
+            ResolveError::Notifier(error) => Self::InvalidFlow(error.to_string()),
         }
     }
 }

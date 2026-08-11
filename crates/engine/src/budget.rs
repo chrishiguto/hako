@@ -1,6 +1,7 @@
 //! Budgets — soft caps on a run. Exhaustion finishes the current
 //! iteration and pauses resumably; a budget never fails a run.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use proto::flow::{BudgetConfig, FlowDuration};
@@ -22,6 +23,54 @@ pub struct Budgets {
     /// iteration counts as failed, so a hung agent can never stall the
     /// loop silently.
     pub iteration_timeout: Duration,
+}
+
+/// Run-scoped consumption shared by every launch of a paused and
+/// resumed run. The host retains one clone while the active kernel
+/// records against another, so extensions change caps without erasing
+/// what the run already spent.
+#[derive(Clone, Default)]
+pub struct BudgetUsage(Arc<Mutex<Usage>>);
+
+#[derive(Default)]
+struct Usage {
+    active_since: Option<tokio::time::Instant>,
+    active: Duration,
+    tokens: Option<u64>,
+}
+
+impl BudgetUsage {
+    pub(crate) fn start(&self) {
+        let mut usage = self.0.lock().unwrap();
+        debug_assert!(usage.active_since.is_none());
+        usage.active_since = Some(tokio::time::Instant::now());
+    }
+
+    pub(crate) fn stop(&self) {
+        let mut usage = self.0.lock().unwrap();
+        if let Some(started) = usage.active_since.take() {
+            usage.active = usage.active.saturating_add(started.elapsed());
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        let usage = self.0.lock().unwrap();
+        usage.active.saturating_add(
+            usage
+                .active_since
+                .map_or(Duration::ZERO, |started| started.elapsed()),
+        )
+    }
+
+    pub(crate) fn record_tokens(&self, usage: TokenUsage) {
+        let tokens = usage.input.saturating_add(usage.output);
+        let mut state = self.0.lock().unwrap();
+        state.tokens = Some(state.tokens.unwrap_or_default().saturating_add(tokens));
+    }
+
+    pub(crate) fn tokens(&self) -> Option<u64> {
+        self.0.lock().unwrap().tokens
+    }
 }
 
 impl Default for Budgets {
@@ -81,5 +130,19 @@ mod tests {
     #[test]
     fn an_unset_budget_section_lowers_to_the_defaults() {
         assert_eq!(Budgets::from(&BudgetConfig::default()), Budgets::default());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn usage_accumulates_active_time_but_not_the_pause_window() {
+        let usage = BudgetUsage::default();
+        usage.start();
+        tokio::time::advance(Duration::from_secs(30)).await;
+        usage.stop();
+        tokio::time::advance(Duration::from_secs(300)).await;
+        usage.start();
+        tokio::time::advance(Duration::from_secs(45)).await;
+
+        assert_eq!(usage.elapsed(), Duration::from_secs(75));
+        usage.stop();
     }
 }
