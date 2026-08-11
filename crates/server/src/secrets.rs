@@ -68,16 +68,13 @@ impl FileSecrets {
     }
 
     /// The file a name resolves to, or `None` for a name that could
-    /// address anything but a file directly in the store. Secret names
-    /// come from flow files, and a flow file is written by an agent —
-    /// `../../etc/shadow` must be a miss, not a read.
+    /// address anything but a file directly in the store. Parsing
+    /// already enforces the shape at the boundary, but names also come
+    /// from trusted constructors — and a flow file is written by an
+    /// agent, so `../../etc/shadow` must be a miss here no matter who
+    /// let it through.
     fn path_of(&self, name: &SecretName) -> Option<PathBuf> {
-        let name = name.as_str();
-        let shaped = !name.is_empty()
-            && name
-                .chars()
-                .all(|char| char.is_ascii_alphanumeric() || char == '_');
-        shaped.then(|| self.root.join(name))
+        name.is_env_shaped().then(|| self.root.join(name.as_str()))
     }
 }
 

@@ -215,6 +215,27 @@ async fn submit_distinguishes_well_formed_flows_the_engine_cannot_run() {
     assert!(error.message.contains("missing"));
 }
 
+/// A malformed secret name is a flow error, not a provisioning gap:
+/// answering `missing_secret` would send the operator to provision a
+/// file the store can never address.
+#[tokio::test]
+async fn a_malformed_secret_name_fails_the_flow_not_the_provisioning() {
+    let host = TestHost::new(done_report()).await;
+    let flow = format!("{}\n[secrets]\nenv = [\"GH-TOKEN\"]\n", host.flow());
+    let response = request(
+        &host.app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": flow})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: ApiError = body(response).await;
+    assert_eq!(error.code, ErrorCode::InvalidFlow);
+    assert!(error.message.contains("GH-TOKEN"), "{}", error.message);
+}
+
 /// A run that cannot get its secrets must not start: the submission
 /// itself fails, naming what to provision, because that is the moment
 /// a human is there to fix it. Provision the secret and the same flow
