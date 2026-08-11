@@ -19,7 +19,7 @@ use tokio::process::Command;
 
 use crate::sandbox::{WorkspaceMount, into_text};
 
-pub use prepare::prepare;
+pub use prepare::{prepare, reattach};
 
 /// Where the workspace lands inside every sandbox. Fixed so domain
 /// prompts and agent muscle memory transfer between flows.

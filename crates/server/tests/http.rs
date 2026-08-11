@@ -102,12 +102,16 @@ impl TestHost {
     }
 
     async fn submit(&self) -> SubmitRunResponse {
+        self.submit_flow(&self.flow()).await
+    }
+
+    async fn submit_flow(&self, flow: &str) -> SubmitRunResponse {
         let response = request(
             &self.app,
             Method::POST,
             "/v1/runs",
             Some(TOKEN),
-            Some(json!({"flow": self.flow()})),
+            Some(json!({"flow": flow})),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CREATED);

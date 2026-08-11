@@ -249,6 +249,74 @@ async fn resume_injects_recorded_answers_and_note_into_the_next_preamble() {
     )));
 }
 
+/// The paused run through pause, resume, and completion in a mounted
+/// checkout. The pause window holds no lock — the lock lives and dies
+/// with the execution — and the run reaching `done` after resume
+/// proves reattachment took the checkout back and worked in place.
+#[tokio::test]
+async fn resume_in_mount_mode_retakes_the_checkout_and_finishes_in_place() {
+    let (host, submitted, lock) = paused_mount_run().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while lock.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the paused run still holds the mount lock"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let response = request(
+        &host.app,
+        Method::POST,
+        &format!("/v1/runs/{}/resume", submitted.run_id),
+        Some(TOKEN),
+        Some(json!({"note": null, "extend": null})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    host.wait_for_state(&submitted.run_id, "done").await;
+    assert!(!lock.exists(), "the finished run released the checkout");
+}
+
+/// The lock is load-bearing on resume: a checkout claimed by another
+/// run during the pause window fails the resumed run loudly instead
+/// of letting two runs share one working tree.
+#[tokio::test]
+async fn resume_fails_loudly_when_another_run_claimed_the_mounted_checkout() {
+    let (host, submitted, lock) = paused_mount_run().await;
+    std::fs::write(&lock, "r2").unwrap();
+
+    let response = request(
+        &host.app,
+        Method::POST,
+        &format!("/v1/runs/{}/resume", submitted.run_id),
+        Some(TOKEN),
+        Some(json!({"note": null, "extend": null})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    host.wait_for_state(&submitted.run_id, "failed").await;
+}
+
+/// A mount-mode run scripted to pause on its first stage and finish
+/// after resume, paused and ready — plus the checkout's lock path.
+async fn paused_mount_run() -> (TestHost, SubmitRunResponse, std::path::PathBuf) {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        engine::testkit::exec("paused\n", 0),
+        engine::testkit::exec("done\n", 0),
+        engine::testkit::exec("checked\n", 0),
+    ]));
+    sandbox.write_report_on_exec(serde_json::to_vec(&needs_input_report()).unwrap());
+    sandbox.write_report_on_exec(serde_json::to_vec(&done_report()).unwrap());
+    sandbox.write_report_on_exec(UNREFUTED_SKEPTIC_REPORT);
+    let host = TestHost::with_parts(tempfile::tempdir().unwrap(), seeded_repo(), sandbox).await;
+    let flow = format!("{}mode = \"mount\"\n", flow_for(host.repo.path()));
+    let submitted = host.submit_flow(&flow).await;
+    host.wait_for_state(&submitted.run_id, "paused").await;
+    let lock = host.repo.path().join(".git").join("hako-mount.lock");
+    (host, submitted, lock)
+}
+
 #[tokio::test]
 async fn resume_rejects_missing_and_nonpaused_runs() {
     let host = TestHost::new(done_report()).await;

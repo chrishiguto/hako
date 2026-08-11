@@ -7,7 +7,7 @@ use engine::workspace;
 use engine::{
     AgentAdapter, Budgets, CancelToken, EventSink, Kernel, KernelContext, Notification, Notifier,
     NotifierError, RunDir, RunEvent, RunResume, RunState, Sandbox, SandboxError, SecretEnv,
-    SecretsError, SecretsProvider, Workspace,
+    SecretsError, SecretsProvider,
 };
 use futures_util::FutureExt;
 use sandbox::SmolvmConfig;
@@ -182,20 +182,15 @@ pub(crate) struct ResolvedRun {
 }
 
 async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), engine::KernelError> {
+    let run_id = &launch.dir.meta().run_id;
+    let clone_dest = launch.dir.path().join("workspace");
+    // Which mode means what — and mount mode's one-active-run lock,
+    // which a resume must take back — is the workspace module's
+    // knowledge, not this crate's.
     let workspace = if launch.resume.is_some() {
-        match launch.flow.workspace.mode {
-            api::proto::flow::WorkspaceMode::Clone => {
-                Workspace::at(launch.dir.path().join("workspace"))
-            }
-            api::proto::flow::WorkspaceMode::Mount => Workspace::at(&launch.flow.workspace.repo),
-        }
+        workspace::reattach(&launch.flow.workspace, run_id, &clone_dest).await?
     } else {
-        workspace::prepare(
-            &launch.flow.workspace,
-            &launch.dir.meta().run_id,
-            &launch.dir.path().join("workspace"),
-        )
-        .await?
+        workspace::prepare(&launch.flow.workspace, run_id, &clone_dest).await?
     };
     let context = KernelContext {
         run_id: launch.dir.meta().run_id.clone(),
