@@ -236,7 +236,9 @@ impl RunRegistry {
 #[cfg(test)]
 mod tests {
     use engine::RunState;
-    use engine::testkit::{NoSecrets, ScriptedSandbox, StubNotifier, exec, seeded_repo};
+    use engine::testkit::{
+        NoSecrets, ScriptedSandbox, StubNotifier, UNREFUTED_SKEPTIC_REPORT, exec, seeded_repo,
+    };
     use tokio::sync::Barrier;
 
     use super::*;
@@ -323,7 +325,7 @@ repo = {:?}
             exec("checked\n", 0),
         ]));
         sandbox.write_report_on_exec(r#"{"status": "done", "summary": "nothing left"}"#);
-        sandbox.write_report_on_exec(r#"{"refuted": false, "findings": []}"#);
+        sandbox.write_report_on_exec(UNREFUTED_SKEPTIC_REPORT);
         let runtime =
             EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
         let registry = RunRegistry::load(runs_root.path().to_path_buf())

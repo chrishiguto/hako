@@ -7,8 +7,13 @@
 
 use proto::pipeline::Stage;
 
-use crate::pipeline::frame;
+use crate::pipeline::{frame, skeptic};
 use crate::preamble;
+
+/// The heading that opens the skeptic's prompt — what a fake matches
+/// in an exec's argv to tell the skeptic invocation apart from a
+/// stage's.
+pub const SKEPTIC_PROMPT_HEADING: &str = skeptic::PROMPT_HEADING;
 
 pub fn carries_handoff(prompt: &str) -> bool {
     prompt.contains(frame::HANDOFF_HEADING)

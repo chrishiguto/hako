@@ -330,6 +330,11 @@ impl Sandbox for ScriptedSandbox {
     }
 }
 
+/// The report of a skeptic that lets a `done` claim stand — what a
+/// fake serves the skeptic invocation so a scripted run can reach
+/// `done`.
+pub const UNREFUTED_SKEPTIC_REPORT: &[u8] = br#"{"refuted": false, "findings": []}"#;
+
 /// One agent exec [`StagedSandbox`] will serve: what it prints, how it
 /// exits, and the report it leaves (or `None` to leave none, so the
 /// kernel sees a missing report).

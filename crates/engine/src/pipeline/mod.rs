@@ -17,7 +17,7 @@
 
 mod contract;
 pub(crate) mod frame;
-mod skeptic;
+pub(crate) mod skeptic;
 
 use async_trait::async_trait;
 

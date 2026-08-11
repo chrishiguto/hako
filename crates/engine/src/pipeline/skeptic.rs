@@ -14,6 +14,12 @@ use crate::preamble;
 use crate::workspace::REPORT_FILE;
 use proto::pipeline::{Stage, StageReport};
 
+/// The heading that opens the skeptic's prompt. Published (through the
+/// testkit) so a fake telling the skeptic invocation apart from a
+/// stage's shares one definition with [`compose`] rather than
+/// respelling its wording.
+pub(crate) const PROMPT_HEADING: &str = "# hako pipeline — skeptic iteration";
+
 const REPORT_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SkepticReport",
@@ -111,7 +117,7 @@ pub(super) async fn judge(
 
 fn compose(claim: &StageReport, domain_prompts: &[(Stage, String)]) -> String {
     let mut text = format!(
-        "# hako pipeline — skeptic iteration\n\n\
+        "{PROMPT_HEADING}\n\n\
          Independently test the `done` claim against the workspace and every \
          domain prompt. Look for concrete evidence that any requirement remains \
          unsatisfied. Do not change the workspace.\n\n\

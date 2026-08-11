@@ -19,11 +19,13 @@ pub use fakes::{
     StubNotifier, Transcript, exec, secret_env,
 };
 pub use prompt::{
-    carries_handoff, carries_human_input, carries_report_from, carries_verify_feedback,
+    SKEPTIC_PROMPT_HEADING, carries_handoff, carries_human_input, carries_report_from,
+    carries_verify_feedback,
 };
 pub use repo::{SEED_FILE, commit, git, git_stdout, head, seeded_repo, tracked_files};
 pub use sandbox::{
-    AgentStep, NoSandbox, ScriptedSandbox, StagedSandbox, crashes, malformed, omits_report, reports,
+    AgentStep, NoSandbox, ScriptedSandbox, StagedSandbox, UNREFUTED_SKEPTIC_REPORT, crashes,
+    malformed, omits_report, reports,
 };
 
 use std::sync::Arc;
