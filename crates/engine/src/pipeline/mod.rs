@@ -65,85 +65,118 @@ impl Kernel for PipelineKernel {
         let mut prior: Vec<StageReport> = Vec::new();
         let mut plan_feedback: Vec<Feedback> = Vec::new();
         let mut iteration: u32 = 1;
-        'iterations: loop {
+        loop {
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
-
-            let mut pass: Vec<StageReport> = Vec::new();
-            for (index, &stage) in STAGES.iter().enumerate() {
-                // Plan opens a fresh unit, so it reads the previous
-                // iteration; every later stage reads what this
-                // iteration produced before it.
-                let handoff = if index == 0 { &prior } else { &pass };
-                let feedback = if index == 0 {
-                    std::mem::take(&mut plan_feedback)
-                } else {
-                    Vec::new()
-                };
-                match execute_stage(&ctx, iteration, stage, handoff, feedback).await? {
-                    StageEnd::Advance(report) => pass.push(report),
-                    // An accepted claim and a pause leave the iteration
-                    // open; a refutation closes it as verified progress
-                    // before the next plan begins.
-                    StageEnd::Done(claim) => match skeptic::judge(&ctx, iteration, &claim).await? {
-                        Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => {
-                            return conclude(&ctx, RunOutcome::Done).await;
-                        }
-                        Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
-                            pass.push(claim);
-                            prior = pass;
-                            plan_feedback = vec![Feedback::SkepticRefuted { findings }];
-                            ctx.events
-                                .emit(RunEvent::IterationFinished {
-                                    iteration,
-                                    outcome: IterationOutcome::Completed,
-                                })
-                                .await?;
-                            iteration += 1;
-                            continue 'iterations;
-                        }
-                        Bracketed::Finished(skeptic::SkepticEnd::Failed) => {
-                            ctx.events
-                                .emit(RunEvent::IterationFinished {
-                                    iteration,
-                                    outcome: IterationOutcome::Failed,
-                                })
-                                .await?;
-                            return conclude(&ctx, RunOutcome::Failed).await;
-                        }
-                        Bracketed::Cancelled => {
-                            return conclude(&ctx, RunOutcome::Cancelled).await;
-                        }
-                    },
-                    StageEnd::Pause(reason) => {
-                        return conclude(&ctx, RunOutcome::Paused(reason)).await;
-                    }
-                    StageEnd::Cancelled => {
-                        return conclude(&ctx, RunOutcome::Cancelled).await;
-                    }
-                    StageEnd::Fail => {
-                        ctx.events
-                            .emit(RunEvent::IterationFinished {
-                                iteration,
-                                outcome: IterationOutcome::Failed,
-                            })
-                            .await?;
-                        return conclude(&ctx, RunOutcome::Failed).await;
-                    }
+            match run_iteration(&ctx, iteration, &prior, std::mem::take(&mut plan_feedback)).await?
+            {
+                IterationEnd::Continue { pass, feedback } => {
+                    ctx.events
+                        .emit(RunEvent::IterationFinished {
+                            iteration,
+                            outcome: IterationOutcome::Completed,
+                        })
+                        .await?;
+                    prior = pass;
+                    plan_feedback = feedback;
+                    iteration += 1;
                 }
+                IterationEnd::Done => return conclude(&ctx, RunOutcome::Done).await,
+                IterationEnd::Pause(reason) => {
+                    return conclude(&ctx, RunOutcome::Paused(reason)).await;
+                }
+                IterationEnd::Fail => {
+                    ctx.events
+                        .emit(RunEvent::IterationFinished {
+                            iteration,
+                            outcome: IterationOutcome::Failed,
+                        })
+                        .await?;
+                    return conclude(&ctx, RunOutcome::Failed).await;
+                }
+                IterationEnd::Cancelled => return conclude(&ctx, RunOutcome::Cancelled).await,
             }
-
-            ctx.events
-                .emit(RunEvent::IterationFinished {
-                    iteration,
-                    outcome: IterationOutcome::Completed,
-                })
-                .await?;
-            prior = pass;
-            iteration += 1;
         }
     }
+}
+
+/// How one iteration ended, as the run loop reads it. Every way an
+/// iteration can end — a full pass, a skeptic's verdict, a pause, a
+/// failure — lands here, so the loop emits each closing event and
+/// keeps its books in exactly one place.
+enum IterationEnd {
+    /// The iteration counts as verified progress and the run goes on:
+    /// a full pass, or a `done` claim the skeptic refuted. Carries the
+    /// reports the next plan reads and the feedback it must answer —
+    /// the skeptic's findings, or nothing.
+    Continue {
+        pass: Vec<StageReport>,
+        feedback: Vec<Feedback>,
+    },
+    /// A `done` claim cleared its verify gate and survived the skeptic
+    /// — the run is complete.
+    Done,
+    /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
+    /// report, or verify failures that outran the retry budget.
+    Pause(PauseReason),
+    /// A stage or the skeptic produced no trustworthy report; the
+    /// iteration counts as failed.
+    Fail,
+    /// The run's cancel token fired; the iteration stops where it
+    /// stands.
+    Cancelled,
+}
+
+/// Drives one iteration through the stages. Plan opens a fresh unit,
+/// so it reads the previous iteration's reports and the feedback the
+/// loop carried in; every later stage reads what this iteration
+/// produced before it. A `done` claim that cleared its verify gate
+/// meets the skeptic here — unrefuted ends the run, refuted ends the
+/// iteration as progress with the findings as the next plan's
+/// feedback.
+async fn run_iteration(
+    ctx: &KernelContext,
+    iteration: u32,
+    prior: &[StageReport],
+    mut plan_feedback: Vec<Feedback>,
+) -> Result<IterationEnd, KernelError> {
+    let mut pass: Vec<StageReport> = Vec::new();
+    for (index, &stage) in STAGES.iter().enumerate() {
+        let handoff = if index == 0 { prior } else { pass.as_slice() };
+        let feedback = if index == 0 {
+            std::mem::take(&mut plan_feedback)
+        } else {
+            Vec::new()
+        };
+        match execute_stage(ctx, iteration, stage, handoff, feedback).await? {
+            StageEnd::Advance(report) => pass.push(report),
+            StageEnd::Done(claim) => {
+                return Ok(match skeptic::judge(ctx, iteration, &claim).await? {
+                    Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
+                    Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
+                        // The refuted claim still advanced the work:
+                        // its report joins the hand-off, its findings
+                        // become the next plan's feedback.
+                        pass.push(claim);
+                        IterationEnd::Continue {
+                            pass,
+                            feedback: vec![Feedback::SkepticRefuted { findings }],
+                        }
+                    }
+                    Bracketed::Finished(skeptic::SkepticEnd::Failed) => IterationEnd::Fail,
+                    Bracketed::Cancelled => IterationEnd::Cancelled,
+                });
+            }
+            StageEnd::Pause(reason) => return Ok(IterationEnd::Pause(reason)),
+            StageEnd::Fail => return Ok(IterationEnd::Fail),
+            StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
+        }
+    }
+    Ok(IterationEnd::Continue {
+        pass,
+        feedback: Vec::new(),
+    })
 }
 
 /// How one stage ended, as the loop reads it.
