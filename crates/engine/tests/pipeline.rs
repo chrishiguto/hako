@@ -36,6 +36,18 @@ fn verifying(checks: &[&str], retries: u32, then: FailAction) -> VerifyConfig {
     }
 }
 
+fn skeptic(refuted: bool, findings: &[&str]) -> AgentStep {
+    AgentStep {
+        stdout: "checking the claim\n".into(),
+        code: 0,
+        report: Some(serde_json::json!({"refuted": refuted, "findings": findings}).to_string()),
+    }
+}
+
+fn unrefuted() -> AgentStep {
+    skeptic(false, &[])
+}
+
 fn context(
     workspace: &Path,
     sandbox: Arc<StagedSandbox>,
@@ -103,16 +115,17 @@ fn stage_events(events: &[RunEvent]) -> Vec<(String, String)> {
         .collect()
 }
 
-// ---------- AC 1: the stage event sequence, one sandbox per stage ----------
+// ---------- AC 1: the stage event sequence and fresh sandboxes ----------
 
 #[tokio::test]
-async fn a_full_iteration_emits_the_staged_event_sequence_one_sandbox_per_stage() {
+async fn a_full_iteration_and_its_skeptic_each_get_a_fresh_sandbox() {
     let ran = run_default(
         vec![
             reports("continue", "planned"),
             reports("continue", "built"),
             reports("continue", "reviewed"),
             reports("done", "simplified and complete"),
+            unrefuted(),
         ],
         vec![],
     )
@@ -142,6 +155,8 @@ async fn a_full_iteration_emits_the_staged_event_sequence_one_sandbox_per_stage(
             "workspace_checkpointed",
             "stage_reported",
             "verify_check_finished",
+            "agent_output",
+            "skeptic_verdict",
             "state_changed", // done — no iteration_finished, the run ended
         ]
     );
@@ -159,8 +174,9 @@ async fn a_full_iteration_emits_the_staged_event_sequence_one_sandbox_per_stage(
             ("stage_reported".into(), "simplify".into()),
         ]
     );
-    // One fresh sandbox per stage, every one torn down.
-    assert_eq!(ran.sandbox.created(), 4);
+    // One fresh sandbox per stage plus one for the skeptic, every one
+    // torn down.
+    assert_eq!(ran.sandbox.created(), 5);
     assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
 }
 
@@ -174,13 +190,17 @@ async fn each_stage_preamble_carries_prior_reports_and_its_own_schema() {
             reports("continue", "IMPL-MARKER"),
             reports("continue", "reviewed"),
             reports("done", "done"),
+            unrefuted(),
         ],
         vec![],
     )
     .await;
 
-    let [plan, implement, review, _simplify] = ran.prompts.as_slice() else {
-        panic!("expected four stage prompts, got {}", ran.prompts.len());
+    let [plan, implement, review, _simplify, _skeptic] = ran.prompts.as_slice() else {
+        panic!(
+            "expected four stage prompts and a skeptic, got {}",
+            ran.prompts.len()
+        );
     };
 
     // The first plan has no hand-off — nothing came before it — but
@@ -215,7 +235,7 @@ async fn a_prompt_override_replaces_the_shipped_default() {
     .unwrap();
     let sandbox = Arc::new(StagedSandbox::new(
         workspace.path().to_path_buf(),
-        vec![reports("done", "done")],
+        vec![reports("done", "done"), unrefuted()],
     ));
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
@@ -230,6 +250,8 @@ async fn a_prompt_override_replaces_the_shipped_default() {
     assert_eq!(outcome, RunOutcome::Done);
     let plan = &sandbox.agent_prompts()[0];
     assert!(plan.contains("CUSTOM PLAN RULES"), "{plan}");
+    let skeptic = &sandbox.agent_prompts()[1];
+    assert!(skeptic.contains("CUSTOM PLAN RULES"), "{skeptic}");
 }
 
 #[cfg(unix)]
@@ -246,7 +268,7 @@ async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {
 
     let sandbox = Arc::new(StagedSandbox::new(
         workspace.path().to_path_buf(),
-        vec![reports("done", "done")],
+        vec![reports("done", "done"), unrefuted()],
     ));
     sandbox.seed_guest_file(
         "/workspace/prompts/plan.md",
@@ -439,6 +461,7 @@ async fn checkpoints_land_after_mutating_stages_and_scratch_stays_out_of_history
             reports("continue", "built"),
             reports("continue", "reviewed"),
             reports("done", "done"),
+            unrefuted(),
         ],
         vec![],
     )
@@ -487,6 +510,7 @@ async fn a_full_pass_starts_a_fresh_iteration_that_reads_the_last() {
             reports("continue", "reviewed"),
             reports("continue", "ITER1-SIMPLIFY"),
             reports("done", "nothing left"),
+            unrefuted(),
         ],
         vec![],
     )
@@ -521,7 +545,11 @@ async fn a_full_pass_starts_a_fresh_iteration_that_reads_the_last() {
 async fn a_malformed_report_earns_one_repair_then_advances() {
     // Plan's first report is rejected; its repair is accepted, and the
     // run goes on.
-    let ran = run_default(vec![malformed(), reports("done", "recovered")], vec![]).await;
+    let ran = run_default(
+        vec![malformed(), reports("done", "recovered"), unrefuted()],
+        vec![],
+    )
+    .await;
 
     assert_eq!(ran.outcome, RunOutcome::Done);
     let kinds = kinds(&ran.events);
@@ -542,8 +570,9 @@ async fn a_malformed_report_earns_one_repair_then_advances() {
     );
     let repair = &ran.prompts[1];
     assert!(repair.contains("PlanReport"), "{repair}");
-    // Both attempts shared the one plan sandbox.
-    assert_eq!(ran.sandbox.created(), 1);
+    // Both report attempts shared the plan sandbox; the skeptic got a
+    // second, fresh one after the repaired done claim.
+    assert_eq!(ran.sandbox.created(), 2);
 }
 
 #[tokio::test]
@@ -598,9 +627,195 @@ async fn a_stage_cannot_reuse_the_previous_stages_report() {
 /// listing and the metadata agree on what is running.
 #[tokio::test]
 async fn the_run_opens_by_naming_the_kernel_and_agent() {
-    let ran = run_default(vec![reports("done", "done")], vec![]).await;
+    let ran = run_default(vec![reports("done", "done"), unrefuted()], vec![]).await;
     assert!(matches!(
         &ran.events[0],
         RunEvent::RunStarted { kernel, agent } if kernel == "pipeline" && agent == "scripted"
     ));
+}
+
+// ---------- Verified Done: green checks and an unrefuted skeptic ----------
+
+#[tokio::test]
+async fn done_requires_green_checks_and_an_unrefuted_fresh_skeptic() {
+    let ran = run_default(
+        vec![reports("done", "the objective is complete"), unrefuted()],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    assert_eq!(
+        kinds(&ran.events),
+        [
+            "run_started",
+            "iteration_started",
+            "stage_started",
+            "agent_output",
+            "stage_reported",
+            "verify_check_finished",
+            "agent_output",
+            "skeptic_verdict",
+            "state_changed",
+        ]
+    );
+    assert!(matches!(
+        ran.events.iter().find(|event| matches!(event, RunEvent::SkepticVerdict { .. })),
+        Some(RunEvent::SkepticVerdict {
+            iteration: 1,
+            refuted: false,
+            findings,
+        }) if findings.is_empty()
+    ));
+    assert_eq!(ran.sandbox.created(), 2);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+
+    let skeptic_prompt = &ran.prompts[1];
+    assert!(
+        skeptic_prompt.contains("the objective is complete"),
+        "{skeptic_prompt}"
+    );
+    assert!(skeptic_prompt.contains("SkepticReport"), "{skeptic_prompt}");
+    for stage in ["plan", "implement", "review", "simplify"] {
+        assert!(
+            skeptic_prompt.contains(&format!("## {stage} domain prompt")),
+            "{stage}: {skeptic_prompt}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refuting_skeptic_feeds_the_next_plan_and_the_loop_continues() {
+    let ran = run_default(
+        vec![
+            reports("done", "the first claim"),
+            skeptic(true, &["TODO.md still lists the API as unfinished"]),
+            reports("done", "the finding is resolved"),
+            unrefuted(),
+        ],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    let iteration_events: Vec<String> = ran
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::IterationStarted { iteration } => Some(format!("started {iteration}")),
+            RunEvent::IterationFinished { iteration, outcome } => {
+                Some(format!("finished {iteration} {outcome:?}"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        iteration_events,
+        ["started 1", "finished 1 Completed", "started 2"]
+    );
+
+    let second_plan = &ran.prompts[2];
+    assert!(
+        second_plan.contains("## Completion claim refuted"),
+        "{second_plan}"
+    );
+    assert!(
+        second_plan.contains("TODO.md still lists the API as unfinished"),
+        "{second_plan}"
+    );
+    assert_eq!(
+        ran.events
+            .iter()
+            .filter(|event| matches!(event, RunEvent::SkepticVerdict { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(ran.sandbox.created(), 4);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+}
+
+#[tokio::test]
+async fn a_done_claim_with_red_checks_never_reaches_the_skeptic() {
+    let ran = run_default(
+        vec![
+            reports("done", "first premature claim"),
+            reports("done", "second premature claim"),
+        ],
+        vec![1, 1],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Paused(PauseReason::VerifyFailed));
+    assert!(carries_verify_feedback(&ran.prompts[1]));
+    assert!(
+        !ran.events
+            .iter()
+            .any(|event| matches!(event, RunEvent::SkepticVerdict { .. }))
+    );
+    assert_eq!(ran.sandbox.created(), 2);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+}
+
+#[tokio::test]
+async fn a_malformed_skeptic_report_earns_one_repair_in_the_same_sandbox() {
+    let ran = run_default(
+        vec![
+            reports("done", "the objective is complete"),
+            malformed(),
+            unrefuted(),
+        ],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    assert!(
+        ran.events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ReportRejected { .. }))
+    );
+    assert!(
+        ran.prompts[2].contains("SkepticReport"),
+        "{}",
+        ran.prompts[2]
+    );
+    // Plan and skeptic get fresh sandboxes; the skeptic's report
+    // repair stays in the skeptic sandbox because no new work runs.
+    assert_eq!(ran.sandbox.created(), 2);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+}
+
+#[tokio::test]
+async fn a_refutation_without_findings_is_repaired_before_it_can_branch() {
+    let ran = run_default(
+        vec![
+            reports("done", "the objective is complete"),
+            skeptic(true, &[]),
+            unrefuted(),
+        ],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    let rejected = ran
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::ReportRejected { errors, .. } => Some(errors),
+            _ => None,
+        })
+        .expect("the contradictory verdict is rejected");
+    assert!(
+        rejected
+            .iter()
+            .any(|error| error.contains("at least one finding")),
+        "{rejected:?}"
+    );
+    assert!(
+        ran.prompts[2].contains("SkepticReport"),
+        "{}",
+        ran.prompts[2]
+    );
+    assert_eq!(ran.sandbox.created(), 2);
 }

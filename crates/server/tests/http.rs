@@ -6,7 +6,10 @@ use api::{ApiError, ErrorCode, ListRunsResponse, RunStatusResponse, SubmitRunRes
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use engine::testkit::{MapSecrets, NoSecrets, ScriptedSandbox, StubNotifier, seeded_repo};
+use engine::testkit::{
+    MapSecrets, NoSecrets, SKEPTIC_PROMPT_HEADING, ScriptedSandbox, StubNotifier,
+    UNREFUTED_SKEPTIC_REPORT, seeded_repo,
+};
 use engine::{EventSink, ExecEvent, ExitStatus, RunDir, RunEvent, RunId, SecretsProvider};
 use http_body_util::BodyExt;
 use serde::de::DeserializeOwned;
@@ -26,6 +29,9 @@ fn fake_sandbox(report: Value, barrier: Option<Arc<Barrier>>) -> ScriptedSandbox
         sandbox = sandbox.with_barrier(barrier);
     }
     sandbox.write_report_on_exec(serde_json::to_vec(&report).unwrap());
+    if report["status"].as_str() == Some("done") {
+        sandbox.write_report_when_argv_contains(SKEPTIC_PROMPT_HEADING, UNREFUTED_SKEPTIC_REPORT);
+    }
     sandbox
 }
 

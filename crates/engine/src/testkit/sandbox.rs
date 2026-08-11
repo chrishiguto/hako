@@ -103,6 +103,10 @@ pub struct ScriptedSandbox {
     /// Per path, the contents successive execs write; the last entry
     /// repeats once the queue is down to it.
     on_exec: Mutex<BTreeMap<PathBuf, VecDeque<Vec<u8>>>>,
+    /// Report overrides selected by a marker in an exec's argv. This
+    /// lets one repeating fake serve distinct invocation contracts
+    /// without a global queue that races concurrent sandbox handles.
+    report_by_argv: Mutex<Vec<(String, Vec<u8>)>>,
     execs: Mutex<Vec<ExecSpec>>,
     /// Every exec waits here before streaming — how a test holds two
     /// runs in flight at once to observe their overlap.
@@ -193,6 +197,19 @@ impl ScriptedSandbox {
         self.write_on_exec(Path::new(GUEST_ROOT).join(REPORT_FILE), report);
     }
 
+    /// Overrides the report when any argv element contains `marker`.
+    /// The last matching registration wins.
+    pub fn write_report_when_argv_contains(
+        &self,
+        marker: impl Into<String>,
+        report: impl Into<Vec<u8>>,
+    ) {
+        self.report_by_argv
+            .lock()
+            .unwrap()
+            .push((marker.into(), report.into()));
+    }
+
     /// Every exec that ran, argv-exact, in order.
     pub fn execs(&self) -> Vec<ExecSpec> {
         self.execs.lock().unwrap().clone()
@@ -251,6 +268,16 @@ impl Sandbox for ScriptedSandbox {
             };
             self.seed_file(path.clone(), contents);
         }
+        if let Some((_, report)) = self
+            .report_by_argv
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(marker, _)| command.argv.iter().any(|arg| arg.contains(marker)))
+        {
+            self.seed_file(Path::new(GUEST_ROOT).join(REPORT_FILE), report.clone());
+        }
         let transcript = {
             let mut script = self.script.lock().unwrap();
             script
@@ -302,6 +329,11 @@ impl Sandbox for ScriptedSandbox {
         Ok(())
     }
 }
+
+/// The report of a skeptic that lets a `done` claim stand — what a
+/// fake serves the skeptic invocation so a scripted run can reach
+/// `done`.
+pub const UNREFUTED_SKEPTIC_REPORT: &[u8] = br#"{"refuted": false, "findings": []}"#;
 
 /// One agent exec [`StagedSandbox`] will serve: what it prints, how it
 /// exits, and the report it leaves (or `None` to leave none, so the
