@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// Where a run stands: `running → paused(reason) | done | failed |
 /// cancelled`. Paused is the only state a run can leave again.
+///
+/// This enum is the run's lifecycle, nothing else: a host that fails
+/// to *read* a run does not put it in a state — it reports the failed
+/// read beside this enum, never as a variant of it, because the run
+/// itself is in whatever state its record holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]

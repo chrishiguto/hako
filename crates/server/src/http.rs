@@ -107,11 +107,10 @@ async fn submit_run(
     ))
 }
 
-async fn list_runs(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<ListRunsResponse>, HttpError> {
-    let runs = state.registry.list().await.map_err(HttpError::store)?;
-    Ok(Json(ListRunsResponse { runs }))
+async fn list_runs(State(state): State<Arc<AppState>>) -> Json<ListRunsResponse> {
+    Json(ListRunsResponse {
+        runs: state.registry.list().await,
+    })
 }
 
 async fn run_status(

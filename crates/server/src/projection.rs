@@ -5,7 +5,7 @@
 //! no state: disk is the source of truth and every read projects the
 //! log afresh.
 
-use api::{RunStatusResponse, RunSummary};
+use api::{RunListEntry, RunStatusResponse, RunSummary, UnreadableRun, UnreadableState};
 use engine::RunDir;
 
 pub(crate) async fn status(dir: &RunDir) -> Result<RunStatusResponse, engine::StoreError> {
@@ -27,4 +27,30 @@ pub(crate) async fn status(dir: &RunDir) -> Result<RunStatusResponse, engine::St
         last_summary: projection.last_report.map(|core| core.summary),
         pending_questions,
     })
+}
+
+/// The list's view of one run directory. A run whose log projects is
+/// its summary; one whose projection fails is still named — identity
+/// from its still-readable registry metadata, the failure as the
+/// reason — so the fleet view never omits a run that exists. `None`
+/// is a directory deleted under a live entry: a run that no longer
+/// exists, exactly what a restarted daemon would not index at all.
+pub(crate) async fn list_entry(dir: &RunDir) -> Option<RunListEntry> {
+    match status(dir).await {
+        Ok(status) => Some(RunListEntry::Run(status.run)),
+        Err(engine::StoreError::NotFound(_)) => None,
+        Err(error) => {
+            let meta = dir.meta();
+            let entry = UnreadableRun {
+                run_id: meta.run_id.as_str().to_owned(),
+                state: UnreadableState::Unreadable,
+                reason: error.to_string(),
+                kernel: meta.kernel.clone(),
+                agent: meta.agent.clone(),
+                created_at: meta.created_at.clone(),
+            };
+            tracing::error!(run_id = %entry.run_id, reason = %entry.reason, "run unreadable in list");
+            Some(RunListEntry::Unreadable(entry))
+        }
+    }
 }
