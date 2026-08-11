@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -149,45 +150,26 @@ async fn run_events(
                 })
         })
         .transpose()?;
-    let events = dir.events().await.map_err(HttpError::run_store)?;
-    let next_seq = after.map_or(0, |seq| seq.saturating_add(1));
-    let stream = stream::unfold(
-        EventStream {
-            dir,
-            events,
-            next_seq,
-        },
-        |mut state| async move {
-            loop {
-                if let Some(envelope) = usize::try_from(state.next_seq)
-                    .ok()
-                    .and_then(|index| state.events.get(index))
-                    .cloned()
-                {
-                    state.next_seq = state.next_seq.saturating_add(1);
-                    let event = Event::default()
-                        .id(envelope.seq.to_string())
-                        .data(serde_json::to_string(&envelope).expect("event envelope serializes"));
-                    return Some((Ok::<_, std::convert::Infallible>(event), state));
-                }
-                if state
-                    .events
-                    .last()
-                    .is_some_and(|event| is_terminal_event(&event.event))
-                {
-                    return None;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                match state.dir.events().await {
-                    Ok(events) => state.events = events,
-                    Err(error) => {
-                        tracing::error!(%error, "event stream stopped reading run log");
-                        return None;
-                    }
-                }
-            }
-        },
-    );
+    let (history, cursor) = dir
+        .events_tail(engine::LogCursor::start())
+        .await
+        .map_err(HttpError::run_store)?;
+    let follower = EventFollower {
+        ended: history
+            .last()
+            .is_some_and(|event| is_terminal_event(&event.event)),
+        min_seq: after.map_or(0, |seq| seq.saturating_add(1)),
+        pending: history.into(),
+        cursor,
+        dir,
+    };
+    let stream = stream::unfold(follower, |mut follower| async move {
+        let envelope = follower.next_event().await?;
+        let event = Event::default()
+            .id(envelope.seq.to_string())
+            .data(serde_json::to_string(&envelope).expect("event envelope serializes"));
+        Some((Ok::<_, std::convert::Infallible>(event), follower))
+    });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -273,10 +255,52 @@ async fn status_json(dir: &engine::RunDir) -> Result<Json<api::RunStatusResponse
     ))
 }
 
-struct EventStream {
+/// One SSE subscription's tail of the durable log: replay first, then
+/// poll for what appended since. The Event Log stays the source of
+/// truth — the follower keeps only a cursor and never re-reads what
+/// it already delivered.
+struct EventFollower {
     dir: engine::RunDir,
-    events: Vec<EventEnvelope>,
-    next_seq: u64,
+    pending: VecDeque<EventEnvelope>,
+    cursor: engine::LogCursor,
+    /// Replay below this seq is skipped: the client already holds it,
+    /// per its `Last-Event-ID`.
+    min_seq: u64,
+    /// The log holds its terminal event; nothing more will append.
+    ended: bool,
+}
+
+impl EventFollower {
+    async fn next_event(&mut self) -> Option<EventEnvelope> {
+        loop {
+            if let Some(envelope) = self.pending.pop_front() {
+                if envelope.seq >= self.min_seq {
+                    return Some(envelope);
+                }
+                continue;
+            }
+            if self.ended {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match self.dir.events_tail(self.cursor).await {
+                Ok((events, cursor)) => {
+                    self.cursor = cursor;
+                    // The terminal event, when it comes, is the last
+                    // ever appended — an empty poll keeps the verdict
+                    // of the one before it.
+                    if let Some(last) = events.last() {
+                        self.ended = is_terminal_event(&last.event);
+                    }
+                    self.pending.extend(events);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "event stream stopped reading run log");
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 fn is_terminal_event(event: &engine::RunEvent) -> bool {

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::event::{EventSink, EventSinkError};
@@ -57,6 +57,28 @@ pub struct RunMeta {
 pub struct RunDir {
     root: PathBuf,
     meta: RunMeta,
+}
+
+/// A reader's stable position in a run's event log: the byte length
+/// of the whole lines it has consumed, and the sequence number the
+/// next event must carry — the pair [`RunDir::events_tail`] advances
+/// with every read. Byte offset and sequence travel together so a
+/// follower can neither re-read acknowledged history nor skip a line
+/// unchecked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogCursor {
+    offset: u64,
+    next_seq: u64,
+}
+
+impl LogCursor {
+    /// The beginning of the log: everything is ahead of this cursor.
+    pub fn start() -> Self {
+        Self {
+            offset: 0,
+            next_seq: 0,
+        }
+    }
 }
 
 impl RunDir {
@@ -136,12 +158,21 @@ impl RunDir {
         Ok(self.read_log().await?.0)
     }
 
-    /// The log's whole-line events, plus the byte length of the
-    /// whole-lines prefix — anything beyond it is a torn tail.
-    async fn read_log(&self) -> Result<(Vec<EventEnvelope>, u64), StoreError> {
+    /// The events at and after `cursor`, plus the advanced cursor a
+    /// follower keeps to read only what has appended since. The replay
+    /// is as strict as [`RunDir::events`] — every line must parse,
+    /// carry this run's id, and sit at the sequence position the
+    /// cursor demands — but incremental: a follower polling a long
+    /// log never re-parses history it already delivered. Bytes past
+    /// the last newline are a torn tail, never acknowledged, and stay
+    /// outside the cursor until their line completes.
+    pub async fn events_tail(
+        &self,
+        cursor: LogCursor,
+    ) -> Result<(Vec<EventEnvelope>, LogCursor), StoreError> {
         let path = self.log_path();
-        let raw = match fs::read(&path).await {
-            Ok(raw) => raw,
+        let mut file = match fs::File::open(&path).await {
+            Ok(file) => file,
             // `create` writes the log at birth and nothing removes it,
             // so its absence means the run directory itself is gone.
             // Disk is the source of truth — the same answer `open`
@@ -151,6 +182,13 @@ impl RunDir {
             }
             Err(source) => return Err(StoreError::io(&path, source)),
         };
+        file.seek(std::io::SeekFrom::Start(cursor.offset))
+            .await
+            .map_err(|source| StoreError::io(&path, source))?;
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw)
+            .await
+            .map_err(|source| StoreError::io(&path, source))?;
         let terminated = raw
             .iter()
             .rposition(|&byte| byte == b'\n')
@@ -158,33 +196,46 @@ impl RunDir {
         let text = std::str::from_utf8(&raw[..terminated])
             .map_err(|error| StoreError::corrupt(&path, error))?;
         let mut events = Vec::new();
-        for (position, line) in text.lines().enumerate() {
-            let envelope: EventEnvelope = serde_json::from_str(line).map_err(|error| {
-                StoreError::corrupt(&path, format!("line {}: {error}", position + 1))
-            })?;
-            if envelope.seq != position as u64 {
+        let mut next_seq = cursor.next_seq;
+        for line in text.lines() {
+            // Seq equals log position, so the expected seq also names
+            // the absolute line for the error.
+            let position = next_seq + 1;
+            let envelope: EventEnvelope = serde_json::from_str(line)
+                .map_err(|error| StoreError::corrupt(&path, format!("line {position}: {error}")))?;
+            if envelope.seq != next_seq {
                 return Err(StoreError::corrupt(
                     &path,
-                    format!(
-                        "line {}: seq {} out of sequence",
-                        position + 1,
-                        envelope.seq
-                    ),
+                    format!("line {position}: seq {} out of sequence", envelope.seq),
                 ));
             }
             if envelope.run_id != self.meta.run_id.as_str() {
                 return Err(StoreError::corrupt(
                     &path,
                     format!(
-                        "line {}: event belongs to run `{}`",
-                        position + 1,
+                        "line {position}: event belongs to run `{}`",
                         envelope.run_id
                     ),
                 ));
             }
+            next_seq += 1;
             events.push(envelope);
         }
-        Ok((events, terminated as u64))
+        Ok((
+            events,
+            LogCursor {
+                offset: cursor.offset + terminated as u64,
+                next_seq,
+            },
+        ))
+    }
+
+    /// The log's whole-line events, plus the byte length of the
+    /// whole-lines prefix — anything beyond it is a torn tail. The
+    /// full-history spelling of [`RunDir::events_tail`].
+    async fn read_log(&self) -> Result<(Vec<EventEnvelope>, u64), StoreError> {
+        let (events, cursor) = self.events_tail(LogCursor::start()).await?;
+        Ok((events, cursor.offset))
     }
 
     /// Where the run stands per the log: the [`RunProjection`] fold
@@ -663,6 +714,84 @@ mod tests {
         // the surviving emit acknowledged.
         let events = dir.events().await.unwrap();
         assert_eq!(events.last().unwrap().event, paused());
+    }
+
+    /// The follower contract: a tail from an advanced cursor returns
+    /// only what appended since, and the cursor of an empty read is
+    /// the same cursor — polling is idempotent between appends.
+    #[tokio::test]
+    async fn a_tail_reads_only_what_appended_since_the_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+        sink.emit(started()).await.unwrap();
+        sink.emit(RunEvent::IterationStarted { iteration: 1 })
+            .await
+            .unwrap();
+
+        let (history, cursor) = dir.events_tail(LogCursor::start()).await.unwrap();
+        assert_eq!(history.len(), 2);
+        let (nothing, unmoved) = dir.events_tail(cursor).await.unwrap();
+        assert!(nothing.is_empty());
+        assert_eq!(unmoved, cursor);
+
+        sink.emit(paused()).await.unwrap();
+        let (tail, advanced) = dir.events_tail(cursor).await.unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].seq, 2);
+        assert_ne!(advanced, cursor);
+        assert!(dir.events_tail(advanced).await.unwrap().0.is_empty());
+    }
+
+    /// A torn tail stays outside the cursor: the bytes were never
+    /// acknowledged, so the poll that sees them returns nothing and
+    /// the poll after the line completes returns the whole event.
+    #[tokio::test]
+    async fn a_torn_tail_stays_outside_the_cursor_until_its_line_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+        sink.emit(started()).await.unwrap();
+        drop(sink);
+        let (_, cursor) = dir.events_tail(LogCursor::start()).await.unwrap();
+
+        let log_path = dir.path().join(EVENT_LOG_FILE);
+        let whole = std::fs::read(&log_path).unwrap();
+        let line = r#"{"seq":1,"run_id":"r1","at":"2026-07-13T08:00:00Z","type":"iteration_started","iteration":1}"#;
+        let (torn, rest) = line.as_bytes().split_at(20);
+        std::fs::write(&log_path, [whole.as_slice(), torn].concat()).unwrap();
+        let (nothing, unmoved) = dir.events_tail(cursor).await.unwrap();
+        assert!(nothing.is_empty());
+        assert_eq!(unmoved, cursor);
+
+        std::fs::write(&log_path, [whole.as_slice(), torn, rest, b"\n"].concat()).unwrap();
+        let (tail, _) = dir.events_tail(cursor).await.unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].event, RunEvent::IterationStarted { iteration: 1 });
+    }
+
+    /// A tail is as strict as a full replay: a line that does not sit
+    /// at the sequence the cursor demands is corruption, named by its
+    /// absolute line.
+    #[tokio::test]
+    async fn a_tail_rejects_a_continuation_out_of_sequence() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = created(root.path()).await;
+        let sink = dir.event_sink().await.unwrap();
+        sink.emit(started()).await.unwrap();
+        let (_, cursor) = dir.events_tail(LogCursor::start()).await.unwrap();
+
+        let log_path = dir.path().join(EVENT_LOG_FILE);
+        let mut raw = std::fs::read(&log_path).unwrap();
+        raw.extend_from_slice(
+            br#"{"seq":7,"run_id":"r1","at":"2026-07-13T08:00:00Z","type":"iteration_started","iteration":1}
+"#,
+        );
+        std::fs::write(&log_path, raw).unwrap();
+
+        let error = dir.events_tail(cursor).await.unwrap_err();
+        assert!(error.to_string().contains("line 2"), "{error}");
+        assert!(error.to_string().contains("seq 7"), "{error}");
     }
 
     /// An append cut short by a crash or a full disk leaves a torn

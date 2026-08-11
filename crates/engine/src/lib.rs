@@ -57,5 +57,5 @@ pub use sandbox::{
 pub use secrets::{
     SecretEnv, SecretName, SecretRequirement, SecretValue, SecretsError, SecretsProvider,
 };
-pub use store::{FileEventSink, RunDir, RunMeta, StoreError};
+pub use store::{FileEventSink, LogCursor, RunDir, RunMeta, StoreError};
 pub use workspace::{Workspace, WorkspaceError};
