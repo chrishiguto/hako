@@ -2,6 +2,8 @@
 //! published language. Values never cross a boundary: they resolve
 //! daemon-side through the engine's `SecretsProvider` seam.
 
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 /// A name a flow may reference — never a value, so flow files stay
@@ -44,19 +46,32 @@ impl SecretName {
     }
 }
 
+impl FromStr for SecretName {
+    type Err = SecretNameError;
+
+    fn from_str(source: &str) -> Result<Self, Self::Err> {
+        let name = Self(source.to_string());
+        if name.is_env_shaped() {
+            Ok(name)
+        } else {
+            Err(SecretNameError(source.to_string()))
+        }
+    }
+}
+
+/// A name outside the shape the flow grammar accepts.
+#[derive(Debug, thiserror::Error)]
+#[error("secret name `{0}` must be env-var shaped: ASCII letters, digits, and `_` only")]
+pub struct SecretNameError(String);
+
 impl<'de> Deserialize<'de> for SecretName {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let name = Self(String::deserialize(deserializer)?);
-        if name.is_env_shaped() {
-            Ok(name)
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "secret name `{name}` must be env-var shaped: ASCII letters, digits, and `_` only"
-            )))
-        }
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 

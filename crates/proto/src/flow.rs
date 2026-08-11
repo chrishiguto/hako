@@ -590,7 +590,8 @@ mod tests {
             let flow = format!("{MINIMAL_FLOW}\n[secrets]\nenv = [{name:?}]\n");
             let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
             assert!(err.contains("env-var shaped"), "{name}: {err}");
-            assert!(err.contains(name), "{name}: {err}");
+            // Quoted, so the empty name asserts its `` too.
+            assert!(err.contains(&format!("`{name}`")), "{name}: {err}");
         }
     }
 
