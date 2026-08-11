@@ -315,10 +315,15 @@ repo = {:?}
     async fn cancelling_a_finished_run_drains_it_but_the_log_keeps_its_ending() {
         let runs_root = tempfile::tempdir().unwrap();
         let repo = seeded_repo();
-        // One agent exec whose report claims done: the plan stage ends
-        // the run on its own word, no checkpoint, no verify.
-        let sandbox = Arc::new(ScriptedSandbox::scripted(vec![exec("planned\n", 0)]));
+        // The plan claims done, then a fresh skeptic lets the claim
+        // stand. No checks are configured, so neither path needs a
+        // check transcript.
+        let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+            exec("planned\n", 0),
+            exec("checked\n", 0),
+        ]));
         sandbox.write_report_on_exec(r#"{"status": "done", "summary": "nothing left"}"#);
+        sandbox.write_report_on_exec(r#"{"refuted": false, "findings": []}"#);
         let runtime =
             EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
         let registry = RunRegistry::load(runs_root.path().to_path_buf())

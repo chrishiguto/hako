@@ -26,6 +26,12 @@ fn fake_sandbox(report: Value, barrier: Option<Arc<Barrier>>) -> ScriptedSandbox
         sandbox = sandbox.with_barrier(barrier);
     }
     sandbox.write_report_on_exec(serde_json::to_vec(&report).unwrap());
+    if report["status"].as_str() == Some("done") {
+        sandbox.write_report_when_argv_contains(
+            "# hako pipeline — skeptic iteration",
+            br#"{"refuted": false, "findings": []}"#,
+        );
+    }
     sandbox
 }
 

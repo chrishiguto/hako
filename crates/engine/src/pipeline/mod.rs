@@ -11,16 +11,13 @@
 //! a reviewer never inherits the implementer's environment. Mutating
 //! stages (implement, review, simplify) are checkpointed and then
 //! verified; a red check re-runs that stage with the failure in its
-//! preamble, and exhausted retries pause the run. A `done` claim ends
-//! the run, `blocked`/`needs_input` pause it immediately, mid-pipeline.
-//!
-//! What lands here later: the Verified Done skeptic gate (#7), the
-//! safety rails — budgets, iteration timeout, drift, pause
-//! notifications (#8), resume-in-place (#28), and the deliver stage
-//! (#29). This slice is the loop those build on.
+//! preamble, and exhausted retries pause the run. A `done` claim starts
+//! a fresh skeptic invocation; only an unrefuted claim ends the run.
+//! `blocked`/`needs_input` pause it immediately, mid-pipeline.
 
 mod contract;
 pub(crate) mod frame;
+mod skeptic;
 
 use async_trait::async_trait;
 
@@ -66,8 +63,9 @@ impl Kernel for PipelineKernel {
         // remaining work and unfixed findings carrying forward. Empty
         // for the first iteration; nothing came before it.
         let mut prior: Vec<StageReport> = Vec::new();
+        let mut plan_feedback: Vec<Feedback> = Vec::new();
         let mut iteration: u32 = 1;
-        loop {
+        'iterations: loop {
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
@@ -78,14 +76,46 @@ impl Kernel for PipelineKernel {
                 // iteration; every later stage reads what this
                 // iteration produced before it.
                 let handoff = if index == 0 { &prior } else { &pass };
-                match execute_stage(&ctx, iteration, stage, handoff).await? {
+                let feedback = if index == 0 {
+                    std::mem::take(&mut plan_feedback)
+                } else {
+                    Vec::new()
+                };
+                match execute_stage(&ctx, iteration, stage, handoff, feedback).await? {
                     StageEnd::Advance(report) => pass.push(report),
-                    // Done and pause leave the iteration mid-pipeline —
-                    // the run ends or suspends on the agent's own word —
-                    // so no `IterationFinished` closes a pass that never
-                    // finished. Only a full pass (below) or a hard
-                    // failure emits one.
-                    StageEnd::Done(_) => return conclude(&ctx, RunOutcome::Done).await,
+                    // An accepted claim and a pause leave the iteration
+                    // open; a refutation closes it as verified progress
+                    // before the next plan begins.
+                    StageEnd::Done(claim) => match skeptic::judge(&ctx, iteration, &claim).await? {
+                        Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => {
+                            return conclude(&ctx, RunOutcome::Done).await;
+                        }
+                        Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
+                            pass.push(claim);
+                            prior = pass;
+                            plan_feedback = vec![Feedback::SkepticRefuted { findings }];
+                            ctx.events
+                                .emit(RunEvent::IterationFinished {
+                                    iteration,
+                                    outcome: IterationOutcome::Completed,
+                                })
+                                .await?;
+                            iteration += 1;
+                            continue 'iterations;
+                        }
+                        Bracketed::Finished(skeptic::SkepticEnd::Failed) => {
+                            ctx.events
+                                .emit(RunEvent::IterationFinished {
+                                    iteration,
+                                    outcome: IterationOutcome::Failed,
+                                })
+                                .await?;
+                            return conclude(&ctx, RunOutcome::Failed).await;
+                        }
+                        Bracketed::Cancelled => {
+                            return conclude(&ctx, RunOutcome::Cancelled).await;
+                        }
+                    },
                     StageEnd::Pause(reason) => {
                         return conclude(&ctx, RunOutcome::Paused(reason)).await;
                     }
@@ -121,10 +151,9 @@ enum StageEnd {
     /// The stage reported `continue`; its report joins the hand-off to
     /// the next stage.
     Advance(StageReport),
-    /// A stage claimed `done` and cleared its verify gate — the run is
-    /// complete. Carries the claiming report so the Verified Done
-    /// skeptic has a claim to interrogate.
-    Done(#[expect(dead_code, reason = "read once the skeptic interrogates the claim")] StageReport),
+    /// A stage claimed `done` and cleared its verify gate. Carries the
+    /// report the skeptic must interrogate before completion is real.
+    Done(StageReport),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
     Pause(PauseReason),
@@ -140,16 +169,16 @@ enum StageEnd {
 
 /// Runs one stage to a verdict, re-running it in a fresh sandbox for as
 /// many verify failures as the flow's `on_fail` allows before it pauses
-/// or fails. Each pass re-reads the domain prompt (it is agent-editable)
-/// and re-frames it — carrying the last verify failure so the agent
-/// fixes the cause rather than repeating it.
+/// or fails. Each pass re-reads the agent-editable domain prompt. The
+/// first attempt may carry prior-loop feedback; a verify retry replaces
+/// that with the latest check failure.
 async fn execute_stage(
     ctx: &KernelContext,
     iteration: u32,
     stage: Stage,
     handoff: &[StageReport],
+    mut feedback: Vec<Feedback>,
 ) -> Result<StageEnd, KernelError> {
-    let mut feedback: Vec<Feedback> = Vec::new();
     let mut verify_failures: u32 = 0;
     loop {
         let drive = match drive_stage(ctx, iteration, stage, handoff, &feedback).await? {
@@ -298,11 +327,10 @@ fn is_mutating(stage: Stage) -> bool {
     matches!(stage, Stage::Implement | Stage::Review | Stage::Simplify)
 }
 
-/// Whether a stage's report faces the verify checks: only a mutating
-/// stage with fresh work to judge. A pausing status stops the run on
-/// the agent's own word, so there is nothing to verify.
+/// Mutating progress is always checked; a `done` claim from any stage
+/// also needs a current green verdict before it can reach the skeptic.
 fn runs_verify(stage: Stage, status: ReportStatus) -> bool {
-    is_mutating(stage) && matches!(status, ReportStatus::Continue | ReportStatus::Done)
+    status == ReportStatus::Done || (is_mutating(stage) && status == ReportStatus::Continue)
 }
 
 /// Every ending goes out the same door: the terminal `state_changed`
@@ -347,5 +375,6 @@ mod tests {
         assert!(!runs_verify(Stage::Implement, ReportStatus::Blocked));
         assert!(!runs_verify(Stage::Implement, ReportStatus::NeedsInput));
         assert!(!runs_verify(Stage::Plan, ReportStatus::Continue));
+        assert!(runs_verify(Stage::Plan, ReportStatus::Done));
     }
 }

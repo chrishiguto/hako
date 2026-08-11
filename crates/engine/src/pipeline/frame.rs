@@ -7,8 +7,8 @@
 //! 1. a header naming the stage,
 //! 2. the prior stages' reports, so hand-off is engine-guaranteed
 //!    rather than agent-remembered,
-//! 3. feedback on the previous attempt — today a verify failure to
-//!    fix, when this stage is being re-run,
+//! 3. machine feedback to resolve — a verify failure on a re-run or a
+//!    skeptic's findings on the next plan,
 //! 4. the human's input, when the run resumed from a pause,
 //! 5. the stage's domain prompt — the flow's override or the shipped
 //!    default,
@@ -20,7 +20,7 @@
 //! (section 5, the flow's override or the shipped default). What the
 //! status means and how the loop acts on it lives here, never in the
 //! overridable domain prompt — an edited prompt can shape the work but
-//! can never reach the control flow (ADR 0011).
+//! can never reach the control flow.
 
 use crate::pipeline::contract;
 use crate::preamble::{self, Feedback, HumanInput};

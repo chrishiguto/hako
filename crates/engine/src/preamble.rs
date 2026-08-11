@@ -2,7 +2,7 @@
 //! its prompts with. The frame itself — which sections, in what
 //! order, around which prompts — is kernel policy; what lives here is
 //! the mechanism every frame shares: quoting agent-influenced text so
-//! it cannot escape its fence, feeding a verify failure back, and
+//! it cannot escape its fence, feeding machine verdicts back, and
 //! attributing a human's answers to the questions they addressed.
 //! The repair re-prompt is not a frame piece — it belongs to the
 //! parse-and-repair loop in [`crate::invocation`].
@@ -16,6 +16,7 @@ use crate::report::{Answer, Question};
 /// definition — a test asserts a section is present by its marker
 /// rather than by spelling its wording out a second time.
 pub(crate) const VERIFY_FAILED_HEADING: &str = "## Verify checks failed";
+pub(crate) const SKEPTIC_REFUTED_HEADING: &str = "## Completion claim refuted";
 pub(crate) const HUMAN_INPUT_HEADING: &str = "## Human input";
 
 /// Why the previous work did not count as progress — machine feedback
@@ -25,10 +26,13 @@ pub enum Feedback {
     /// The previous verify checks failed: the failing command and its
     /// captured output.
     VerifyFailed { command: String, output: String },
+    /// A fresh skeptic found concrete evidence against a completion
+    /// claim; the next plan must account for each finding.
+    SkepticRefuted { findings: Vec<String> },
 }
 
-/// Renders feedback as a prompt section, the failure quoted so the
-/// agent reads exactly what the terminal said.
+/// Renders one machine verdict as a prompt section, with its
+/// agent-influenced detail fenced off from the frame around it.
 pub fn feedback(feedback: &Feedback) -> String {
     // A match, not a one-variant destructure: the next Feedback
     // variant must fail to compile here rather than silently render
@@ -42,6 +46,16 @@ pub fn feedback(feedback: &Feedback) -> String {
                  Failing check: `{command}`\n\n\
                  {}\n",
                 fenced(output.trim_end()),
+            )
+        }
+        Feedback::SkepticRefuted { findings } => {
+            let findings = serde_json::to_string_pretty(findings)
+                .expect("a skeptic's string findings serialize");
+            format!(
+                "{SKEPTIC_REFUTED_HEADING}\n\n\
+                 A fresh skeptic found evidence that the previous `done` claim \
+                 was premature. Plan work that resolves every finding:\n\n{}\n",
+                fenced(&findings),
             )
         }
     }
