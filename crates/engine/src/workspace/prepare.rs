@@ -161,9 +161,7 @@ pub async fn reattach(
     }
 }
 
-/// Canonicalizes a mount path and finds its git directory — proving it
-/// is a repository at all. The half of mounting that first preparation
-/// and reattachment share.
+/// The half of mounting that first preparation and reattachment share.
 async fn resolve_mount(repo: &str) -> Result<(PathBuf, PathBuf), WorkspaceError> {
     let root = Path::new(repo);
     if !root.is_dir() {

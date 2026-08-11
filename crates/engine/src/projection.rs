@@ -2,7 +2,7 @@
 //! Log reads back. One pure pass reduces the whole history to where
 //! the run stands now: state, counters, the last report's shared
 //! core, and the resume cursor. Every consumer — the store's state
-//! read, the daemon's status endpoint, a future SSE resume — projects
+//! read, the daemon's status endpoint, its SSE replay — projects
 //! through this fold, so no two can disagree about the same log.
 //! Events in, value out: no I/O, testable with fixture logs.
 //!
