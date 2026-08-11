@@ -298,18 +298,21 @@ async fn list_and_status_expose_pause_reasons_summaries_and_questions() {
     assert_eq!(response.status(), StatusCode::OK);
     let listed: ListRunsResponse = body(response).await;
     assert_eq!(listed.runs.len(), 1);
-    assert_eq!(listed.runs[0], status.run);
+    assert_eq!(listed.runs[0], RunListEntry::Run(status.run));
 }
 
 /// A stage report reaches the log only after the kernel strict-parsed
 /// it against its dialect, so a logged report that cannot yield the
 /// shared report core is a damaged log — not a run in some odd state.
-/// The daemon says so rather than serving a half-read run, and the
-/// list the run belongs to fails with it: quietly dropping the run
-/// would misreport the fleet as healthy.
+/// The run's own endpoint says so rather than serving a half-read
+/// run. The list does not fail with it: the list is how an operator
+/// finds the broken run, so the damage is carried in-band as an
+/// `unreadable` entry beside the healthy fleet — quietly dropping the
+/// run would make absence ambiguous between "gone" and "broken".
 #[tokio::test]
-async fn a_logged_report_without_the_shared_core_reads_as_a_corrupt_log() {
+async fn a_corrupt_run_fails_its_own_status_but_is_listed_unreadable() {
     let runs = tempfile::tempdir().unwrap();
+    let runs_root = runs.path().display().to_string();
     let dir = RunDir::create(runs.path(), RunId::new("r1"), "pipeline", "scripted")
         .await
         .unwrap();
@@ -326,16 +329,36 @@ async fn a_logged_report_without_the_shared_core_reads_as_a_corrupt_log() {
 
     let sandbox = Arc::new(fake_sandbox(done_report(), None));
     let host = TestHost::with_parts(runs, seeded_repo(), sandbox).await;
-    for uri in ["/v1/runs/r1", "/v1/runs"] {
-        let response = request(&host.app, Method::GET, uri, Some(TOKEN), None).await;
-        assert_eq!(
-            response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "{uri}"
+    let submitted = host.submit().await;
+    let healthy = host.wait_for_state(&submitted.run_id, "done").await;
+
+    // The caller asked about the broken thing: loud failure is right.
+    let response = request(&host.app, Method::GET, "/v1/runs/r1", Some(TOKEN), None).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let error: ApiError = body(response).await;
+    assert_eq!(error.code, ErrorCode::InternalError);
+
+    // The caller asked about the fleet: the broken run rides along,
+    // it does not take the healthy one down with it.
+    let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed: ListRunsResponse = body(response).await;
+    assert_eq!(listed.runs.len(), 2);
+    assert_eq!(listed.runs[0], RunListEntry::Run(healthy.run));
+    let RunListEntry::Unreadable(broken) = &listed.runs[1] else {
+        panic!(
+            "the corrupt run is not listed unreadable: {:?}",
+            listed.runs[1]
         );
-        let error: ApiError = body(response).await;
-        assert_eq!(error.code, ErrorCode::InternalError, "{uri}");
-    }
+    };
+    assert_eq!(broken.run_id, "r1");
+    assert_eq!(broken.kernel, "pipeline");
+    assert_eq!(broken.agent, "scripted");
+    assert!(broken.reason.contains("report core"), "{}", broken.reason);
+    // The reason names the damaged file, not where the daemon keeps
+    // it: host paths stay in the server log, off the wire.
+    assert!(broken.reason.contains("events.jsonl"), "{}", broken.reason);
+    assert!(!broken.reason.contains(&runs_root), "{}", broken.reason);
 }
 
 #[tokio::test]
@@ -438,9 +461,12 @@ async fn restart_reloads_runs_and_reduces_status_from_their_event_logs() {
     .await;
     let listed: ListRunsResponse = body(response).await;
     assert_eq!(listed.runs.len(), 1);
-    assert_eq!(listed.runs[0].run_id, submitted.run_id);
+    let RunListEntry::Run(reloaded) = &listed.runs[0] else {
+        panic!("the reloaded run is not readable: {:?}", listed.runs[0]);
+    };
+    assert_eq!(reloaded.run_id, submitted.run_id);
     assert_eq!(
-        serde_json::to_value(listed.runs[0].state).unwrap()["state"],
+        serde_json::to_value(reloaded.state).unwrap()["state"],
         "done"
     );
 }

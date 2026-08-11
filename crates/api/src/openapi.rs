@@ -82,7 +82,7 @@ mod paths {
     path = "/v1/runs",
     tag = "runs",
     responses(
-        (status = 200, description = "All runs with their current state", body = ListRunsResponse),
+        (status = 200, description = "All runs, newest first. Entries are discriminated by their `state` field: a run whose record cannot be read is still listed, with `state: \"unreadable\"` and a `reason`, instead of failing or omitting the fleet view", body = ListRunsResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ApiError),
     )
 )]
@@ -200,7 +200,10 @@ mod tests {
             "SubmitRunRequest",
             "SubmitRunResponse",
             "ListRunsResponse",
+            "RunListEntry",
             "RunSummary",
+            "UnreadableRun",
+            "UnreadableState",
             "RunStatusResponse",
             "AnswerRequest",
             "ResumeRequest",

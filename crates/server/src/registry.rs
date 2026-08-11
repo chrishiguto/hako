@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use api::proto::flow::FlowConfig;
-use api::{BudgetExtension, RunSummary};
+use api::{BudgetExtension, RunListEntry};
 use engine::{Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume, SecretEnv};
 use futures_util::future::join_all;
 use tokio::sync::{Mutex, RwLock};
@@ -507,34 +507,31 @@ impl RunRegistry {
             .map(|record| record.dir.clone())
     }
 
-    pub(crate) async fn list(&self) -> Result<Vec<RunSummary>, engine::StoreError> {
-        let dirs: Vec<RunDir> = self
+    /// Every indexed run, newest first. Infallible by design: one
+    /// damaged run directory must not empty the fleet view — the list
+    /// is how an operator finds the broken run, so its failure rides
+    /// in-band as an unreadable entry instead of failing the whole
+    /// read. The run's own status endpoint still fails loudly.
+    pub(crate) async fn list(&self) -> Vec<RunListEntry> {
+        let mut dirs: Vec<RunDir> = self
             .runs
             .read()
             .await
             .values()
             .map(|record| record.dir.clone())
             .collect();
-        let statuses = join_all(dirs.iter().map(projection::status)).await;
-        let mut summaries = Vec::with_capacity(statuses.len());
-        for status in statuses {
-            match status {
-                Ok(status) => summaries.push(status.run),
-                // A run dir deleted under a live entry is a run that no
-                // longer exists: skipping it serves the same list a
-                // restarted daemon would, where `load` would not index
-                // it at all.
-                Err(engine::StoreError::NotFound(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        summaries.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| right.run_id.cmp(&left.run_id))
+        // Ordered before projecting, on the registry metadata every
+        // entry — readable or not — carries into its list line.
+        dirs.sort_by(|left, right| {
+            let (left, right) = (left.meta(), right.meta());
+            (&right.created_at, right.run_id.as_str())
+                .cmp(&(&left.created_at, left.run_id.as_str()))
         });
-        Ok(summaries)
+        join_all(dirs.iter().map(projection::list_entry))
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
 

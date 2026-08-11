@@ -24,7 +24,52 @@ pub struct SubmitRunResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ListRunsResponse {
-    pub runs: Vec<RunSummary>,
+    pub runs: Vec<RunListEntry>,
+}
+
+/// One entry of the run list. Usually a readable run's summary; a run
+/// whose durable record the daemon cannot read is still listed — as
+/// [`UnreadableRun`] — because omitting it would make absence
+/// ambiguous between "gone" and "broken", exactly the distinction an
+/// operator needs when a disk went bad. Untagged on the wire: both
+/// variants are flat objects told apart by their `state` field, so
+/// clients read one uniform shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum RunListEntry {
+    Run(RunSummary),
+    Unreadable(UnreadableRun),
+}
+
+/// A run that exists but cannot be read: its registry metadata is
+/// intact — identity, kernel, agent, creation time — but projecting
+/// its event log failed, so it has no state to report. Not a
+/// [`proto::run::RunState`]: that enum is the run's lifecycle, and a
+/// run is never *in* state "unreadable" — the daemon's read of it
+/// failed. Its own status endpoint answers with the failure itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct UnreadableRun {
+    pub run_id: String,
+    /// The discriminant: this field alone tells the entry from a run
+    /// summary in the untagged list.
+    pub state: UnreadableState,
+    /// Human-readable description of what failed; never parse this.
+    /// Names files within the run's directory, never a daemon-side
+    /// path — the host's filesystem layout is the server log's
+    /// business, not the wire's.
+    pub reason: String,
+    pub kernel: String,
+    pub agent: String,
+    /// RFC 3339 UTC timestamp.
+    pub created_at: String,
+}
+
+/// A type rather than a bare string, so the wire literal is pinned
+/// where the shape it belongs to is defined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnreadableState {
+    Unreadable,
 }
 
 /// One line of `hako list`: enough to see what a run is and where it
@@ -161,6 +206,95 @@ mod tests {
                 "updated_at": "2026-07-13T09:30:00Z"
             })
         );
+    }
+
+    /// The degraded entry mirrors a summary's shape — `reason` sits
+    /// beside `state` exactly as a pause reason does — and the
+    /// entries are untagged on the wire: `"state"` alone tells a
+    /// healthy run from an unreadable one, on both ends.
+    #[test]
+    fn a_list_mixing_healthy_and_unreadable_runs_reads_flat_and_round_trips() {
+        let list = ListRunsResponse {
+            runs: vec![
+                RunListEntry::Run(RunSummary {
+                    run_id: "r1".into(),
+                    state: RunState::Paused {
+                        reason: PauseReason::Budget,
+                    },
+                    kernel: "pipeline".into(),
+                    agent: "claude".into(),
+                    created_at: "2026-07-13T08:00:00Z".into(),
+                    updated_at: "2026-07-13T09:30:00Z".into(),
+                }),
+                RunListEntry::Unreadable(UnreadableRun {
+                    run_id: "r2".into(),
+                    state: UnreadableState::Unreadable,
+                    reason: "corrupt run record events.jsonl: line 3".into(),
+                    kernel: "pipeline".into(),
+                    agent: "claude".into(),
+                    created_at: "2026-07-13T07:00:00Z".into(),
+                }),
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&list.runs[1]).unwrap(),
+            json!({
+                "run_id": "r2",
+                "state": "unreadable",
+                "reason": "corrupt run record events.jsonl: line 3",
+                "kernel": "pipeline",
+                "agent": "claude",
+                "created_at": "2026-07-13T07:00:00Z"
+            })
+        );
+        round_trips(&list);
+    }
+
+    /// What keeps the untagged split safe is that the two shapes stay
+    /// disjoint — no object can match both. Two guards, each pinned
+    /// against its nearest collision: a paused summary also carries a
+    /// `reason` beside its `state`, but `"paused"` is no
+    /// [`UnreadableState`]; a drifted unreadable entry may grow
+    /// fields a summary has, but `"unreadable"` is no [`RunState`].
+    /// An object matching neither shape is a parse error, not a guess.
+    #[test]
+    fn list_entry_shapes_stay_disjoint_so_state_alone_discriminates() {
+        let paused_with_reason = json!({
+            "run_id": "r1",
+            "state": "paused",
+            "reason": "budget",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T08:00:00Z",
+            "updated_at": "2026-07-13T09:30:00Z"
+        });
+        assert!(matches!(
+            serde_json::from_value::<RunListEntry>(paused_with_reason).unwrap(),
+            RunListEntry::Run(_)
+        ));
+
+        let unreadable_with_drifted_field = json!({
+            "run_id": "r2",
+            "state": "unreadable",
+            "reason": "corrupt run record events.jsonl: line 3",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T07:00:00Z",
+            "updated_at": "2026-07-13T08:00:00Z"
+        });
+        assert!(matches!(
+            serde_json::from_value::<RunListEntry>(unreadable_with_drifted_field).unwrap(),
+            RunListEntry::Unreadable(_)
+        ));
+
+        let matches_neither = json!({
+            "run_id": "r3",
+            "state": "running",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T08:00:00Z"
+        });
+        serde_json::from_value::<RunListEntry>(matches_neither).unwrap_err();
     }
 
     #[test]
