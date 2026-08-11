@@ -174,7 +174,8 @@ async fn a_full_iteration_and_its_skeptic_each_get_a_fresh_sandbox() {
             ("stage_reported".into(), "simplify".into()),
         ]
     );
-    // One fresh sandbox per stage, every one torn down.
+    // One fresh sandbox per stage plus one for the skeptic, every one
+    // torn down.
     assert_eq!(ran.sandbox.created(), 5);
     assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
 }

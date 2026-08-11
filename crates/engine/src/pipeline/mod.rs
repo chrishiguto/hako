@@ -82,6 +82,10 @@ impl Kernel for PipelineKernel {
                     plan_feedback = feedback;
                     iteration += 1;
                 }
+                // Done, pause, and cancel stop mid-pipeline, so no
+                // `IterationFinished` closes a pass that never
+                // finished. Only a full pass or a hard failure emits
+                // one.
                 IterationEnd::Done => return conclude(&ctx, RunOutcome::Done).await,
                 IterationEnd::Pause(reason) => {
                     return conclude(&ctx, RunOutcome::Paused(reason)).await;
@@ -101,10 +105,9 @@ impl Kernel for PipelineKernel {
     }
 }
 
-/// How one iteration ended, as the run loop reads it. Every way an
-/// iteration can end — a full pass, a skeptic's verdict, a pause, a
-/// failure — lands here, so the loop emits each closing event and
-/// keeps its books in exactly one place.
+/// How one iteration ended, as the run loop reads it. Every ending
+/// lands here, so the loop emits each closing event and keeps its
+/// books in exactly one place.
 enum IterationEnd {
     /// The iteration counts as verified progress and the run goes on:
     /// a full pass, or a `done` claim the skeptic refuted. Carries the
@@ -131,10 +134,7 @@ enum IterationEnd {
 /// Drives one iteration through the stages. Plan opens a fresh unit,
 /// so it reads the previous iteration's reports and the feedback the
 /// loop carried in; every later stage reads what this iteration
-/// produced before it. A `done` claim that cleared its verify gate
-/// meets the skeptic here — unrefuted ends the run, refuted ends the
-/// iteration as progress with the findings as the next plan's
-/// feedback.
+/// produced before it.
 async fn run_iteration(
     ctx: &KernelContext,
     iteration: u32,
@@ -155,9 +155,9 @@ async fn run_iteration(
                 return Ok(match skeptic::judge(ctx, iteration, &claim).await? {
                     Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
                     Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
-                        // The refuted claim still advanced the work:
-                        // its report joins the hand-off, its findings
-                        // become the next plan's feedback.
+                        // A refuted claim still advanced the work, so
+                        // the next plan reads it alongside the
+                        // findings.
                         pass.push(claim);
                         IterationEnd::Continue {
                             pass,
