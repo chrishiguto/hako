@@ -342,19 +342,29 @@ impl RunRegistry {
                 )
             })
             .unwrap_or(0);
-        let answers = history[pause_at..]
-            .iter()
-            .filter_map(|event| match &event.event {
-                engine::RunEvent::QuestionAnswered {
-                    question_id,
-                    answer,
-                } => Some(engine::Answer {
+        // Re-answering a question before the resume is a correction:
+        // the latest answer wins, and the preamble carries each
+        // question exactly once.
+        let mut answers: Vec<engine::Answer> = Vec::new();
+        for event in &history[pause_at..] {
+            let engine::RunEvent::QuestionAnswered {
+                question_id,
+                answer,
+            } = &event.event
+            else {
+                continue;
+            };
+            match answers
+                .iter_mut()
+                .find(|answered| answered.question_id == *question_id)
+            {
+                Some(answered) => answered.answer = answer.clone(),
+                None => answers.push(engine::Answer {
                     question_id: question_id.clone(),
                     answer: answer.clone(),
                 }),
-                _ => None,
-            })
-            .collect();
+            }
+        }
         let next_iteration = history
             .iter()
             .filter_map(|event| match event.event {

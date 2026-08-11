@@ -178,16 +178,7 @@ async fn answer_rejects_unknown_questions_and_runs_that_are_not_awaiting_input()
 
 #[tokio::test]
 async fn resume_injects_recorded_answers_and_note_into_the_next_preamble() {
-    // The resumed stage claims done, so a fresh skeptic runs before the
-    // run can reach `done`; it lets the claim stand.
-    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
-        engine::testkit::exec("paused\n", 0),
-        engine::testkit::exec("done\n", 0),
-        engine::testkit::exec("checked\n", 0),
-    ]));
-    sandbox.write_report_on_exec(serde_json::to_vec(&needs_input_report()).unwrap());
-    sandbox.write_report_on_exec(serde_json::to_vec(&done_report()).unwrap());
-    sandbox.write_report_on_exec(UNREFUTED_SKEPTIC_REPORT);
+    let sandbox = paused_then_done_sandbox();
     let host =
         TestHost::with_parts(tempfile::tempdir().unwrap(), seeded_repo(), sandbox.clone()).await;
     let submitted = host.submit().await;
@@ -276,7 +267,16 @@ async fn resume_in_mount_mode_retakes_the_checkout_and_finishes_in_place() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     host.wait_for_state(&submitted.run_id, "done").await;
-    assert!(!lock.exists(), "the finished run released the checkout");
+    // The terminal event lands before the task drops the workspace,
+    // so the release is only eventually visible.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while lock.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the finished run still holds the checkout"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
 
 /// The lock is load-bearing on resume: a checkout claimed by another
@@ -302,15 +302,12 @@ async fn resume_fails_loudly_when_another_run_claimed_the_mounted_checkout() {
 /// A mount-mode run scripted to pause on its first stage and finish
 /// after resume, paused and ready — plus the checkout's lock path.
 async fn paused_mount_run() -> (TestHost, SubmitRunResponse, std::path::PathBuf) {
-    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
-        engine::testkit::exec("paused\n", 0),
-        engine::testkit::exec("done\n", 0),
-        engine::testkit::exec("checked\n", 0),
-    ]));
-    sandbox.write_report_on_exec(serde_json::to_vec(&needs_input_report()).unwrap());
-    sandbox.write_report_on_exec(serde_json::to_vec(&done_report()).unwrap());
-    sandbox.write_report_on_exec(UNREFUTED_SKEPTIC_REPORT);
-    let host = TestHost::with_parts(tempfile::tempdir().unwrap(), seeded_repo(), sandbox).await;
+    let host = TestHost::with_parts(
+        tempfile::tempdir().unwrap(),
+        seeded_repo(),
+        paused_then_done_sandbox(),
+    )
+    .await;
     let flow = format!("{}mode = \"mount\"\n", flow_for(host.repo.path()));
     let submitted = host.submit_flow(&flow).await;
     host.wait_for_state(&submitted.run_id, "paused").await;
@@ -406,6 +403,77 @@ async fn a_paused_run_from_before_a_restart_is_not_resumable() {
             "{uri}"
         );
     }
+}
+
+/// A sandbox scripted for one pause-then-finish run: the first stage
+/// pauses on `needs_input`, the resumed stage claims done, and a
+/// fresh skeptic lets the claim stand.
+fn paused_then_done_sandbox() -> Arc<ScriptedSandbox> {
+    let sandbox = Arc::new(ScriptedSandbox::scripted(vec![
+        engine::testkit::exec("paused\n", 0),
+        engine::testkit::exec("done\n", 0),
+        engine::testkit::exec("checked\n", 0),
+    ]));
+    sandbox.write_report_on_exec(serde_json::to_vec(&needs_input_report()).unwrap());
+    sandbox.write_report_on_exec(serde_json::to_vec(&done_report()).unwrap());
+    sandbox.write_report_on_exec(UNREFUTED_SKEPTIC_REPORT);
+    sandbox
+}
+
+/// Duplicates inside one request are rejected outright; re-answering
+/// across requests is a correction — the resumed preamble carries the
+/// question once, with the latest answer.
+#[tokio::test]
+async fn re_answering_a_question_corrects_it_and_the_latest_answer_wins() {
+    let sandbox = paused_then_done_sandbox();
+    let host =
+        TestHost::with_parts(tempfile::tempdir().unwrap(), seeded_repo(), sandbox.clone()).await;
+    let submitted = host.submit().await;
+    host.wait_for_state(&submitted.run_id, "paused").await;
+    let answer_uri = format!("/v1/runs/{}/answer", submitted.run_id);
+
+    let duplicated = request(
+        &host.app,
+        Method::POST,
+        &answer_uri,
+        Some(TOKEN),
+        Some(json!({"answers": [
+            {"question_id": "q1", "answer": "a"},
+            {"question_id": "q1", "answer": "b"}
+        ]})),
+    )
+    .await;
+    assert_eq!(duplicated.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body::<ApiError>(duplicated).await.code,
+        ErrorCode::InvalidRequest
+    );
+
+    for answer in ["a", "b"] {
+        let response = request(
+            &host.app,
+            Method::POST,
+            &answer_uri,
+            Some(TOKEN),
+            Some(json!({"answers": [{"question_id": "q1", "answer": answer}]})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let resumed = request(
+        &host.app,
+        Method::POST,
+        &format!("/v1/runs/{}/resume", submitted.run_id),
+        Some(TOKEN),
+        Some(json!({"note": null, "extend": null})),
+    )
+    .await;
+    assert_eq!(resumed.status(), StatusCode::OK);
+    host.wait_for_state(&submitted.run_id, "done").await;
+
+    let prompt = sandbox.execs()[1].argv.last().unwrap().clone();
+    assert!(prompt.contains("Q: which shape?\n  A: b"), "{prompt}");
+    assert!(!prompt.contains("A: a"), "{prompt}");
 }
 
 #[tokio::test]

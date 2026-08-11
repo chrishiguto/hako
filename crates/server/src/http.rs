@@ -201,6 +201,15 @@ async fn answer_run(
             "at least one answer is required".into(),
         ));
     }
+    let mut seen = std::collections::BTreeSet::new();
+    for answer in &request.answers {
+        if !seen.insert(answer.question_id.as_str()) {
+            return Err(HttpError::InvalidRequest(format!(
+                "duplicate answer for question `{}`",
+                answer.question_id
+            )));
+        }
+    }
     let run_id = RunId::new(run_id);
     let dir = match state
         .registry

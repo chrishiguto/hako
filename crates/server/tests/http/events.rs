@@ -101,34 +101,6 @@ async fn an_event_stream_replays_then_follows_events_appended_live() {
     assert_eq!(events[1].seq, 1);
 }
 
-async fn request_with_headers<const N: usize>(
-    app: &Router,
-    method: Method,
-    uri: &str,
-    token: Option<&str>,
-    headers: [(&str, String); N],
-    json: Option<Value>,
-) -> axum::response::Response {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(token) = token {
-        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
-    for (name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    let body = match json {
-        Some(json) => {
-            builder = builder.header(header::CONTENT_TYPE, "application/json");
-            Body::from(serde_json::to_vec(&json).unwrap())
-        }
-        None => Body::empty(),
-    };
-    app.clone()
-        .oneshot(builder.body(body).unwrap())
-        .await
-        .unwrap()
-}
-
 pub(super) async fn sse_events(response: axum::response::Response) -> Vec<EventEnvelope> {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let text = std::str::from_utf8(&bytes).unwrap();

@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use crate::event::{IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
-use crate::preamble::Feedback;
+use crate::preamble::{Feedback, HumanInput};
 use crate::run::{PauseReason, RunOutcome};
 use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
@@ -155,7 +155,7 @@ async fn run_iteration(
     iteration: u32,
     prior: &[StageReport],
     mut plan_feedback: Vec<Feedback>,
-    mut human: Option<crate::preamble::HumanInput>,
+    mut human: Option<HumanInput>,
 ) -> Result<IterationEnd, KernelError> {
     let mut pass: Vec<StageReport> = Vec::new();
     for (index, &stage) in STAGES.iter().enumerate() {
@@ -237,7 +237,7 @@ async fn execute_stage(
     stage: Stage,
     handoff: &[StageReport],
     mut feedback: Vec<Feedback>,
-    human: Option<&crate::preamble::HumanInput>,
+    human: Option<&HumanInput>,
 ) -> Result<StageEnd, KernelError> {
     let mut verify_failures: u32 = 0;
     loop {
@@ -296,7 +296,7 @@ async fn drive_stage(
     stage: Stage,
     handoff: &[StageReport],
     feedback: &[Feedback],
-    human: Option<&crate::preamble::HumanInput>,
+    human: Option<&HumanInput>,
 ) -> Result<Bracketed<StageDrive>, KernelError> {
     invocation::in_fresh_sandbox(ctx, async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;

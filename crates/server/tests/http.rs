@@ -130,9 +130,23 @@ async fn request(
     token: Option<&str>,
     json: Option<Value>,
 ) -> axum::response::Response {
+    request_with_headers(app, method, uri, token, [], json).await
+}
+
+async fn request_with_headers<const N: usize>(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    headers: [(&str, String); N],
+    json: Option<Value>,
+) -> axum::response::Response {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    for (name, value) in headers {
+        builder = builder.header(name, value);
     }
     let body = match json {
         Some(json) => {
