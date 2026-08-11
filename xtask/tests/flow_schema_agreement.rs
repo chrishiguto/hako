@@ -91,6 +91,16 @@ fn schema_and_serde_agree_on_the_corpus() {
             false,
         ),
         (
+            "a secret name with a dash",
+            &format!("{MINIMAL_FLOW}\n[secrets]\nenv = [\"GH-TOKEN\"]\n"),
+            false,
+        ),
+        (
+            "an empty secret name",
+            &format!("{MINIMAL_FLOW}\n[secrets]\nenv = [\"\"]\n"),
+            false,
+        ),
+        (
             "datetime where a string belongs",
             &MINIMAL_FLOW.replace("repo = \".\"", "repo = 2026-01-01"),
             false,
