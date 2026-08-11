@@ -50,7 +50,7 @@ const REPORT_SCHEMA: &str = r#"{
 
 struct SkepticContract;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SkepticReport {
     refuted: bool,
@@ -146,4 +146,48 @@ fn compose(claim: &StageReport, domain_prompts: &[(Stage, String)]) -> String {
          ```json\n{REPORT_SCHEMA}\n```",
     );
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> Result<SkepticReport, String> {
+        SkepticContract.parse(text)
+    }
+
+    /// The cross-field rule the schema states in `if`/`then`/`else`,
+    /// pinned against the strict parse so the two hand-written
+    /// spellings cannot drift apart.
+    #[test]
+    fn refuted_and_findings_must_agree() {
+        let unrefuted = parse(r#"{"refuted": false, "findings": []}"#).unwrap();
+        assert!(!unrefuted.refuted);
+        let refuted = parse(r#"{"refuted": true, "findings": ["a TODO remains"]}"#).unwrap();
+        assert_eq!(refuted.findings, ["a TODO remains"]);
+
+        let error = parse(r#"{"refuted": true, "findings": []}"#).unwrap_err();
+        assert!(error.contains("at least one finding"), "{error}");
+        let error = parse(r#"{"refuted": false, "findings": ["stray"]}"#).unwrap_err();
+        assert!(error.contains("no findings"), "{error}");
+    }
+
+    /// The strict parse matches the schema's `additionalProperties:
+    /// false` — a stage report mistakenly served to the skeptic is
+    /// rejected, not half-read.
+    #[test]
+    fn unknown_fields_are_rejected() {
+        let error = parse(r#"{"refuted": false, "findings": [], "status": "done"}"#).unwrap_err();
+        assert!(error.contains("unknown field"), "{error}");
+    }
+
+    /// The schema is hand-written, not a committed artifact like the
+    /// stage schemas — so at least its JSON validity and title are
+    /// pinned here.
+    #[test]
+    fn the_schema_is_valid_json_naming_the_contract() {
+        let schema: serde_json::Value = serde_json::from_str(REPORT_SCHEMA).unwrap();
+        assert_eq!(schema["title"], "SkepticReport");
+        assert_eq!(schema["additionalProperties"], false);
+    }
 }
