@@ -338,8 +338,8 @@ async fn a_corrupt_run_fails_its_own_status_but_is_listed_unreadable() {
     let error: ApiError = body(response).await;
     assert_eq!(error.code, ErrorCode::InternalError);
 
-    // The caller asked about the fleet: the healthy run is served
-    // intact, newest first, and the broken one is named with a reason.
+    // The caller asked about the fleet: the broken run rides along,
+    // it does not take the healthy one down with it.
     let response = request(&host.app, Method::GET, "/v1/runs", Some(TOKEN), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let listed: ListRunsResponse = body(response).await;

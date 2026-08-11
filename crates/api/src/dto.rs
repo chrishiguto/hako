@@ -50,8 +50,8 @@ pub enum RunListEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct UnreadableRun {
     pub run_id: String,
-    /// Always `"unreadable"` — the discriminant that tells this entry
-    /// from a run summary in the untagged list.
+    /// The discriminant: this field alone tells the entry from a run
+    /// summary in the untagged list.
     pub state: UnreadableState,
     /// Human-readable description of what failed; never parse this.
     /// Names files within the run's directory, never a daemon-side
@@ -64,8 +64,8 @@ pub struct UnreadableRun {
     pub created_at: String,
 }
 
-/// The one value [`UnreadableRun::state`] ever holds. A type, not a
-/// string, so the wire literal is pinned where the shape is defined.
+/// A type rather than a bare string, so the wire literal is pinned
+/// where the shape it belongs to is defined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnreadableState {

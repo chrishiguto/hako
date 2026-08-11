@@ -61,7 +61,7 @@ pub(crate) async fn list_entry(dir: &RunDir) -> Option<RunListEntry> {
 /// daemon's filesystem layout stays out of API bodies — the same
 /// split every other store failure already draws, where the wire
 /// gets an opaque `internal daemon error` and the full path goes to
-/// the server log. The log line above keeps that full fidelity here.
+/// the server log.
 fn reason(error: &engine::StoreError) -> String {
     let file = |path: &Path| {
         path.file_name()
