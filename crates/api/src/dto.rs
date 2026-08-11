@@ -54,6 +54,9 @@ pub struct UnreadableRun {
     /// from a run summary in the untagged list.
     pub state: UnreadableState,
     /// Human-readable description of what failed; never parse this.
+    /// Names files within the run's directory, never a daemon-side
+    /// path — the host's filesystem layout is the server log's
+    /// business, not the wire's.
     pub reason: String,
     pub kernel: String,
     pub agent: String,
@@ -245,6 +248,53 @@ mod tests {
             })
         );
         round_trips(&list);
+    }
+
+    /// What keeps the untagged split safe is that the two shapes stay
+    /// disjoint — no object can match both. Two guards, each pinned
+    /// against its nearest collision: a paused summary also carries a
+    /// `reason` beside its `state`, but `"paused"` is no
+    /// [`UnreadableState`]; a drifted unreadable entry may grow
+    /// fields a summary has, but `"unreadable"` is no [`RunState`].
+    /// An object matching neither shape is a parse error, not a guess.
+    #[test]
+    fn list_entry_shapes_stay_disjoint_so_state_alone_discriminates() {
+        let paused_with_reason = json!({
+            "run_id": "r1",
+            "state": "paused",
+            "reason": "budget",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T08:00:00Z",
+            "updated_at": "2026-07-13T09:30:00Z"
+        });
+        assert!(matches!(
+            serde_json::from_value::<RunListEntry>(paused_with_reason).unwrap(),
+            RunListEntry::Run(_)
+        ));
+
+        let unreadable_with_drifted_field = json!({
+            "run_id": "r2",
+            "state": "unreadable",
+            "reason": "corrupt run record events.jsonl: line 3",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T07:00:00Z",
+            "updated_at": "2026-07-13T08:00:00Z"
+        });
+        assert!(matches!(
+            serde_json::from_value::<RunListEntry>(unreadable_with_drifted_field).unwrap(),
+            RunListEntry::Unreadable(_)
+        ));
+
+        let matches_neither = json!({
+            "run_id": "r3",
+            "state": "running",
+            "kernel": "pipeline",
+            "agent": "claude",
+            "created_at": "2026-07-13T08:00:00Z"
+        });
+        serde_json::from_value::<RunListEntry>(matches_neither).unwrap_err();
     }
 
     #[test]

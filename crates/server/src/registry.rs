@@ -523,17 +523,9 @@ impl RunRegistry {
         // Ordered before projecting, on the registry metadata every
         // entry — readable or not — carries into its list line.
         dirs.sort_by(|left, right| {
-            right
-                .meta()
-                .created_at
-                .cmp(&left.meta().created_at)
-                .then_with(|| {
-                    right
-                        .meta()
-                        .run_id
-                        .as_str()
-                        .cmp(left.meta().run_id.as_str())
-                })
+            let (left, right) = (left.meta(), right.meta());
+            (&right.created_at, right.run_id.as_str())
+                .cmp(&(&left.created_at, left.run_id.as_str()))
         });
         join_all(dirs.iter().map(projection::list_entry))
             .await

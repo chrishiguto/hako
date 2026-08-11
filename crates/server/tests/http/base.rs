@@ -312,6 +312,7 @@ async fn list_and_status_expose_pause_reasons_summaries_and_questions() {
 #[tokio::test]
 async fn a_corrupt_run_fails_its_own_status_but_is_listed_unreadable() {
     let runs = tempfile::tempdir().unwrap();
+    let runs_root = runs.path().display().to_string();
     let dir = RunDir::create(runs.path(), RunId::new("r1"), "pipeline", "scripted")
         .await
         .unwrap();
@@ -354,6 +355,10 @@ async fn a_corrupt_run_fails_its_own_status_but_is_listed_unreadable() {
     assert_eq!(broken.kernel, "pipeline");
     assert_eq!(broken.agent, "scripted");
     assert!(broken.reason.contains("report core"), "{}", broken.reason);
+    // The reason names the damaged file, not where the daemon keeps
+    // it: host paths stay in the server log, off the wire.
+    assert!(broken.reason.contains("events.jsonl"), "{}", broken.reason);
+    assert!(!broken.reason.contains(&runs_root), "{}", broken.reason);
 }
 
 #[tokio::test]
