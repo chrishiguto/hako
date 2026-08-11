@@ -317,6 +317,63 @@ async fn paused_mount_run() -> (TestHost, SubmitRunResponse, std::path::PathBuf)
     (host, submitted, lock)
 }
 
+/// A restart drops the relaunch material — resolved agent, secrets,
+/// flow — so a reloaded paused run still reports `paused`, but answer
+/// and resume refuse honestly instead of lying about its state or
+/// answering with a daemon fault.
+#[tokio::test]
+async fn a_paused_run_from_before_a_restart_is_not_resumable() {
+    let runs = tempfile::tempdir().unwrap();
+    let repo = seeded_repo();
+    let runtime = || {
+        Arc::new(EngineRuntime::new(
+            Arc::new(fake_sandbox(needs_input_report(), None)),
+            Arc::new(StubNotifier),
+            Arc::new(NoSecrets),
+        ))
+    };
+    let first = Daemon::load(DaemonConfig::new(TOKEN, runs.path()), runtime())
+        .await
+        .unwrap();
+    let app = first.router();
+    let response = request(
+        &app,
+        Method::POST,
+        "/v1/runs",
+        Some(TOKEN),
+        Some(json!({"flow": flow_for(repo.path())})),
+    )
+    .await;
+    let submitted: SubmitRunResponse = body(response).await;
+    wait_for_state(&app, &submitted.run_id, "paused").await;
+    drop(app);
+    drop(first);
+
+    let restarted = Daemon::load(DaemonConfig::new(TOKEN, runs.path()), runtime())
+        .await
+        .unwrap();
+    let app = restarted.router();
+    wait_for_state(&app, &submitted.run_id, "paused").await;
+    for (uri, payload) in [
+        (
+            format!("/v1/runs/{}/answer", submitted.run_id),
+            json!({"answers": [{"question_id": "q1", "answer": "a"}]}),
+        ),
+        (
+            format!("/v1/runs/{}/resume", submitted.run_id),
+            json!({"note": null, "extend": null}),
+        ),
+    ] {
+        let response = request(&app, Method::POST, &uri, Some(TOKEN), Some(payload)).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{uri}");
+        assert_eq!(
+            body::<ApiError>(response).await.code,
+            ErrorCode::NotResumable,
+            "{uri}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn resume_rejects_missing_and_nonpaused_runs() {
     let host = TestHost::new(done_report()).await;

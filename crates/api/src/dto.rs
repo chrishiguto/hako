@@ -117,6 +117,10 @@ pub enum ErrorCode {
     NotAwaitingInput,
     UnknownQuestion,
     NotPaused,
+    /// The run predates a daemon restart: the material to relaunch it
+    /// died with the old process, so it can never be resumed — and
+    /// answers, which exist to feed a resume, are refused with it.
+    NotResumable,
     InternalError,
     /// Never produced by the daemon — the deserialize-side net that
     /// catches codes newer than this build of the contract. The price
@@ -209,6 +213,7 @@ mod tests {
             ErrorCode::NotAwaitingInput => "not_awaiting_input",
             ErrorCode::UnknownQuestion => "unknown_question",
             ErrorCode::NotPaused => "not_paused",
+            ErrorCode::NotResumable => "not_resumable",
             ErrorCode::InternalError => "internal_error",
             ErrorCode::Unknown => "unknown",
         };
@@ -223,6 +228,7 @@ mod tests {
             ErrorCode::NotAwaitingInput,
             ErrorCode::UnknownQuestion,
             ErrorCode::NotPaused,
+            ErrorCode::NotResumable,
             ErrorCode::InternalError,
             ErrorCode::Unknown,
         ] {

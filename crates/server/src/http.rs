@@ -243,6 +243,7 @@ async fn answer_run(
         AnswerOutcome::UnknownQuestion(question_id) => {
             return Err(HttpError::UnknownQuestion(question_id));
         }
+        AnswerOutcome::Detached => return Err(HttpError::NotResumable),
         AnswerOutcome::UnknownRun => return Err(HttpError::RunNotFound),
     };
     Ok(Json(
@@ -272,6 +273,7 @@ async fn resume_run(
     {
         ResumeOutcome::Resumed(dir) => dir,
         ResumeOutcome::NotPaused => return Err(HttpError::NotPaused),
+        ResumeOutcome::Detached => return Err(HttpError::NotResumable),
         ResumeOutcome::UnknownRun => return Err(HttpError::RunNotFound),
     };
     Ok(Json(
@@ -307,6 +309,7 @@ enum HttpError {
     NotAwaitingInput,
     UnknownQuestion(String),
     NotPaused,
+    NotResumable,
     Internal,
 }
 
@@ -400,6 +403,11 @@ impl IntoResponse for HttpError {
                 StatusCode::CONFLICT,
                 ErrorCode::NotPaused,
                 "run is not paused".to_owned(),
+            ),
+            Self::NotResumable => (
+                StatusCode::CONFLICT,
+                ErrorCode::NotResumable,
+                "run predates a daemon restart and can no longer be resumed".to_owned(),
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,

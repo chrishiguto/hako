@@ -21,20 +21,36 @@ pub(crate) struct RunRegistry {
 }
 
 /// One registry entry. Published status is reduced from the event
-/// log, never from these live handles; they only let commands reach
-/// the execution and relaunch material that cannot be reconstructed
-/// from the run directory yet.
+/// log, never from the live half; it only lets commands reach the
+/// execution and the relaunch material.
 struct RunRecord {
     dir: RunDir,
     commands: Arc<Mutex<()>>,
+    liveness: Liveness,
+}
+
+/// What the daemon holds for a run beyond its directory. A record
+/// loaded from disk after a restart is detached: status still reduces
+/// from the log, but the relaunch material — resolved agent, secrets,
+/// flow — died with the old process and cannot be reconstructed from
+/// the run directory yet, so the commands that need it answer that
+/// honestly instead of misreporting the run's state.
+enum Liveness {
+    Live(Box<LiveRun>),
+    Detached,
+}
+
+/// The live half of a record: the relaunch material and, while one
+/// runs, the execution.
+struct LiveRun {
     execution: Option<Execution>,
-    flow: Option<FlowConfig>,
-    resolved: Option<ResolvedRun>,
+    flow: FlowConfig,
+    resolved: ResolvedRun,
     budgets: Budgets,
 }
 
-/// The live half of a record: the cancel token the kernel watches and
-/// the task driving the run. Cancelling means firing the token and
+/// A running execution: the cancel token the kernel watches and the
+/// task driving the run. Cancelling means firing the token and
 /// draining the task — never `JoinHandle::abort`, which would drop
 /// the future mid-await inside the agent exec, skip the sandbox
 /// bracket's destroy, and leak the microVM that teardown is there to
@@ -67,6 +83,8 @@ pub(crate) enum CancelOutcome {
 pub(crate) enum ResumeOutcome {
     Resumed(RunDir),
     NotPaused,
+    /// The run predates a daemon restart; see [`Liveness::Detached`].
+    Detached,
     UnknownRun,
 }
 
@@ -74,6 +92,9 @@ pub(crate) enum AnswerOutcome {
     Recorded(RunDir),
     NotAwaitingInput,
     UnknownQuestion(String),
+    /// The run predates a daemon restart. Its answers exist to feed a
+    /// resume that can never happen, so they are refused up front.
+    Detached,
     UnknownRun,
 }
 
@@ -82,10 +103,7 @@ impl RunRecord {
         Self {
             dir,
             commands: Arc::new(Mutex::new(())),
-            execution: None,
-            flow: None,
-            resolved: None,
-            budgets: Budgets::default(),
+            liveness: Liveness::Detached,
         }
     }
 
@@ -99,10 +117,12 @@ impl RunRecord {
         Self {
             dir,
             commands: Arc::new(Mutex::new(())),
-            execution: Some(execution),
-            flow: Some(flow),
-            resolved: Some(resolved),
-            budgets,
+            liveness: Liveness::Live(Box::new(LiveRun {
+                execution: Some(execution),
+                flow,
+                resolved,
+                budgets,
+            })),
         }
     }
 }
@@ -229,16 +249,15 @@ impl RunRegistry {
         let (execution, flow, resolved, mut budgets) = {
             let mut runs = self.runs.write().await;
             let record = runs.get_mut(run_id).expect("run remained indexed");
-            let (Some(flow), Some(resolved)) = (record.flow.clone(), record.resolved.clone())
-            else {
-                return Ok(ResumeOutcome::NotPaused);
-            };
-            (
-                record.execution.take(),
-                flow,
-                resolved,
-                record.budgets.clone(),
-            )
+            match &mut record.liveness {
+                Liveness::Live(live) => (
+                    live.execution.take(),
+                    live.flow.clone(),
+                    live.resolved.clone(),
+                    live.budgets.clone(),
+                ),
+                Liveness::Detached => return Ok(ResumeOutcome::Detached),
+            }
         };
         if let Some(execution) = execution {
             let _ = execution.task.await;
@@ -305,8 +324,12 @@ impl RunRegistry {
         ));
         let mut runs = self.runs.write().await;
         let record = runs.get_mut(run_id).expect("run remained indexed");
-        record.execution = Some(Execution { cancel, task });
-        record.budgets = budgets;
+        // Still live: nothing detaches a record while its command
+        // lock — held right here — serializes every mutation.
+        if let Liveness::Live(live) = &mut record.liveness {
+            live.execution = Some(Execution { cancel, task });
+            live.budgets = budgets;
+        }
         Ok(ResumeOutcome::Resumed(dir))
     }
 
@@ -320,13 +343,13 @@ impl RunRegistry {
             let Some(record) = runs.get(run_id) else {
                 return Ok(AnswerOutcome::UnknownRun);
             };
-            let Some(resolved) = &record.resolved else {
-                return Err("run cannot accept answers after daemon restart".into());
+            let Liveness::Live(live) = &record.liveness else {
+                return Ok(AnswerOutcome::Detached);
             };
             (
                 record.dir.clone(),
                 record.commands.clone(),
-                resolved.secrets.clone(),
+                live.resolved.secrets.clone(),
             )
         };
         let _command = commands.lock().await;
@@ -387,7 +410,10 @@ impl RunRegistry {
             let mut runs = self.runs.write().await;
             match runs.get_mut(run_id) {
                 None => return CancelOutcome::UnknownRun,
-                Some(record) => record.execution.take(),
+                Some(record) => match &mut record.liveness {
+                    Liveness::Live(live) => live.execution.take(),
+                    Liveness::Detached => None,
+                },
             }
         };
         if matches!(state, engine::RunState::Paused { .. }) {
