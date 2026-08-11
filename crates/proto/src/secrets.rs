@@ -21,11 +21,12 @@ pub struct SecretName(
 );
 
 impl SecretName {
-    /// Unchecked construction, for trusted callers — adapters stating
-    /// requirements, tests probing the store. Names from outside
-    /// arrive through deserialization, which enforces the shape; the
-    /// daemon's store keeps its own check as defense-in-depth behind
-    /// this door.
+    /// Unchecked construction, for tests and fakes — including the
+    /// ones that probe the daemon's store with names deserialization
+    /// would refuse, which is what keeps its defense-in-depth
+    /// testable. Every other path is checked: flows deserialize,
+    /// literals parse via [`FromStr`]; the store keeps its own check
+    /// behind this door.
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }

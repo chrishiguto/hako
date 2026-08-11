@@ -61,19 +61,26 @@ pub struct SecretRequirement {
 }
 
 impl SecretRequirement {
-    /// A requirement only this name satisfies.
+    /// A requirement only this name satisfies. The name becomes an
+    /// env-var key at injection, so a literal outside the shape is a
+    /// programmer error: panics here, where the adapter's own tests
+    /// run, instead of becoming a gap no provisioning fixes.
     pub fn named(name: &str) -> Self {
         Self {
-            primary: SecretName::new(name),
+            primary: name.parse().unwrap_or_else(|error| panic!("{error}")),
             alternatives: Vec::new(),
         }
     }
 
     /// Widens the requirement: this name satisfies it too, tried after
-    /// the ones already declared.
+    /// the ones already declared. Panics as [`Self::named`] does.
     #[must_use]
     pub fn or(mut self, alternative: &str) -> Self {
-        self.alternatives.push(SecretName::new(alternative));
+        self.alternatives.push(
+            alternative
+                .parse()
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
         self
     }
 
@@ -81,6 +88,17 @@ impl SecretRequirement {
     /// order. Never empty.
     pub fn names(&self) -> impl Iterator<Item = &SecretName> {
         std::iter::once(&self.primary).chain(&self.alternatives)
+    }
+}
+
+/// A flow name is exactly a requirement only that name satisfies —
+/// already validated at parse, so it skips the literal door's check.
+impl From<SecretName> for SecretRequirement {
+    fn from(name: SecretName) -> Self {
+        Self {
+            primary: name,
+            alternatives: Vec::new(),
+        }
     }
 }
 
@@ -276,9 +294,7 @@ pub async fn resolve(
     names: &[SecretName],
     requirements: &[SecretRequirement],
 ) -> Result<SecretEnv, SecretsError> {
-    let flow_names = names
-        .iter()
-        .map(|name| SecretRequirement::named(name.as_str()));
+    let flow_names = names.iter().cloned().map(SecretRequirement::from);
     let mut values = BTreeMap::new();
     let mut unsatisfied = Vec::new();
     for requirement in flow_names.chain(requirements.iter().cloned()) {
@@ -418,6 +434,15 @@ mod tests {
                 .map(|(name, value)| ((*name).to_owned(), SecretValue::new(*value)))
                 .collect(),
         )
+    }
+
+    /// A requirement literal is an env-var key at injection, and a
+    /// malformed one would surface as a gap no provisioning fixes —
+    /// so it dies at construction, where the adapter's tests run.
+    #[test]
+    #[should_panic(expected = "env-var shaped")]
+    fn a_malformed_requirement_literal_panics_naming_the_shape() {
+        SecretRequirement::named("GH-TOKEN");
     }
 
     #[test]
