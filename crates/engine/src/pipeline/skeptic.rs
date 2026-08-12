@@ -6,7 +6,7 @@ use std::fmt::Write;
 
 use serde::Deserialize;
 
-use super::{STAGES, resolve_prompt};
+use super::{active_stages, resolve_prompt};
 use crate::event::RunEvent;
 use crate::invocation::{self, Bracketed, ReportContract};
 use crate::kernel::{KernelContext, KernelError};
@@ -88,8 +88,8 @@ pub(super) async fn judge(
     deadline: tokio::time::Instant,
 ) -> Result<Bracketed<SkepticEnd>, KernelError> {
     invocation::in_fresh_sandbox_until(ctx, Some(deadline), async |sandbox| {
-        let mut domain_prompts = Vec::with_capacity(STAGES.len());
-        for &stage in &STAGES {
+        let mut domain_prompts = Vec::with_capacity(Stage::ALL.len());
+        for stage in active_stages(&ctx.prompts) {
             domain_prompts.push((stage, resolve_prompt(ctx, sandbox, stage).await?));
         }
         let prompt = compose(claim, &domain_prompts);

@@ -13,8 +13,8 @@ use engine::testkit::{
     seeded_repo, tracked_files,
 };
 use engine::{
-    FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason, PipelineKernel,
-    PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig, Workspace,
+    Budgets, FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason,
+    PipelineKernel, PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig, Workspace,
 };
 use proto::pipeline::Stage;
 
@@ -103,6 +103,45 @@ async fn run_default(agent_steps: Vec<AgentStep>, checks: Vec<i32>) -> Ran {
     .await
 }
 
+async fn run_with_delivery(agent_steps: Vec<AgentStep>) -> Ran {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        agent_steps,
+    ));
+    sandbox.seed_guest_file("/workspace/prompts/deliver.md", b"DELIVER-RULES\n".to_vec());
+    let prompts = serde_json::from_value(serde_json::json!({
+        "deliver": "prompts/deliver.md"
+    }))
+    .unwrap();
+    let (ctx, sink) = context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        prompts,
+    );
+    let outcome = PipelineKernel.run(ctx).await.unwrap();
+    Ran {
+        outcome,
+        events: sink.events(),
+        prompts: sandbox.agent_prompts(),
+        sandbox,
+        workspace,
+    }
+}
+
+fn through_core(tail: Vec<AgentStep>) -> Vec<AgentStep> {
+    [
+        reports("continue", "planned"),
+        reports("continue", "built"),
+        reports("continue", "reviewed"),
+        reports("continue", "simplified"),
+    ]
+    .into_iter()
+    .chain(tail)
+    .collect()
+}
+
 /// The stage-scoped events in order, as `(kind, stage)` pairs.
 fn stage_events(events: &[RunEvent]) -> Vec<(String, String)> {
     events
@@ -116,6 +155,108 @@ fn stage_events(events: &[RunEvent]) -> Vec<(String, String)> {
 }
 
 // ---------- AC 1: the stage event sequence and fresh sandboxes ----------
+
+#[tokio::test]
+async fn a_configured_deliver_stage_runs_last_with_the_iteration_reports() {
+    let ran = run_with_delivery(vec![
+        reports("continue", "PLAN-MARKER"),
+        reports("continue", "IMPLEMENT-MARKER"),
+        reports("continue", "REVIEW-MARKER"),
+        reports("continue", "SIMPLIFY-MARKER"),
+        reports("done", "delivered"),
+        unrefuted(),
+    ])
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    assert_eq!(
+        stage_events(&ran.events),
+        [
+            ("stage_started".into(), "plan".into()),
+            ("stage_reported".into(), "plan".into()),
+            ("stage_started".into(), "implement".into()),
+            ("stage_reported".into(), "implement".into()),
+            ("stage_started".into(), "review".into()),
+            ("stage_reported".into(), "review".into()),
+            ("stage_started".into(), "simplify".into()),
+            ("stage_reported".into(), "simplify".into()),
+            ("stage_started".into(), "deliver".into()),
+            ("stage_reported".into(), "deliver".into()),
+        ]
+    );
+    let deliver = &ran.prompts[4];
+    for marker in [
+        "PLAN-MARKER",
+        "IMPLEMENT-MARKER",
+        "REVIEW-MARKER",
+        "SIMPLIFY-MARKER",
+    ] {
+        assert!(deliver.contains(marker), "{marker}: {deliver}");
+    }
+    assert!(deliver.contains("DELIVER-RULES"), "{deliver}");
+    assert!(
+        deliver.contains("\"title\": \"DeliverReport\""),
+        "{deliver}"
+    );
+    assert!(ran.prompts[5].contains("### deliver domain prompt"));
+    assert!(ran.prompts[5].contains("DELIVER-RULES"));
+    assert_eq!(ran.sandbox.created(), 6);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+}
+
+#[tokio::test]
+async fn an_absent_deliver_prompt_skips_the_stage_without_a_sandbox() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        through_core(vec![]),
+    ));
+    let (mut ctx, sink) = context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        PromptsConfig::default(),
+    );
+    ctx.budgets = Budgets {
+        max_iterations: Some(1),
+        ..Budgets::default()
+    };
+
+    assert_eq!(
+        PipelineKernel.run(ctx).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(
+        stage_events(&sink.events()),
+        [
+            ("stage_started".into(), "plan".into()),
+            ("stage_reported".into(), "plan".into()),
+            ("stage_started".into(), "implement".into()),
+            ("stage_reported".into(), "implement".into()),
+            ("stage_started".into(), "review".into()),
+            ("stage_reported".into(), "review".into()),
+            ("stage_started".into(), "simplify".into()),
+            ("stage_reported".into(), "simplify".into()),
+        ]
+    );
+    assert_eq!(sandbox.created(), 4);
+    assert_eq!(sandbox.created(), sandbox.destroyed());
+}
+
+#[tokio::test]
+async fn deliver_pause_statuses_stop_the_run() {
+    for (status, reason) in [
+        ("blocked", PauseReason::Blocked),
+        ("needs_input", PauseReason::AwaitingHuman),
+    ] {
+        let ran = run_with_delivery(through_core(vec![reports(status, "cannot publish")])).await;
+
+        assert_eq!(ran.outcome, RunOutcome::Paused(reason), "{status}");
+        assert_eq!(ran.sandbox.created(), 5, "{status}");
+        assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed(), "{status}");
+        assert_eq!(stage_events(&ran.events).last().unwrap().1, "deliver");
+    }
+}
 
 #[tokio::test]
 async fn a_full_iteration_and_its_skeptic_each_get_a_fresh_sandbox() {

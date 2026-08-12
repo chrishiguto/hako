@@ -149,7 +149,7 @@ impl KernelName {
 /// the two from drifting.
 macro_rules! prompts_config_doc {
     () => {
-        "Per-slot prompt overrides: slot name → workspace-relative prompt file. The legal slots are the ones the selected kernel publishes; every absent slot falls back to the kernel-shipped default prompt, so an empty or missing table is a complete flow."
+        "Per-slot prompts: slot name → workspace-relative prompt file. The legal slots are the ones the selected kernel publishes. Core slots fall back to kernel-shipped defaults; optional slots run only when named, so an empty or missing table is a complete flow."
     };
 }
 
@@ -159,13 +159,12 @@ macro_rules! prompts_config_doc {
 pub struct PromptsConfig(BTreeMap<String, String>);
 
 impl PromptsConfig {
-    /// The prompt file overriding `slot` — workspace-relative — if the
-    /// flow names one.
+    /// The workspace-relative prompt file configured for `slot`.
     pub fn get(&self, slot: &str) -> Option<&str> {
         self.0.get(slot).map(String::as_str)
     }
 
-    /// Every slot the flow overrides, in sorted order.
+    /// Every slot the flow configures, in sorted order.
     pub fn slots(&self) -> impl Iterator<Item = &str> {
         self.0.keys().map(String::as_str)
     }
@@ -658,14 +657,12 @@ mod tests {
         }
     }
 
-    /// The report dialect is allowed to lead executable control flow,
-    /// but configuration must not pretend the deferred stage runs.
     #[test]
-    fn the_deliver_prompt_is_rejected_until_the_stage_is_executable() {
+    fn the_deliver_prompt_enables_the_optional_stage() {
         let flow = format!("{MINIMAL_FLOW}\n[prompts]\ndeliver = \"prompts/deliver.md\"\n");
-        let err = FlowConfig::from_toml(&flow).unwrap_err().to_string();
-        assert!(err.contains("unknown prompt slot `deliver`"), "{err}");
-        assert!(!KernelName::Pipeline.prompt_slots().contains(&"deliver"));
+        let flow = FlowConfig::from_toml(&flow).unwrap();
+        assert_eq!(flow.prompts.get("deliver"), Some("prompts/deliver.md"));
+        assert!(KernelName::Pipeline.prompt_slots().contains(&"deliver"));
     }
 
     /// The reserved namespace for the future per-stage agent override:

@@ -3,12 +3,13 @@
 //! dialect stage quotes, and the [`ReportContract`] impl the engine's
 //! parse-and-repair loop reads a stage's report through.
 //!
-//! Both are compiled in. The default prompts fill any active slot a
-//! flow leaves unset, so a minimal pipeline flow needs no prompt files.
-//! `deliver` has a schema but no default prompt because its execution
-//! remains boarded up until #29. The schemas are the committed
-//! artifacts under `schemas/report/pipeline/`
-//! — generated from proto's report types and drift-checked in CI — so
+//! Both are compiled in. The default prompts fill any core slot a flow
+//! leaves unset, so a minimal pipeline flow needs no prompt files.
+//! `deliver` has a schema but no default prompt because publishing
+//! policy is project-specific and the prompt explicitly enables it.
+//! The schemas are the committed artifacts under
+//! `schemas/report/pipeline/` — generated from proto's report types
+//! and drift-checked in CI — so
 //! quoting them here cannot disagree with what the strict parse
 //! enforces, and the engine reads the published contract without
 //! carrying schemars (a product crate never does).
@@ -34,9 +35,8 @@ impl ReportContract for Stage {
     }
 }
 
-/// The kernel-shipped default prompt for an active stage. A dialect
-/// stage may be published before its execution policy and therefore
-/// have no default yet.
+/// The kernel-shipped default prompt for a core stage. Optional stages
+/// have no default because their configured prompt is the opt-in.
 pub fn default_prompt(stage: Stage) -> Option<&'static str> {
     match stage {
         Stage::Plan => Some(include_str!("prompts/plan.md")),
@@ -67,10 +67,10 @@ pub fn report_schema(stage: Stage) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Active stages have defaults; every dialect stage has its own
-    /// report schema, including the reserved deliver stage.
+    /// Core stages have defaults; every dialect stage has its own
+    /// report schema, including optional delivery.
     #[test]
-    fn active_stages_ship_defaults_and_every_stage_ships_a_schema() {
+    fn core_stages_ship_defaults_and_every_stage_ships_a_schema() {
         for stage in Stage::ALL {
             match stage {
                 Stage::Deliver => assert_eq!(default_prompt(stage), None),
