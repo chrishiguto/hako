@@ -197,9 +197,14 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn a_flow_webhook_resolves_a_notifier_that_posts_the_pause() {
-        let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    /// A recording webhook endpoint: every request's content type and
+    /// body land on the channel, and every request succeeds.
+    async fn webhook_server() -> (
+        std::net::SocketAddr,
+        tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (sent, received) = tokio::sync::mpsc::unbounded_channel();
         let app = Router::new().route(
             "/hook",
             post(move |headers: HeaderMap, body: Bytes| {
@@ -214,11 +219,7 @@ mod tests {
                         "content_type": content_type,
                         "body": String::from_utf8(body.to_vec()).unwrap(),
                     }));
-                    if content_type.starts_with("text/plain") {
-                        StatusCode::UNSUPPORTED_MEDIA_TYPE
-                    } else {
-                        StatusCode::OK
-                    }
+                    StatusCode::OK
                 }
             }),
         );
@@ -227,6 +228,11 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
+        (address, received, server)
+    }
+
+    async fn notify_via(notify_section: &str) -> serde_json::Value {
+        let (address, mut received, server) = webhook_server().await;
         let flow = FlowConfig::from_toml(&format!(
             r#"[loop]
 kernel = "pipeline"
@@ -240,7 +246,7 @@ repo = "."
 
 [notify]
 webhook = "http://{address}/hook"
-"#
+{notify_section}"#
         ))
         .unwrap();
         let runtime = EngineRuntime::production(SmolvmConfig::default(), Arc::new(NoSecrets));
@@ -256,15 +262,30 @@ webhook = "http://{address}/hook"
             .await
             .unwrap();
 
+        let request = received.recv().await.unwrap();
+        assert!(
+            received.try_recv().is_err(),
+            "one pause, one request — never a probing retry"
+        );
+        server.abort();
+        request
+    }
+
+    #[tokio::test]
+    async fn a_flow_webhook_posts_the_pause_as_plain_text_by_default() {
         assert_eq!(
-            received.recv().await.unwrap(),
+            notify_via("").await,
             json!({
                 "content_type": "text/plain; charset=utf-8",
                 "body": "hako run run-8 paused (drift): three passes produced no commits",
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_slack_format_flow_posts_the_pause_as_json_text() {
         assert_eq!(
-            received.recv().await.unwrap(),
+            notify_via("format = \"slack\"").await,
             json!({
                 "content_type": "application/json",
                 "body": serde_json::to_string(&json!({
@@ -272,6 +293,5 @@ webhook = "http://{address}/hook"
                 })).unwrap(),
             })
         );
-        server.abort();
     }
 }

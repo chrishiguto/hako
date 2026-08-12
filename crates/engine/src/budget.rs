@@ -100,7 +100,10 @@ impl Budgets {
         if self.max_iterations.is_some_and(|max| completed >= max) {
             return Some(BudgetKind::Iterations);
         }
-        if self.max_wall_clock.is_some_and(|max| usage.elapsed() >= max) {
+        if self
+            .max_wall_clock
+            .is_some_and(|max| usage.elapsed() >= max)
+        {
             return Some(BudgetKind::WallClock);
         }
         match (usage.tokens(), self.max_tokens) {

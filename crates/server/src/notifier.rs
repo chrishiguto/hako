@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use api::proto::flow::NotifyConfig;
+use api::proto::flow::{NotifyConfig, NotifyFormat};
 use async_trait::async_trait;
 use engine::{Notification, Notifier, NotifierError};
 use serde::Serialize;
@@ -9,7 +9,10 @@ pub(crate) fn resolve(
     config: Option<&NotifyConfig>,
 ) -> Result<Arc<dyn Notifier>, NotifierConfigError> {
     match config {
-        Some(config) => Ok(Arc::new(WebhookNotifier::new(&config.webhook)?)),
+        Some(config) => Ok(Arc::new(WebhookNotifier::new(
+            &config.webhook,
+            config.format,
+        )?)),
         None => Ok(Arc::new(QuietNotifier)),
     }
 }
@@ -26,10 +29,11 @@ impl Notifier for QuietNotifier {
 struct WebhookNotifier {
     client: reqwest::Client,
     target: reqwest::Url,
+    format: NotifyFormat,
 }
 
 impl WebhookNotifier {
-    fn new(target: &str) -> Result<Self, NotifierConfigError> {
+    fn new(target: &str, format: NotifyFormat) -> Result<Self, NotifierConfigError> {
         let target = reqwest::Url::parse(target)
             .map_err(|error| NotifierConfigError(format!("invalid webhook URL: {error}")))?;
         if !matches!(target.scheme(), "http" | "https") {
@@ -41,7 +45,11 @@ impl WebhookNotifier {
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|error| NotifierConfigError(error.without_url().to_string()))?;
-        Ok(Self { client, target })
+        Ok(Self {
+            client,
+            target,
+            format,
+        })
     }
 }
 
@@ -58,29 +66,14 @@ impl Notifier for WebhookNotifier {
             "hako run {} paused ({reason}): {}",
             notification.run_id, notification.summary
         );
-        let response = self
-            .client
-            .post(self.target.clone())
-            .header(reqwest::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(message.clone())
-            .send()
-            .await
-            .map_err(without_target)?;
-        if response.status().is_success() {
-            return Ok(());
-        }
-        if !response.status().is_client_error() {
-            return response
-                .error_for_status()
-                .map(|_| ())
-                .map_err(without_target);
-        }
-
-        // ntfy accepts the plain body directly; Slack rejects that
-        // shape and requires the same message under JSON `text`.
-        self.client
-            .post(self.target.clone())
-            .json(&SlackPayload { text: &message })
+        let request = self.client.post(self.target.clone());
+        let request = match self.format {
+            NotifyFormat::Text => request
+                .header(reqwest::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(message),
+            NotifyFormat::Slack => request.json(&SlackPayload { text: &message }),
+        };
+        request
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
