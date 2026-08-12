@@ -57,14 +57,15 @@ enum Command {
         /// Run to observe.
         run: String,
     },
-    /// Show a paused run's questions and answer one of them.
+    /// List a paused run's pending questions, or answer one of them.
     Answer {
         /// Run awaiting human input.
         run: String,
-        /// Question identifier shown by the run.
-        question: String,
+        /// Question identifier, as listed by `hako answer <run>`.
+        #[arg(requires = "answer")]
+        question: Option<String>,
         /// Answer text to record.
-        answer: String,
+        answer: Option<String>,
     },
     /// Resume a paused run.
     Resume {
@@ -136,19 +137,28 @@ fn dispatch(
         Command::Attach { run } => online("attach", address, token, |client| {
             Ok(attach::attach(client, &run, &mut std::io::stdout())?)
         }),
+        // Clap guarantees question and answer arrive as a pair, so the
+        // bare form is the discovery half of the command: it lists the
+        // questions whose ids the full form takes.
         Command::Answer {
             run,
             question,
             answer,
         } => online("answer", address, token, |client| {
-            for pending in client.status(&run)?.pending_questions {
-                println!("{}: {}", pending.id, pending.text);
-                if !pending.options.is_empty() {
-                    println!("  options: {}", pending.options.join(", "));
+            match question.zip(answer) {
+                Some((question, answer)) => {
+                    client.answer(&run, &question, &answer)?;
+                    println!("answered {question}");
+                }
+                None => {
+                    for pending in client.status(&run)?.pending_questions {
+                        println!("{}: {}", pending.id, pending.text);
+                        if !pending.options.is_empty() {
+                            println!("  options: {}", pending.options.join(", "));
+                        }
+                    }
                 }
             }
-            client.answer(&run, &question, &answer)?;
-            println!("answered {question}");
             Ok(())
         }),
         Command::Resume { run, note } => online("resume", address, token, |client| {

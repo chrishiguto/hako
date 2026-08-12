@@ -308,19 +308,40 @@ fn attach_follows_live_and_resumes_after_a_dropped_connection() {
     );
 }
 
+const PAUSED_STATUS: &str = r#"{
+    "run_id":"r-paused","state":"paused","reason":"awaiting_human",
+    "kernel":"pipeline","agent":"codex",
+    "created_at":"2026-08-12T08:00:00Z","updated_at":"2026-08-12T09:00:00Z",
+    "iterations_completed":1,"last_summary":"need a decision",
+    "pending_questions":[
+        {"id":"database","text":"Which database?","options":["sqlite","files"]},
+        {"id":"retention","text":"Retain logs?","options":[]}
+    ]
+}"#;
+
 #[test]
-fn answer_displays_pending_questions_and_submits_one_structured_answer() {
-    let status = r#"{
-        "run_id":"r-paused","state":"paused","reason":"awaiting_human",
-        "kernel":"pipeline","agent":"codex",
-        "created_at":"2026-08-12T08:00:00Z","updated_at":"2026-08-12T09:00:00Z",
-        "iterations_completed":1,"last_summary":"need a decision",
-        "pending_questions":[
-            {"id":"database","text":"Which database?","options":["sqlite","files"]},
-            {"id":"retention","text":"Retain logs?","options":[]}
-        ]
-    }"#;
-    let (address, requests) = stub_sequence(vec![json_response(status), json_response(status)]);
+fn bare_answer_lists_the_pending_questions() {
+    let (address, requests) = stub(json_response(PAUSED_STATUS));
+
+    let output = hako(&["--address", &address, "answer", "r-paused"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "database: Which database?\n  options: sqlite, files\nretention: Retain logs?\n"
+    );
+    assert!(
+        requests
+            .recv()
+            .unwrap()
+            .head
+            .starts_with("GET /v1/runs/r-paused HTTP/1.1\r\n")
+    );
+}
+
+#[test]
+fn answer_submits_one_structured_answer() {
+    let (address, requests) = stub(json_response(PAUSED_STATUS));
 
     let output = hako(&[
         "--address",
@@ -334,13 +355,7 @@ fn answer_displays_pending_questions_and_submits_one_structured_answer() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "database: Which database?\n  options: sqlite, files\nretention: Retain logs?\nanswered database\n"
-    );
-    let status_request = requests.recv().unwrap();
-    assert!(
-        status_request
-            .head
-            .starts_with("GET /v1/runs/r-paused HTTP/1.1\r\n")
+        "answered database\n"
     );
     let answer_request = requests.recv().unwrap();
     assert!(
@@ -353,6 +368,17 @@ fn answer_displays_pending_questions_and_submits_one_structured_answer() {
         serde_json::json!({
             "answers": [{"question_id": "database", "answer": "sqlite"}]
         })
+    );
+}
+
+#[test]
+fn a_question_without_an_answer_is_a_usage_error() {
+    let output = hako(&["answer", "r-paused", "database"]);
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("ANSWER"),
+        "{output:?}"
     );
 }
 
