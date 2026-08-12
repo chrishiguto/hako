@@ -81,9 +81,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Why the process exits nonzero, carrying its stderr line. The two
-/// variants are the two published exit codes: a flow the parser
-/// refused, and a daemon that could not be reached or refused us.
+/// The two variants are the two published exit codes; each carries the
+/// stderr line the process exits with.
 enum Failure {
     Validation(String),
     Daemon(String),
@@ -116,9 +115,10 @@ fn dispatch(
     }
 }
 
-/// Submit and return immediately. When the daemon is local and simply
-/// not up, start it and submit once more — one retry, only on a
-/// transport failure, only for an address we may bind.
+/// A local daemon that is simply not up is worth starting; anything
+/// else — a rejection, a remote address — is the user's answer. One
+/// retry only: a second transport failure means starting it did not
+/// help, and looping would stall the command instead of reporting.
 fn run(path: &Path, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
     let flow = read_flow(path)
         .map_err(|error| Failure::Validation(format!("{}: {error}", path.display())))?;

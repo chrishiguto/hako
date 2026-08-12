@@ -80,6 +80,9 @@ fn env_text(
     }
 }
 
+/// Scheme and trailing slash are spelling, not meaning: every spelling
+/// of an address reduces to one base URL, or two commands that named
+/// the same daemon would disagree about whether it is local.
 fn normalize(address: &str) -> String {
     let address = address.trim_end_matches('/');
     if address.starts_with("http://") || address.starts_with("https://") {
@@ -225,8 +228,6 @@ mod tests {
         local_bind_address(&normalize(address))
     }
 
-    /// One grammar: scheme and trailing slash are spelling, not
-    /// meaning — every spelling of the loopback address is local.
     #[test]
     fn every_spelling_of_a_loopback_address_is_local() {
         let expected: SocketAddr = "127.0.0.1:7878".parse().unwrap();
@@ -252,8 +253,6 @@ mod tests {
         );
     }
 
-    /// A hostname is never local — localness comes from the literal
-    /// text, not from what a resolver says about it.
     #[test]
     fn remote_shapes_never_get_a_bind_address() {
         for form in [
@@ -266,8 +265,6 @@ mod tests {
         }
     }
 
-    /// `HAKO_ADDR=` clears the variable — the default address applies,
-    /// exactly as it does for `hakod`.
     #[test]
     fn an_empty_environment_address_reads_as_unset() {
         let connection = resolve(None, Some("t0ken".into()), env(&[("HAKO_ADDR", "")])).unwrap();
@@ -275,8 +272,6 @@ mod tests {
         assert!(connection.local_bind.is_some());
     }
 
-    /// `HAKO_TOKEN=` clears the variable — a local daemon falls back
-    /// to the generated token, which is persisted for the daemon side.
     #[test]
     fn an_empty_environment_token_falls_back_to_the_local_token() {
         let config = tempfile::tempdir().unwrap();
@@ -295,8 +290,6 @@ mod tests {
         assert_eq!(again.token, connection.token);
     }
 
-    /// An empty value typed at the prompt is intent gone wrong, not a
-    /// variable being cleared.
     #[test]
     fn an_explicitly_empty_token_flag_is_an_error() {
         let error = resolve(None, Some(String::new()), env(&[])).err().unwrap();
