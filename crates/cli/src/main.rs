@@ -68,82 +68,87 @@ fn main() -> ExitCode {
         token,
         command,
     } = Cli::parse();
-    match command {
-        Command::Run { flow } => {
-            let flow = match read_flow(&flow) {
-                Ok(flow) => flow,
-                Err(error) => {
-                    eprintln!("{}: {error}", flow.display());
-                    return ExitCode::from(VALIDATION_FAILURE);
-                }
-            };
-            let connection = match config::connection(address, token) {
-                Ok(connection) => connection,
-                Err(error) => {
-                    eprintln!("submit failed: {error}");
-                    return ExitCode::from(DAEMON_FAILURE);
-                }
-            };
-            let client = client::Client::new(&connection.address, &connection.token);
-            let submitted = match client.submit(&flow) {
-                Err(error) if error.is_transport() => {
-                    let Some(bind) = connection.local_bind else {
-                        eprintln!("submit failed: {error}");
-                        return ExitCode::from(DAEMON_FAILURE);
-                    };
-                    if let Err(error) = daemon::start(bind, &connection.token, &client) {
-                        eprintln!("submit failed: {error}");
-                        return ExitCode::from(DAEMON_FAILURE);
-                    }
-                    client.submit(&flow)
-                }
-                result => result,
-            };
-            match submitted {
-                Ok(submitted) => {
-                    println!("{}", submitted.run_id);
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("submit failed: {error}");
-                    ExitCode::from(DAEMON_FAILURE)
-                }
-            }
+    match dispatch(command, address, token) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(Failure::Validation(message)) => {
+            eprintln!("{message}");
+            ExitCode::from(VALIDATION_FAILURE)
         }
-        Command::List => {
-            let connection = match config::connection(address, token) {
-                Ok(connection) => connection,
-                Err(error) => {
-                    eprintln!("list failed: {error}");
-                    return ExitCode::from(DAEMON_FAILURE);
-                }
-            };
-            match client::Client::new(&connection.address, &connection.token).list() {
-                Ok(list) => {
-                    print_runs(list);
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("list failed: {error}");
-                    ExitCode::from(DAEMON_FAILURE)
-                }
-            }
-        }
-        Command::Validate { flow } => match validate(&flow) {
-            Ok(()) => {
-                println!("{}: valid flow", flow.display());
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("{}: {error}", flow.display());
-                ExitCode::from(VALIDATION_FAILURE)
-            }
-        },
-        Command::Schema => {
-            print!("{FLOW_SCHEMA}");
-            ExitCode::SUCCESS
+        Err(Failure::Daemon(message)) => {
+            eprintln!("{message}");
+            ExitCode::from(DAEMON_FAILURE)
         }
     }
+}
+
+/// Why the process exits nonzero, carrying its stderr line. The two
+/// variants are the two published exit codes: a flow the parser
+/// refused, and a daemon that could not be reached or refused us.
+enum Failure {
+    Validation(String),
+    Daemon(String),
+}
+
+impl Failure {
+    fn daemon(operation: &str, error: impl std::fmt::Display) -> Self {
+        Self::Daemon(format!("{operation} failed: {error}"))
+    }
+}
+
+fn dispatch(
+    command: Command,
+    address: Option<String>,
+    token: Option<String>,
+) -> Result<(), Failure> {
+    match command {
+        Command::Run { flow } => run(&flow, address, token),
+        Command::List => list(address, token),
+        Command::Validate { flow } => {
+            validate(&flow)
+                .map_err(|error| Failure::Validation(format!("{}: {error}", flow.display())))?;
+            println!("{}: valid flow", flow.display());
+            Ok(())
+        }
+        Command::Schema => {
+            print!("{FLOW_SCHEMA}");
+            Ok(())
+        }
+    }
+}
+
+/// Submit and return immediately. When the daemon is local and simply
+/// not up, start it and submit once more — one retry, only on a
+/// transport failure, only for an address we may bind.
+fn run(path: &Path, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
+    let flow = read_flow(path)
+        .map_err(|error| Failure::Validation(format!("{}: {error}", path.display())))?;
+    let connection =
+        config::connection(address, token).map_err(|error| Failure::daemon("submit", error))?;
+    let client = client::Client::new(&connection.address, &connection.token);
+    let submitted = match client.submit(&flow) {
+        Err(error) if error.is_transport() => {
+            let bind = connection
+                .local_bind
+                .ok_or_else(|| Failure::daemon("submit", &error))?;
+            daemon::start(bind, &connection.token, &client)
+                .map_err(|error| Failure::daemon("submit", error))?;
+            client.submit(&flow)
+        }
+        result => result,
+    }
+    .map_err(|error| Failure::daemon("submit", error))?;
+    println!("{}", submitted.run_id);
+    Ok(())
+}
+
+fn list(address: Option<String>, token: Option<String>) -> Result<(), Failure> {
+    let connection =
+        config::connection(address, token).map_err(|error| Failure::daemon("list", error))?;
+    let list = client::Client::new(&connection.address, &connection.token)
+        .list()
+        .map_err(|error| Failure::daemon("list", error))?;
+    print_runs(list);
+    Ok(())
 }
 
 fn print_runs(list: ListRunsResponse) {
