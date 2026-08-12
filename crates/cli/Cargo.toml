@@ -13,6 +13,7 @@ path = "src/main.rs"
 api.workspace = true
 clap.workspace = true
 proto.workspace = true
+serde.workspace = true
 ureq.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 

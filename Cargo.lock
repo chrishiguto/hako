@@ -368,6 +368,7 @@ dependencies = [
  "api",
  "clap",
  "proto",
+ "serde",
  "serde_json",
  "tempfile",
  "ureq",
