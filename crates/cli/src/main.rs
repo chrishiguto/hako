@@ -137,14 +137,13 @@ fn dispatch(
         Command::Attach { run } => online("attach", address, token, |client| {
             Ok(attach::attach(client, &run, &mut std::io::stdout())?)
         }),
-        // Clap guarantees question and answer arrive as a pair, so the
-        // bare form is the discovery half of the command: it lists the
-        // questions whose ids the full form takes.
         Command::Answer {
             run,
             question,
             answer,
         } => online("answer", address, token, |client| {
+            // Clap's `requires` makes the two all-or-nothing, so zipping
+            // them cannot silently swallow a half-given pair.
             match question.zip(answer) {
                 Some((question, answer)) => {
                     client.answer(&run, &question, &answer)?;
@@ -184,11 +183,10 @@ fn dispatch(
     }
 }
 
-/// Every command that talks to the daemon, in one shape: resolve the
-/// connection, run the command, and name the operation in any failure
-/// — exactly once, here. `run` is the deliberate exception: it needs
-/// the [`config::Connection`] itself for daemon auto-start and splits
-/// its failures across both exit codes.
+/// The single place a daemon-facing failure is named, so no command
+/// spells out its own operation. `run` is the deliberate exception: it
+/// needs the [`config::Connection`] itself for daemon auto-start, and
+/// splits its failures across both exit codes.
 fn online(
     operation: &str,
     address: Option<String>,
