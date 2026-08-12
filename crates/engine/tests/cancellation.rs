@@ -34,10 +34,12 @@ fn assert_ended_cancelled(events: &[RunEvent]) {
 /// destroy — the leak `JoinHandle::abort` would have caused.
 #[tokio::test]
 async fn a_cancel_mid_exec_destroys_the_sandbox_and_ends_the_run_cancelled() {
+    let workspace = seeded_repo();
     let barrier = Arc::new(Barrier::new(2));
     let sandbox = Arc::new(ScriptedSandbox::hanging().with_barrier(barrier.clone()));
     let sink = Arc::new(RecordingSink::default());
     let ctx = KernelContext {
+        workspace: Workspace::at(workspace.path()),
         sandbox: sandbox.clone(),
         agent: Arc::new(ScriptedAgent::new()),
         events: sink.clone(),
@@ -74,8 +76,10 @@ async fn a_cancel_mid_exec_destroys_the_sandbox_and_ends_the_run_cancelled() {
 /// makes any boot a loud panic.
 #[tokio::test]
 async fn a_cancelled_token_ends_the_run_before_the_next_stage_boots() {
+    let workspace = seeded_repo();
     let sink = Arc::new(RecordingSink::default());
     let ctx = KernelContext {
+        workspace: Workspace::at(workspace.path()),
         events: sink.clone(),
         ..testkit::context()
     };

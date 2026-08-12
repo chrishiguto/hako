@@ -75,6 +75,11 @@ impl Kernel for PipelineKernel {
         let mut prior: Vec<StageReport> = Vec::new();
         let mut plan_feedback: Vec<Feedback> = Vec::new();
         let mut guardrails = guardrails::Guardrails::default();
+        // The commit drift detection measures against. Sampled at the
+        // loop boundary rather than threaded up from the stages: any
+        // new commit — the engine's checkpoint or one the agent made
+        // itself — is durable progress.
+        let mut head = ctx.workspace.head().await?;
         loop {
             // Before booting anything: with `iteration - 1` passes
             // completed, has any budget already run out? This is what
@@ -102,17 +107,16 @@ impl Kernel for PipelineKernel {
             )
             .await?
             {
-                IterationEnd::Continue {
-                    pass,
-                    feedback,
-                    committed,
-                } => {
+                IterationEnd::Continue { pass, feedback } => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
                             outcome: IterationOutcome::Completed,
                         })
                         .await?;
+                    let new_head = ctx.workspace.head().await?;
+                    let committed = new_head != head;
+                    head = new_head;
                     if let Some(budget) = guardrails.completed(&ctx, iteration, &pass, committed) {
                         return pause_for_budget(&ctx, budget, guardrails.summary()).await;
                     }
@@ -189,7 +193,6 @@ enum IterationEnd {
     Continue {
         pass: Vec<StageReport>,
         feedback: Vec<Feedback>,
-        committed: bool,
     },
     /// A `done` claim cleared its verify gate and survived the skeptic
     /// — the run is complete.
@@ -225,7 +228,6 @@ async fn run_iteration(
     deadline: tokio::time::Instant,
 ) -> Result<IterationEnd, KernelError> {
     let mut pass: Vec<StageReport> = Vec::new();
-    let mut committed = false;
     for (index, &stage) in STAGES.iter().enumerate() {
         let handoff = if index == 0 { prior } else { pass.as_slice() };
         let feedback = if index == 0 {
@@ -245,18 +247,8 @@ async fn run_iteration(
         )
         .await?
         {
-            StageEnd::Advance {
-                report,
-                committed: stage_committed,
-            } => {
-                committed |= stage_committed;
-                pass.push(report);
-            }
-            StageEnd::Done {
-                claim,
-                committed: stage_committed,
-            } => {
-                committed |= stage_committed;
+            StageEnd::Advance(report) => pass.push(report),
+            StageEnd::Done(claim) => {
                 return Ok(
                     match skeptic::judge(ctx, iteration, &claim, deadline).await? {
                         Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
@@ -268,7 +260,6 @@ async fn run_iteration(
                             IterationEnd::Continue {
                                 pass,
                                 feedback: vec![Feedback::SkepticRefuted { findings }],
-                                committed,
                             }
                         }
                         Bracketed::Finished(skeptic::SkepticEnd::Failed) => IterationEnd::Fail,
@@ -288,7 +279,6 @@ async fn run_iteration(
     Ok(IterationEnd::Continue {
         pass,
         feedback: Vec::new(),
-        committed,
     })
 }
 
@@ -296,16 +286,10 @@ async fn run_iteration(
 enum StageEnd {
     /// The stage reported `continue`; its report joins the hand-off to
     /// the next stage.
-    Advance {
-        report: StageReport,
-        committed: bool,
-    },
+    Advance(StageReport),
     /// A stage claimed `done` and cleared its verify gate. Carries the
     /// report the skeptic must interrogate before completion is real.
-    Done {
-        claim: StageReport,
-        committed: bool,
-    },
+    Done(StageReport),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
     Pause {
@@ -338,7 +322,6 @@ async fn execute_stage(
     deadline: tokio::time::Instant,
 ) -> Result<StageEnd, KernelError> {
     let mut verify_failures: u32 = 0;
-    let mut committed = false;
     loop {
         let drive =
             match drive_stage(ctx, iteration, stage, handoff, &feedback, human, deadline).await? {
@@ -346,15 +329,9 @@ async fn execute_stage(
                 Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
                 Bracketed::TimedOut => return Ok(StageEnd::TimedOut),
             };
-        let StageDrive::Reported {
-            report,
-            verify,
-            committed: attempt_committed,
-        } = drive
-        else {
+        let StageDrive::Reported { report, verify } = drive else {
             return Ok(StageEnd::Fail);
         };
-        committed |= attempt_committed;
 
         if let VerifyOutcome::Failed { command, output } = verify {
             verify_failures += 1;
@@ -376,11 +353,8 @@ async fn execute_stage(
         // Verify passed or was skipped: the report's own status decides
         // where the run goes.
         return Ok(match report.status() {
-            ReportStatus::Continue => StageEnd::Advance { report, committed },
-            ReportStatus::Done => StageEnd::Done {
-                claim: report,
-                committed,
-            },
+            ReportStatus::Continue => StageEnd::Advance(report),
+            ReportStatus::Done => StageEnd::Done(report),
             ReportStatus::Blocked => StageEnd::Pause {
                 reason: PauseReason::Blocked,
                 summary: report.summary().into(),
@@ -399,7 +373,6 @@ enum StageDrive {
     Reported {
         report: StageReport,
         verify: VerifyOutcome,
-        committed: bool,
     },
     /// No trustworthy report — the details are already in the log.
     Failed,
@@ -441,19 +414,14 @@ async fn drive_stage(
             return Ok(StageDrive::Failed);
         };
 
-        let commit = if is_mutating(stage) {
-            ctx.workspace
+        if is_mutating(stage)
+            && let Some(commit) = ctx
+                .workspace
                 .checkpoint(&format!("hako: iteration {iteration} {}", stage.as_str()))
                 .await?
-        } else {
-            None
-        };
-        if let Some(commit) = &commit {
+        {
             ctx.events
-                .emit(RunEvent::WorkspaceCheckpointed {
-                    iteration,
-                    commit: commit.clone(),
-                })
+                .emit(RunEvent::WorkspaceCheckpointed { iteration, commit })
                 .await?;
         }
 
@@ -472,11 +440,7 @@ async fn drive_stage(
         } else {
             VerifyOutcome::Skipped
         };
-        Ok(StageDrive::Reported {
-            report,
-            verify,
-            committed: commit.is_some(),
-        })
+        Ok(StageDrive::Reported { report, verify })
     })
     .await
 }

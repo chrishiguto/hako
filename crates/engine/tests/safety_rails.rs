@@ -1,9 +1,9 @@
 //! Safety rails exercised through the engine library boundary: a real
 //! pipeline kernel over sandbox, event, and notifier fakes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -447,6 +447,136 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
         outcome: IterationOutcome::TimedOut,
     }));
     assert_eq!(notifier.notifications()[0].reason, PauseReason::Timeout);
+}
+
+/// The scripted sandbox with an agent that commits its own work:
+/// every exec lands a commit in the workspace before the scripted
+/// "no change" report — the shape `checkpoint` cannot see, because
+/// nothing is left uncommitted for it to stage.
+struct SelfCommittingSandbox {
+    inner: Arc<ScriptedSandbox>,
+    workspace: PathBuf,
+    commits: AtomicU32,
+}
+
+impl SelfCommittingSandbox {
+    async fn commit(&self) {
+        let n = self.commits.fetch_add(1, Ordering::SeqCst);
+        tokio::fs::write(self.workspace.join("agent-work.txt"), format!("work {n}\n"))
+            .await
+            .unwrap();
+        for args in [
+            &["add", "agent-work.txt"][..],
+            &[
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@localhost",
+                "commit",
+                "--quiet",
+                "--no-verify",
+                "--no-gpg-sign",
+                "-m",
+                "agent work",
+            ],
+        ] {
+            let status = tokio::process::Command::new("git")
+                .args(args)
+                .current_dir(&self.workspace)
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+}
+
+#[async_trait]
+impl engine::Sandbox for SelfCommittingSandbox {
+    async fn create(
+        &self,
+        spec: &engine::SandboxSpec,
+    ) -> Result<engine::SandboxHandle, engine::SandboxError> {
+        self.inner.create(spec).await
+    }
+
+    async fn exec_stream(
+        &self,
+        sandbox: &engine::SandboxHandle,
+        command: &engine::ExecSpec,
+    ) -> Result<engine::ExecStream, engine::SandboxError> {
+        self.commit().await;
+        self.inner.exec_stream(sandbox, command).await
+    }
+
+    async fn put_file(
+        &self,
+        sandbox: &engine::SandboxHandle,
+        path: &Path,
+        contents: &[u8],
+    ) -> Result<(), engine::SandboxError> {
+        self.inner.put_file(sandbox, path, contents).await
+    }
+
+    async fn get_file(
+        &self,
+        sandbox: &engine::SandboxHandle,
+        path: &Path,
+    ) -> Result<Vec<u8>, engine::SandboxError> {
+        self.inner.get_file(sandbox, path).await
+    }
+
+    async fn remove_file(
+        &self,
+        sandbox: &engine::SandboxHandle,
+        path: &Path,
+    ) -> Result<(), engine::SandboxError> {
+        self.inner.remove_file(sandbox, path).await
+    }
+
+    async fn destroy(&self, sandbox: engine::SandboxHandle) -> Result<(), engine::SandboxError> {
+        self.inner.destroy(sandbox).await
+    }
+
+    async fn preflight(&self) -> Result<(), engine::SandboxError> {
+        self.inner.preflight().await
+    }
+}
+
+/// An agent that commits for itself leaves `checkpoint` nothing to
+/// stage, but the moved HEAD is still durable progress — the run must
+/// reach its iteration budget, never a drift pause.
+#[tokio::test]
+async fn an_agent_committing_its_own_work_is_not_drifting() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(SelfCommittingSandbox {
+        inner: no_change_sandbox(),
+        workspace: workspace.path().to_path_buf(),
+        commits: AtomicU32::new(0),
+    });
+    let budgets = Budgets {
+        max_iterations: Some(4),
+        ..Budgets::default()
+    };
+    let (ctx, events, _) = context(
+        workspace.path(),
+        sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets,
+        VerifyConfig::default(),
+    );
+
+    let outcome = PipelineKernel.run(ctx).await.unwrap();
+
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Budget));
+    assert_eq!(
+        sandbox.inner.created(),
+        16,
+        "four full passes ran — drift never tripped at three"
+    );
+    assert!(events.events().contains(&RunEvent::BudgetExhausted {
+        budget: BudgetKind::Iterations,
+    }));
 }
 
 #[tokio::test]

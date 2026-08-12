@@ -92,12 +92,28 @@ impl Workspace {
         Ok(Path::new(GUEST_ROOT).join(path))
     }
 
+    /// The workspace's current commit — or `None` before any commit
+    /// exists, which a clone of an empty repository leaves behind.
+    /// Drift detection compares this across an iteration: any new
+    /// commit counts as durable progress, the engine's checkpoint and
+    /// the agent's own alike.
+    pub async fn head(&self) -> Result<Option<String>, WorkspaceError> {
+        let output = self
+            .git(&["rev-parse", "--verify", "--quiet", "HEAD"])
+            .await?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    }
+
     /// Commits everything the iteration changed and returns the commit
-    /// hash — or `None` when nothing changed, which is what drift
-    /// detection watches for. Scratch under `.hako/` never enters
-    /// history. Committer identity, hooks, and signing are forced off
-    /// the user's config: a checkpoint is the engine's bookkeeping and
-    /// must succeed on any host.
+    /// hash — or `None` when nothing changed. Scratch under `.hako/`
+    /// never enters history. Committer identity, hooks, and signing
+    /// are forced off the user's config: a checkpoint is the engine's
+    /// bookkeeping and must succeed on any host.
     pub async fn checkpoint(&self, message: &str) -> Result<Option<String>, WorkspaceError> {
         self.git_ok(&["add", "-A", "--", ".", &format!(":(exclude){SCRATCH_DIR}")])
             .await?;
