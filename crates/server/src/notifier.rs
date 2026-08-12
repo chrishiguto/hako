@@ -82,6 +82,9 @@ impl Notifier for WebhookNotifier {
     }
 }
 
+/// A webhook URL is itself a credential — a Slack incoming hook
+/// carries its token in the path — and this string surfaces in the
+/// run's log, so the target never rides along with the failure.
 fn without_target(error: reqwest::Error) -> NotifierError {
     NotifierError(error.without_url().to_string())
 }

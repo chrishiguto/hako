@@ -94,9 +94,6 @@ impl Workspace {
 
     /// The workspace's current commit — or `None` before any commit
     /// exists, which a clone of an empty repository leaves behind.
-    /// Drift detection compares this across an iteration: any new
-    /// commit counts as durable progress, the engine's checkpoint and
-    /// the agent's own alike.
     pub async fn head(&self) -> Result<Option<String>, WorkspaceError> {
         let output = self
             .git(&["rev-parse", "--verify", "--quiet", "HEAD"])

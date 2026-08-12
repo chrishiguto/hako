@@ -95,10 +95,6 @@ impl Kernel for PipelineKernel {
         let mut no_commit_iterations: u32 = 0;
         let mut timeout_failures: u32 = 0;
         loop {
-            // Before booting anything: with `iteration - 1` passes
-            // completed, has any budget already run out? This is what
-            // pauses a resumed run again when its extension was not a
-            // real one — for every budget kind, not just iterations.
             if let Some(budget) = ctx
                 .budgets
                 .exhausted(&ctx.budget_usage, iteration.saturating_sub(1))
@@ -523,7 +519,8 @@ async fn pause_for_budget(
 }
 
 /// Every ending goes out the same door: the terminal `state_changed`
-/// event, then the outcome to the caller.
+/// event, the pause notification when the ending is one, then the
+/// outcome to the caller.
 async fn conclude(
     ctx: &KernelContext,
     outcome: RunOutcome,
@@ -535,6 +532,8 @@ async fn conclude(
         })
         .await?;
     if let RunOutcome::Paused(reason) = outcome {
+        // An unreachable webhook must not turn a clean pause into a
+        // failed run: the human loses the ping, never the work.
         let _ = ctx
             .notifier
             .notify(&Notification {
