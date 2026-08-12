@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Duration;
 
 use api::SubmitRunRequest;
 
@@ -13,16 +14,36 @@ struct Request {
 }
 
 fn stub(response: String) -> (String, Receiver<Request>) {
+    stub_sequence(vec![response])
+}
+
+fn stub_sequence(responses: Vec<String>) -> (String, Receiver<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let (requests, received) = mpsc::channel();
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_request(&mut stream);
-        let _ = requests.send(request);
-        stream.write_all(response.as_bytes()).unwrap();
+        for response in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            let _ = requests.send(request);
+            stream.write_all(response.as_bytes()).unwrap();
+        }
     });
     (address, received)
+}
+
+fn json_response(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn error_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 fn read_request(stream: &mut TcpStream) -> Request {
@@ -202,6 +223,231 @@ fn list_renders_every_state_and_pause_reason() {
             "missing `{expected}` in:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn attach_replays_a_finished_run_and_exits() {
+    let first = r#"{"seq":0,"run_id":"r-done","at":"2026-08-12T08:00:00Z","type":"run_started","kernel":"pipeline","agent":"codex"}"#;
+    let second = r#"{"seq":1,"run_id":"r-done","at":"2026-08-12T09:00:00Z","type":"state_changed","state":"done"}"#;
+    let body = format!("id: 0\ndata: {first}\n\nid: 1\ndata: {second}\n\n");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (address, request) = stub(response);
+
+    let output = hako(&["--address", &address, "attach", "r-done"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{first}\n{second}\n")
+    );
+    let request = request.recv().unwrap();
+    assert!(
+        request
+            .head
+            .starts_with("GET /v1/runs/r-done/events HTTP/1.1\r\n")
+    );
+    assert!(!request.head.to_ascii_lowercase().contains("last-event-id:"));
+}
+
+#[test]
+fn attach_follows_live_and_resumes_after_a_dropped_connection() {
+    let replayed = r#"{"seq":0,"run_id":"r-live","at":"2026-08-12T08:00:00Z","type":"run_started","kernel":"pipeline","agent":"codex"}"#;
+    let live = r#"{"seq":1,"run_id":"r-live","at":"2026-08-12T08:01:00Z","type":"iteration_started","iteration":1}"#;
+    let terminal = r#"{"seq":2,"run_id":"r-live","at":"2026-08-12T08:02:00Z","type":"state_changed","state":"cancelled"}"#;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let (requests, received) = mpsc::channel();
+    let first_frame = format!("id: 0\ndata: {replayed}\n\n");
+    let live_frame = format!("id: 1\ndata: {live}\n\n");
+    let terminal_frame = format!("id: 2\ndata: {terminal}\n\n");
+    thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        requests.send(read_request(&mut first)).unwrap();
+        first
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        first.write_all(first_frame.as_bytes()).unwrap();
+        first.flush().unwrap();
+        thread::sleep(Duration::from_millis(25));
+        first.write_all(live_frame.as_bytes()).unwrap();
+        first.flush().unwrap();
+        drop(first);
+
+        let (mut resumed, _) = listener.accept().unwrap();
+        requests.send(read_request(&mut resumed)).unwrap();
+        write!(
+            resumed,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{terminal_frame}",
+            terminal_frame.len()
+        )
+        .unwrap();
+    });
+
+    let output = hako(&["--address", &address, "attach", "r-live"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{replayed}\n{live}\n{terminal}\n")
+    );
+    let initial = received.recv().unwrap();
+    assert!(!initial.head.to_ascii_lowercase().contains("last-event-id:"));
+    let resumed = received.recv().unwrap();
+    assert!(
+        resumed
+            .head
+            .to_ascii_lowercase()
+            .contains("last-event-id: 1\r\n"),
+        "{}",
+        resumed.head
+    );
+}
+
+#[test]
+fn answer_displays_pending_questions_and_submits_one_structured_answer() {
+    let status = r#"{
+        "run_id":"r-paused","state":"paused","reason":"awaiting_human",
+        "kernel":"pipeline","agent":"codex",
+        "created_at":"2026-08-12T08:00:00Z","updated_at":"2026-08-12T09:00:00Z",
+        "iterations_completed":1,"last_summary":"need a decision",
+        "pending_questions":[
+            {"id":"database","text":"Which database?","options":["sqlite","files"]},
+            {"id":"retention","text":"Retain logs?","options":[]}
+        ]
+    }"#;
+    let (address, requests) = stub_sequence(vec![json_response(status), json_response(status)]);
+
+    let output = hako(&[
+        "--address",
+        &address,
+        "answer",
+        "r-paused",
+        "database",
+        "sqlite",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "database: Which database?\n  options: sqlite, files\nretention: Retain logs?\nanswered database\n"
+    );
+    let status_request = requests.recv().unwrap();
+    assert!(
+        status_request
+            .head
+            .starts_with("GET /v1/runs/r-paused HTTP/1.1\r\n")
+    );
+    let answer_request = requests.recv().unwrap();
+    assert!(
+        answer_request
+            .head
+            .starts_with("POST /v1/runs/r-paused/answer HTTP/1.1\r\n")
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer_request.body).unwrap(),
+        serde_json::json!({
+            "answers": [{"question_id": "database", "answer": "sqlite"}]
+        })
+    );
+}
+
+#[test]
+fn resume_sends_guidance_to_the_run() {
+    let status = r#"{
+        "run_id":"r-budget","state":"running",
+        "kernel":"pipeline","agent":"codex",
+        "created_at":"2026-08-12T08:00:00Z","updated_at":"2026-08-12T09:00:00Z",
+        "iterations_completed":2,"last_summary":"budget exhausted","pending_questions":[]
+    }"#;
+    let (address, request) = stub(json_response(status));
+
+    let output = hako(&[
+        "--address",
+        &address,
+        "resume",
+        "r-budget",
+        "--note",
+        "focus on the parser",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "resumed r-budget\n"
+    );
+    let request = request.recv().unwrap();
+    assert!(
+        request
+            .head
+            .starts_with("POST /v1/runs/r-budget/resume HTTP/1.1\r\n")
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&request.body).unwrap(),
+        serde_json::json!({"note": "focus on the parser", "extend": null})
+    );
+}
+
+#[test]
+fn cancel_drives_the_runs_cancel_endpoint() {
+    let status = r#"{
+        "run_id":"r-running","state":"cancelled",
+        "kernel":"pipeline","agent":"codex",
+        "created_at":"2026-08-12T08:00:00Z","updated_at":"2026-08-12T09:00:00Z",
+        "iterations_completed":2,"last_summary":null,"pending_questions":[]
+    }"#;
+    let (address, request) = stub(json_response(status));
+
+    let output = hako(&["--address", &address, "cancel", "r-running"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "cancelled r-running\n"
+    );
+    assert!(
+        request
+            .recv()
+            .unwrap()
+            .head
+            .starts_with("POST /v1/runs/r-running/cancel HTTP/1.1\r\n")
+    );
+}
+
+#[test]
+fn interaction_rejections_use_the_daemon_failure_exit_code() {
+    let body = r#"{"code":"run_not_running","message":"run already finished"}"#;
+    let (address, _) = stub(error_response("409 Conflict", body));
+
+    let output = hako(&["--address", &address, "cancel", "r-done"]);
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cancel failed"), "{stderr}");
+    assert!(stderr.contains("run already finished"), "{stderr}");
+}
+
+#[test]
+fn attach_rejects_a_gap_in_the_event_history() {
+    let event = r#"{"seq":1,"run_id":"r-gap","at":"2026-08-12T09:00:00Z","type":"state_changed","state":"done"}"#;
+    let body = format!("id: 1\ndata: {event}\n\n");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (address, _) = stub(response);
+
+    let output = hako(&["--address", &address, "attach", "r-gap"]);
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("event sequence jumped from start to 1"),
+        "{output:?}"
+    );
 }
 
 #[cfg(unix)]

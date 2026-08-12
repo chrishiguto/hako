@@ -13,6 +13,7 @@ use proto::flow::FlowConfig;
 
 use api::{ListRunsResponse, RunListEntry, RunState};
 
+mod attach;
 mod client;
 mod config;
 mod daemon;
@@ -51,6 +52,33 @@ enum Command {
     },
     /// List every run and its current state.
     List,
+    /// Replay a run's events, then follow it until it finishes.
+    Attach {
+        /// Run to observe.
+        run: String,
+    },
+    /// Show a paused run's questions and answer one of them.
+    Answer {
+        /// Run awaiting human input.
+        run: String,
+        /// Question identifier shown by the run.
+        question: String,
+        /// Answer text to record.
+        answer: String,
+    },
+    /// Resume a paused run.
+    Resume {
+        /// Run to resume.
+        run: String,
+        /// Guidance for the next iteration.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Cancel a run cleanly.
+    Cancel {
+        /// Run to cancel.
+        run: String,
+    },
     /// Validate a flow file with the daemon's parser — offline, no
     /// daemon needed.
     Validate {
@@ -102,6 +130,14 @@ fn dispatch(
     match command {
         Command::Run { flow } => run(&flow, address, token),
         Command::List => list(address, token),
+        Command::Attach { run } => attach(&run, address, token),
+        Command::Answer {
+            run,
+            question,
+            answer: answer_text,
+        } => answer(&run, &question, &answer_text, address, token),
+        Command::Resume { run, note } => resume(&run, note, address, token),
+        Command::Cancel { run } => cancel(&run, address, token),
         Command::Validate { flow } => {
             validate(&flow)
                 .map_err(|error| Failure::Validation(format!("{}: {error}", flow.display())))?;
@@ -113,6 +149,67 @@ fn dispatch(
             Ok(())
         }
     }
+}
+
+fn cancel(run_id: &str, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
+    configured_client("cancel", address, token)?
+        .cancel(run_id)
+        .map_err(|error| Failure::daemon("cancel", error))?;
+    println!("cancelled {run_id}");
+    Ok(())
+}
+
+fn resume(
+    run_id: &str,
+    note: Option<String>,
+    address: Option<String>,
+    token: Option<String>,
+) -> Result<(), Failure> {
+    configured_client("resume", address, token)?
+        .resume(run_id, note)
+        .map_err(|error| Failure::daemon("resume", error))?;
+    println!("resumed {run_id}");
+    Ok(())
+}
+
+fn answer(
+    run_id: &str,
+    question_id: &str,
+    answer: &str,
+    address: Option<String>,
+    token: Option<String>,
+) -> Result<(), Failure> {
+    let client = configured_client("answer", address, token)?;
+    let status = client
+        .status(run_id)
+        .map_err(|error| Failure::daemon("answer", error))?;
+    for question in status.pending_questions {
+        println!("{}: {}", question.id, question.text);
+        if !question.options.is_empty() {
+            println!("  options: {}", question.options.join(", "));
+        }
+    }
+    client
+        .answer(run_id, question_id, answer)
+        .map_err(|error| Failure::daemon("answer", error))?;
+    println!("answered {question_id}");
+    Ok(())
+}
+
+fn attach(run_id: &str, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
+    let client = configured_client("attach", address, token)?;
+    attach::attach(&client, run_id, &mut std::io::stdout())
+        .map_err(|error| Failure::daemon("attach", error))
+}
+
+fn configured_client(
+    operation: &str,
+    address: Option<String>,
+    token: Option<String>,
+) -> Result<client::Client, Failure> {
+    let connection =
+        config::connection(address, token).map_err(|error| Failure::daemon(operation, error))?;
+    Ok(client::Client::new(&connection.address, &connection.token))
 }
 
 /// A local daemon that is simply not up is worth starting; anything
@@ -142,9 +239,7 @@ fn run(path: &Path, address: Option<String>, token: Option<String>) -> Result<()
 }
 
 fn list(address: Option<String>, token: Option<String>) -> Result<(), Failure> {
-    let connection =
-        config::connection(address, token).map_err(|error| Failure::daemon("list", error))?;
-    let list = client::Client::new(&connection.address, &connection.token)
+    let list = configured_client("list", address, token)?
         .list()
         .map_err(|error| Failure::daemon("list", error))?;
     print_runs(list);
