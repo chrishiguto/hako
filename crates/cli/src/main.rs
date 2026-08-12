@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use proto::flow::FlowConfig;
 
-use api::{ListRunsResponse, PauseReason, RunListEntry, RunState};
+use api::{ListRunsResponse, RunListEntry, RunState};
 
 mod client;
 mod config;
@@ -174,20 +174,10 @@ fn print_runs(list: ListRunsResponse) {
 fn state(state: RunState) -> String {
     match state {
         RunState::Running => "running".into(),
-        RunState::Paused { reason } => format!("paused ({})", pause_reason(reason)),
+        RunState::Paused { reason } => format!("paused ({})", reason.as_str()),
         RunState::Done => "done".into(),
         RunState::Failed => "failed".into(),
         RunState::Cancelled => "cancelled".into(),
-    }
-}
-
-fn pause_reason(reason: PauseReason) -> &'static str {
-    match reason {
-        PauseReason::Blocked => "blocked",
-        PauseReason::VerifyFailed => "verify_failed",
-        PauseReason::Drift => "drift",
-        PauseReason::Budget => "budget",
-        PauseReason::AwaitingHuman => "awaiting_human",
     }
 }
 
