@@ -109,6 +109,15 @@ pub enum RunEvent {
     },
 }
 
+impl RunEvent {
+    /// Whether this event ends the run — the last event its log will
+    /// ever hold, and the one after which a stream has nothing left to
+    /// say.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::StateChanged { state } if state.is_terminal())
+    }
+}
+
 /// One event as it lands in the run's JSONL log and crosses the wire —
 /// the same shape, because the daemon streams log lines verbatim.
 /// `seq` doubles as the SSE event id, so a client reconnecting with
@@ -151,6 +160,25 @@ mod tests {
 
     use super::*;
     use crate::run::PauseReason;
+
+    #[test]
+    fn only_a_terminal_state_change_ends_the_run() {
+        assert!(
+            RunEvent::StateChanged {
+                state: RunState::Done
+            }
+            .is_terminal()
+        );
+        assert!(
+            !RunEvent::StateChanged {
+                state: RunState::Paused {
+                    reason: PauseReason::AwaitingHuman
+                }
+            }
+            .is_terminal()
+        );
+        assert!(!RunEvent::IterationStarted { iteration: 1 }.is_terminal());
+    }
 
     #[test]
     fn events_are_tagged_by_type() {

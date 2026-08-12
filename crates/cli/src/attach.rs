@@ -2,7 +2,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::thread;
 use std::time::Duration;
 
-use api::{EventEnvelope, RunEvent, RunState};
+use api::EventEnvelope;
 
 use crate::client::{Client, ClientError};
 
@@ -55,7 +55,7 @@ fn consume(
                 serde_json::to_writer(&mut *output, &event)?;
                 output.write_all(b"\n")?;
                 output.flush()?;
-                if is_terminal(&event.event) {
+                if event.event.is_terminal() {
                     return Ok(StreamEnd::Terminal);
                 }
             }
@@ -72,15 +72,6 @@ fn consume(
             _ => {}
         }
     }
-}
-
-fn is_terminal(event: &RunEvent) -> bool {
-    matches!(
-        event,
-        RunEvent::StateChanged {
-            state: RunState::Done | RunState::Failed | RunState::Cancelled
-        }
-    )
 }
 
 #[derive(Default)]
