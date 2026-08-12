@@ -13,6 +13,7 @@ use proto::flow::FlowConfig;
 
 use api::{ListRunsResponse, RunListEntry, RunState};
 
+mod attach;
 mod client;
 mod config;
 mod daemon;
@@ -51,6 +52,34 @@ enum Command {
     },
     /// List every run and its current state.
     List,
+    /// Replay a run's events, then follow it until it finishes.
+    Attach {
+        /// Run to observe.
+        run: String,
+    },
+    /// List a paused run's pending questions, or answer one of them.
+    Answer {
+        /// Run awaiting human input.
+        run: String,
+        /// Question identifier, as listed by `hako answer <run>`.
+        #[arg(requires = "answer")]
+        question: Option<String>,
+        /// Answer text to record.
+        answer: Option<String>,
+    },
+    /// Resume a paused run.
+    Resume {
+        /// Run to resume.
+        run: String,
+        /// Guidance for the next iteration.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Cancel a run cleanly.
+    Cancel {
+        /// Run to cancel.
+        run: String,
+    },
     /// Validate a flow file with the daemon's parser — offline, no
     /// daemon needed.
     Validate {
@@ -101,7 +130,46 @@ fn dispatch(
 ) -> Result<(), Failure> {
     match command {
         Command::Run { flow } => run(&flow, address, token),
-        Command::List => list(address, token),
+        Command::List => online("list", address, token, |client| {
+            print_runs(client.list()?);
+            Ok(())
+        }),
+        Command::Attach { run } => online("attach", address, token, |client| {
+            Ok(attach::attach(client, &run, &mut std::io::stdout())?)
+        }),
+        Command::Answer {
+            run,
+            question,
+            answer,
+        } => online("answer", address, token, |client| {
+            // Clap's `requires` makes the two all-or-nothing, so zipping
+            // them cannot silently swallow a half-given pair.
+            match question.zip(answer) {
+                Some((question, answer)) => {
+                    client.answer(&run, &question, &answer)?;
+                    println!("answered {question}");
+                }
+                None => {
+                    for pending in client.status(&run)?.pending_questions {
+                        println!("{}: {}", pending.id, pending.text);
+                        if !pending.options.is_empty() {
+                            println!("  options: {}", pending.options.join(", "));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }),
+        Command::Resume { run, note } => online("resume", address, token, |client| {
+            client.resume(&run, note)?;
+            println!("resumed {run}");
+            Ok(())
+        }),
+        Command::Cancel { run } => online("cancel", address, token, |client| {
+            client.cancel(&run)?;
+            println!("cancelled {run}");
+            Ok(())
+        }),
         Command::Validate { flow } => {
             validate(&flow)
                 .map_err(|error| Failure::Validation(format!("{}: {error}", flow.display())))?;
@@ -113,6 +181,22 @@ fn dispatch(
             Ok(())
         }
     }
+}
+
+/// The single place a daemon-facing failure is named, so no command
+/// spells out its own operation. `run` is the deliberate exception: it
+/// needs the [`config::Connection`] itself for daemon auto-start, and
+/// splits its failures across both exit codes.
+fn online(
+    operation: &str,
+    address: Option<String>,
+    token: Option<String>,
+    command: impl FnOnce(&client::Client) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Failure> {
+    let connection =
+        config::connection(address, token).map_err(|error| Failure::daemon(operation, error))?;
+    let client = client::Client::new(&connection.address, &connection.token);
+    command(&client).map_err(|error| Failure::daemon(operation, error))
 }
 
 /// A local daemon that is simply not up is worth starting; anything
@@ -138,16 +222,6 @@ fn run(path: &Path, address: Option<String>, token: Option<String>) -> Result<()
     }
     .map_err(|error| Failure::daemon("submit", error))?;
     println!("{}", submitted.run_id);
-    Ok(())
-}
-
-fn list(address: Option<String>, token: Option<String>) -> Result<(), Failure> {
-    let connection =
-        config::connection(address, token).map_err(|error| Failure::daemon("list", error))?;
-    let list = client::Client::new(&connection.address, &connection.token)
-        .list()
-        .map_err(|error| Failure::daemon("list", error))?;
-    print_runs(list);
     Ok(())
 }
 

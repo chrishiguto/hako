@@ -43,6 +43,18 @@ pub enum PauseReason {
     AwaitingHuman,
 }
 
+impl RunState {
+    /// Whether the run can never change state again. Both sides of the
+    /// wire branch on this — the daemon to end an event stream, a
+    /// client to stop following one — so the decision lives here, once.
+    pub fn is_terminal(self) -> bool {
+        match self {
+            Self::Done | Self::Failed | Self::Cancelled => true,
+            Self::Running | Self::Paused { .. } => false,
+        }
+    }
+}
+
 impl PauseReason {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -95,6 +107,20 @@ mod tests {
             assert_eq!(reason.as_str(), wire);
             assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
         }
+    }
+
+    #[test]
+    fn only_done_failed_and_cancelled_are_terminal() {
+        assert!(RunState::Done.is_terminal());
+        assert!(RunState::Failed.is_terminal());
+        assert!(RunState::Cancelled.is_terminal());
+        assert!(!RunState::Running.is_terminal());
+        assert!(
+            !RunState::Paused {
+                reason: PauseReason::AwaitingHuman
+            }
+            .is_terminal()
+        );
     }
 
     #[test]

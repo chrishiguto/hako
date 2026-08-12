@@ -156,7 +156,7 @@ async fn run_events(
     let follower = EventFollower {
         ended: history
             .last()
-            .is_some_and(|event| is_terminal_event(&event.event)),
+            .is_some_and(|event| event.event.is_terminal()),
         min_seq: after.map_or(0, |seq| seq.saturating_add(1)),
         pending: history.into(),
         cursor,
@@ -298,7 +298,7 @@ impl EventFollower {
                     // ever appended — an empty poll keeps the verdict
                     // of the one before it.
                     if let Some(last) = events.last() {
-                        self.ended = is_terminal_event(&last.event);
+                        self.ended = last.event.is_terminal();
                     }
                     self.pending.extend(events);
                 }
@@ -309,15 +309,6 @@ impl EventFollower {
             }
         }
     }
-}
-
-fn is_terminal_event(event: &engine::RunEvent) -> bool {
-    matches!(
-        event,
-        engine::RunEvent::StateChanged {
-            state: engine::RunState::Done | engine::RunState::Failed | engine::RunState::Cancelled
-        }
-    )
 }
 
 enum HttpError {
