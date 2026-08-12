@@ -23,9 +23,18 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
+        // The whole-body deadline is deliberate, not a bug guard: ureq
+        // has no idle-read timeout, so without it a silently dead
+        // connection (NAT expiry, network change) blocks an attach
+        // forever — the daemon's keep-alives only help a reader that
+        // can notice their absence. Cutting even a healthy stream once
+        // a minute is safe because `Last-Event-ID` resume makes the
+        // reconnect lossless; the cost is the daemon re-reading the
+        // run's log per reconnect, fine at this cadence.
         let stream_agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_recv_response(Some(Duration::from_secs(10)))
+            .timeout_recv_body(Some(Duration::from_secs(60)))
             .http_status_as_error(false)
             .build()
             .into();

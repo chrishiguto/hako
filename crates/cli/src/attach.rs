@@ -6,7 +6,12 @@ use api::EventEnvelope;
 
 use crate::client::{Client, ClientError};
 
-const RECONNECT_DELAY: Duration = Duration::from_millis(250);
+const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(250);
+/// Cap the backoff well below a human's patience: an attach must pick
+/// the stream back up promptly once a restarted daemon returns, while
+/// a daemon that stays down should not be probed four times a second
+/// for hours.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) fn attach(
     client: &Client,
@@ -15,20 +20,23 @@ pub(crate) fn attach(
 ) -> Result<(), AttachError> {
     let mut last_event_id = None;
     let mut connected = false;
+    let mut delay = INITIAL_RECONNECT_DELAY;
     loop {
         let response = match client.events(run_id, last_event_id) {
             Ok(response) => response,
             Err(error) if connected && error.is_transport() => {
-                thread::sleep(RECONNECT_DELAY);
+                thread::sleep(delay);
+                delay = (delay * 2).min(MAX_RECONNECT_DELAY);
                 continue;
             }
             Err(error) => return Err(AttachError::Client(error)),
         };
         connected = true;
+        delay = INITIAL_RECONNECT_DELAY;
         let mut reader = BufReader::new(response.into_body().into_reader());
         match consume(&mut reader, &mut last_event_id, output)? {
             StreamEnd::Terminal => return Ok(()),
-            StreamEnd::Disconnected => thread::sleep(RECONNECT_DELAY),
+            StreamEnd::Disconnected => thread::sleep(delay),
         }
     }
 }
