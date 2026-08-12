@@ -22,13 +22,6 @@ impl Guardrails {
         }
     }
 
-    pub(super) fn resumed_budget(&self, ctx: &KernelContext, iteration: u32) -> Option<BudgetKind> {
-        ctx.budgets
-            .max_iterations
-            .filter(|&max| iteration > max)
-            .map(|_| BudgetKind::Iterations)
-    }
-
     pub(super) fn completed(
         &mut self,
         ctx: &KernelContext,
@@ -42,23 +35,7 @@ impl Guardrails {
             |report| report.summary().into(),
         );
 
-        let exhausted = ctx
-            .budgets
-            .max_iterations
-            .filter(|&max| iteration >= max)
-            .map(|_| BudgetKind::Iterations)
-            .or_else(|| {
-                ctx.budgets
-                    .max_wall_clock
-                    .filter(|&max| ctx.budget_usage.elapsed() >= max)
-                    .map(|_| BudgetKind::WallClock)
-            })
-            .or_else(
-                || match (ctx.budget_usage.tokens(), ctx.budgets.max_tokens) {
-                    (Some(used), Some(max)) if used >= max => Some(BudgetKind::Tokens),
-                    _ => None,
-                },
-            );
+        let exhausted = ctx.budgets.exhausted(&ctx.budget_usage, iteration);
         if exhausted.is_some() {
             return exhausted;
         }

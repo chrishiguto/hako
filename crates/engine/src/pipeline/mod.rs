@@ -76,7 +76,14 @@ impl Kernel for PipelineKernel {
         let mut plan_feedback: Vec<Feedback> = Vec::new();
         let mut guardrails = guardrails::Guardrails::default();
         loop {
-            if let Some(budget) = guardrails.resumed_budget(&ctx, iteration) {
+            // Before booting anything: with `iteration - 1` passes
+            // completed, has any budget already run out? This is what
+            // pauses a resumed run again when its extension was not a
+            // real one — for every budget kind, not just iterations.
+            if let Some(budget) = ctx
+                .budgets
+                .exhausted(&ctx.budget_usage, iteration.saturating_sub(1))
+            {
                 return pause_for_budget(&ctx, budget, guardrails.summary()).await;
             }
             ctx.events

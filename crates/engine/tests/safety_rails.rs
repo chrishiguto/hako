@@ -338,6 +338,74 @@ async fn a_token_extension_keeps_what_the_run_spent_before_resume() {
     }));
 }
 
+#[tokio::test]
+async fn a_token_paused_run_resumed_without_extension_pauses_before_booting() {
+    let workspace = seeded_repo();
+    let steps = continuing_steps()
+        .into_iter()
+        .map(|mut step| {
+            step.stdout = "tokens used\n".into();
+            step
+        })
+        .collect();
+    let sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), steps));
+    let usage = engine::BudgetUsage::default();
+    let budgets = || Budgets {
+        max_tokens: Some(10),
+        ..Budgets::default()
+    };
+    let agent = || {
+        Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 2,
+            output: 1,
+        })) as Arc<dyn engine::AgentAdapter>
+    };
+    let (mut first, _, _) = context(
+        workspace.path(),
+        sandbox.clone(),
+        agent(),
+        budgets(),
+        VerifyConfig::default(),
+    );
+    first.budget_usage = usage.clone();
+    assert_eq!(
+        PipelineKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(sandbox.created(), 4, "the first launch ran a full pass");
+
+    let (mut resumed, events, notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        agent(),
+        budgets(),
+        VerifyConfig::default(),
+    );
+    resumed.budget_usage = usage;
+    resumed.resume = Some(RunResume {
+        next_iteration: 2,
+        human: engine::HumanInput {
+            answers: vec![],
+            questions: vec![],
+            note: None,
+        },
+    });
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(
+        sandbox.created(),
+        4,
+        "the still-exhausted budget pauses the resumed run before it boots anything"
+    );
+    assert!(events.events().contains(&RunEvent::BudgetExhausted {
+        budget: BudgetKind::Tokens,
+    }));
+    assert_eq!(notifier.notifications().len(), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
     let workspace = seeded_repo();

@@ -73,6 +73,26 @@ impl BudgetUsage {
     }
 }
 
+impl Budgets {
+    /// The first cap the run has outgrown after `completed` iterations,
+    /// or `None` while every budget still has room. The kernel asks at
+    /// both ends of an iteration — after a pass with that pass counted,
+    /// and before one with the count so far — so a paused run resumed
+    /// without a real extension pauses again before booting anything.
+    pub(crate) fn exhausted(&self, usage: &BudgetUsage, completed: u32) -> Option<BudgetKind> {
+        if self.max_iterations.is_some_and(|max| completed >= max) {
+            return Some(BudgetKind::Iterations);
+        }
+        if self.max_wall_clock.is_some_and(|max| usage.elapsed() >= max) {
+            return Some(BudgetKind::WallClock);
+        }
+        match (usage.tokens(), self.max_tokens) {
+            (Some(used), Some(max)) if used >= max => Some(BudgetKind::Tokens),
+            _ => None,
+        }
+    }
+}
+
 impl Default for Budgets {
     fn default() -> Self {
         Self {
@@ -130,6 +150,59 @@ mod tests {
     #[test]
     fn an_unset_budget_section_lowers_to_the_defaults() {
         assert_eq!(Budgets::from(&BudgetConfig::default()), Budgets::default());
+    }
+
+    #[test]
+    fn uncapped_budgets_never_exhaust() {
+        let usage = BudgetUsage::default();
+        usage.record_tokens(TokenUsage {
+            input: u64::MAX,
+            output: 0,
+        });
+        assert_eq!(Budgets::default().exhausted(&usage, u32::MAX), None);
+    }
+
+    #[test]
+    fn iterations_exhaust_when_the_completed_count_reaches_the_cap() {
+        let budgets = Budgets {
+            max_iterations: Some(2),
+            ..Budgets::default()
+        };
+        let usage = BudgetUsage::default();
+        assert_eq!(budgets.exhausted(&usage, 1), None);
+        assert_eq!(budgets.exhausted(&usage, 2), Some(BudgetKind::Iterations));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wall_clock_exhausts_on_active_time() {
+        let budgets = Budgets {
+            max_wall_clock: Some(Duration::from_secs(60)),
+            ..Budgets::default()
+        };
+        let usage = BudgetUsage::default();
+        usage.start();
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert_eq!(budgets.exhausted(&usage, 0), None);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(budgets.exhausted(&usage, 0), Some(BudgetKind::WallClock));
+        usage.stop();
+    }
+
+    /// The acceptance criterion for adapters that report nothing: a
+    /// token cap without reported usage never trips.
+    #[test]
+    fn tokens_exhaust_only_when_the_adapter_reported_usage() {
+        let budgets = Budgets {
+            max_tokens: Some(10),
+            ..Budgets::default()
+        };
+        let usage = BudgetUsage::default();
+        assert_eq!(budgets.exhausted(&usage, 0), None);
+        usage.record_tokens(TokenUsage {
+            input: 6,
+            output: 4,
+        });
+        assert_eq!(budgets.exhausted(&usage, 0), Some(BudgetKind::Tokens));
     }
 
     #[tokio::test(start_paused = true)]
