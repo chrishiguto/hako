@@ -129,15 +129,38 @@ fn dispatch(
 ) -> Result<(), Failure> {
     match command {
         Command::Run { flow } => run(&flow, address, token),
-        Command::List => list(address, token),
-        Command::Attach { run } => attach(&run, address, token),
+        Command::List => online("list", address, token, |client| {
+            print_runs(client.list()?);
+            Ok(())
+        }),
+        Command::Attach { run } => online("attach", address, token, |client| {
+            Ok(attach::attach(client, &run, &mut std::io::stdout())?)
+        }),
         Command::Answer {
             run,
             question,
-            answer: answer_text,
-        } => answer(&run, &question, &answer_text, address, token),
-        Command::Resume { run, note } => resume(&run, note, address, token),
-        Command::Cancel { run } => cancel(&run, address, token),
+            answer,
+        } => online("answer", address, token, |client| {
+            for pending in client.status(&run)?.pending_questions {
+                println!("{}: {}", pending.id, pending.text);
+                if !pending.options.is_empty() {
+                    println!("  options: {}", pending.options.join(", "));
+                }
+            }
+            client.answer(&run, &question, &answer)?;
+            println!("answered {question}");
+            Ok(())
+        }),
+        Command::Resume { run, note } => online("resume", address, token, |client| {
+            client.resume(&run, note)?;
+            println!("resumed {run}");
+            Ok(())
+        }),
+        Command::Cancel { run } => online("cancel", address, token, |client| {
+            client.cancel(&run)?;
+            println!("cancelled {run}");
+            Ok(())
+        }),
         Command::Validate { flow } => {
             validate(&flow)
                 .map_err(|error| Failure::Validation(format!("{}: {error}", flow.display())))?;
@@ -151,65 +174,21 @@ fn dispatch(
     }
 }
 
-fn cancel(run_id: &str, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
-    configured_client("cancel", address, token)?
-        .cancel(run_id)
-        .map_err(|error| Failure::daemon("cancel", error))?;
-    println!("cancelled {run_id}");
-    Ok(())
-}
-
-fn resume(
-    run_id: &str,
-    note: Option<String>,
-    address: Option<String>,
-    token: Option<String>,
-) -> Result<(), Failure> {
-    configured_client("resume", address, token)?
-        .resume(run_id, note)
-        .map_err(|error| Failure::daemon("resume", error))?;
-    println!("resumed {run_id}");
-    Ok(())
-}
-
-fn answer(
-    run_id: &str,
-    question_id: &str,
-    answer: &str,
-    address: Option<String>,
-    token: Option<String>,
-) -> Result<(), Failure> {
-    let client = configured_client("answer", address, token)?;
-    let status = client
-        .status(run_id)
-        .map_err(|error| Failure::daemon("answer", error))?;
-    for question in status.pending_questions {
-        println!("{}: {}", question.id, question.text);
-        if !question.options.is_empty() {
-            println!("  options: {}", question.options.join(", "));
-        }
-    }
-    client
-        .answer(run_id, question_id, answer)
-        .map_err(|error| Failure::daemon("answer", error))?;
-    println!("answered {question_id}");
-    Ok(())
-}
-
-fn attach(run_id: &str, address: Option<String>, token: Option<String>) -> Result<(), Failure> {
-    let client = configured_client("attach", address, token)?;
-    attach::attach(&client, run_id, &mut std::io::stdout())
-        .map_err(|error| Failure::daemon("attach", error))
-}
-
-fn configured_client(
+/// Every command that talks to the daemon, in one shape: resolve the
+/// connection, run the command, and name the operation in any failure
+/// — exactly once, here. `run` is the deliberate exception: it needs
+/// the [`config::Connection`] itself for daemon auto-start and splits
+/// its failures across both exit codes.
+fn online(
     operation: &str,
     address: Option<String>,
     token: Option<String>,
-) -> Result<client::Client, Failure> {
+    command: impl FnOnce(&client::Client) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Failure> {
     let connection =
         config::connection(address, token).map_err(|error| Failure::daemon(operation, error))?;
-    Ok(client::Client::new(&connection.address, &connection.token))
+    let client = client::Client::new(&connection.address, &connection.token);
+    command(&client).map_err(|error| Failure::daemon(operation, error))
 }
 
 /// A local daemon that is simply not up is worth starting; anything
@@ -235,14 +214,6 @@ fn run(path: &Path, address: Option<String>, token: Option<String>) -> Result<()
     }
     .map_err(|error| Failure::daemon("submit", error))?;
     println!("{}", submitted.run_id);
-    Ok(())
-}
-
-fn list(address: Option<String>, token: Option<String>) -> Result<(), Failure> {
-    let list = configured_client("list", address, token)?
-        .list()
-        .map_err(|error| Failure::daemon("list", error))?;
-    print_runs(list);
     Ok(())
 }
 

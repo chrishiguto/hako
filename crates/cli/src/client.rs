@@ -39,7 +39,6 @@ impl Client {
 
     pub(crate) fn submit(&self, flow: &str) -> Result<SubmitRunResponse, ClientError> {
         parse(
-            "submission",
             self.agent
                 .post(&format!("{}/v1/runs", self.address))
                 .header("Authorization", &self.authorization)
@@ -51,7 +50,6 @@ impl Client {
 
     pub(crate) fn list(&self) -> Result<ListRunsResponse, ClientError> {
         parse(
-            "list",
             self.agent
                 .get(&format!("{}/v1/runs", self.address))
                 .header("Authorization", &self.authorization)
@@ -61,7 +59,6 @@ impl Client {
 
     pub(crate) fn status(&self, run_id: &str) -> Result<RunStatusResponse, ClientError> {
         parse(
-            "status",
             self.agent
                 .get(&format!("{}/v1/runs/{run_id}", self.address))
                 .header("Authorization", &self.authorization)
@@ -76,7 +73,6 @@ impl Client {
         answer: &str,
     ) -> Result<RunStatusResponse, ClientError> {
         parse(
-            "answer",
             self.agent
                 .post(&format!("{}/v1/runs/{run_id}/answer", self.address))
                 .header("Authorization", &self.authorization)
@@ -95,7 +91,6 @@ impl Client {
         note: Option<String>,
     ) -> Result<RunStatusResponse, ClientError> {
         parse(
-            "resume",
             self.agent
                 .post(&format!("{}/v1/runs/{run_id}/resume", self.address))
                 .header("Authorization", &self.authorization)
@@ -105,7 +100,6 @@ impl Client {
 
     pub(crate) fn cancel(&self, run_id: &str) -> Result<RunStatusResponse, ClientError> {
         parse(
-            "cancel",
             self.agent
                 .post(&format!("{}/v1/runs/{run_id}/cancel", self.address))
                 .header("Authorization", &self.authorization)
@@ -125,15 +119,14 @@ impl Client {
         if let Some(id) = last_event_id {
             request = request.header("Last-Event-ID", id.to_string());
         }
-        response("event stream", request.call())
+        response(request.call())
     }
 }
 
 fn parse<T: DeserializeOwned>(
-    operation: &str,
     result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<T, ClientError> {
-    let mut response = response(operation, result)?;
+    let mut response = response(result)?;
     response
         .body_mut()
         .read_json()
@@ -141,13 +134,12 @@ fn parse<T: DeserializeOwned>(
 }
 
 fn response(
-    operation: &str,
     result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<ureq::http::Response<ureq::Body>, ClientError> {
     let mut response = result.map_err(ClientError::Transport)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(rejection(operation, status, response.body_mut()));
+        return Err(rejection(status, response.body_mut()));
     }
     Ok(response)
 }
@@ -175,16 +167,15 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-fn rejection(
-    operation: &str,
-    status: impl std::fmt::Display,
-    body: &mut ureq::Body,
-) -> ClientError {
+/// The command name is the caller's to add — [`crate::main`] prefixes
+/// every failure with the operation it was performing, so naming it
+/// here too would say it twice.
+fn rejection(status: impl std::fmt::Display, body: &mut ureq::Body) -> ClientError {
     let detail = body
         .read_json::<ApiError>()
         .map(|error| format!(": {}", error.message))
         .unwrap_or_default();
     ClientError::Response(format!(
-        "daemon rejected {operation} with HTTP {status}{detail}"
+        "daemon rejected the request with HTTP {status}{detail}"
     ))
 }
