@@ -125,6 +125,10 @@ async fn iteration_budget_finishes_the_pass_then_pauses_and_notifies() {
 
 #[tokio::test(start_paused = true)]
 async fn wall_clock_budget_is_checked_after_the_in_flight_pass() {
+    // A paused-clock runtime auto-advances time whenever every task is
+    // idle, which would leap straight to the iteration deadline. This
+    // never-idle task pins the clock so only the sink's explicit
+    // advance moves it.
     let keep_clock_manual = tokio::spawn(async {
         loop {
             tokio::task::yield_now().await;

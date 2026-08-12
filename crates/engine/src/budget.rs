@@ -39,14 +39,31 @@ struct Usage {
     tokens: Option<u64>,
 }
 
+/// The running clock a kernel holds for its whole life: active time
+/// accrues from [`BudgetUsage::activate`] until this drops. A guard
+/// rather than paired calls, so every exit — a pause, a completion, or
+/// an error bubbling out — stops the clock by construction.
+pub(crate) struct ActiveTimer(BudgetUsage);
+
+impl Drop for ActiveTimer {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
 impl BudgetUsage {
-    pub(crate) fn start(&self) {
+    pub(crate) fn activate(&self) -> ActiveTimer {
+        self.start();
+        ActiveTimer(self.clone())
+    }
+
+    fn start(&self) {
         let mut usage = self.0.lock().unwrap();
         debug_assert!(usage.active_since.is_none());
         usage.active_since = Some(tokio::time::Instant::now());
     }
 
-    pub(crate) fn stop(&self) {
+    fn stop(&self) {
         let mut usage = self.0.lock().unwrap();
         if let Some(started) = usage.active_since.take() {
             usage.active = usage.active.saturating_add(started.elapsed());

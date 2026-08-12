@@ -17,7 +17,6 @@
 
 mod contract;
 pub(crate) mod frame;
-mod guardrails;
 pub(crate) mod skeptic;
 
 use async_trait::async_trait;
@@ -47,6 +46,20 @@ const STAGES: [Stage; 4] = [
     Stage::Simplify,
 ];
 
+/// The `K` in "K consecutive no-commit iterations pause as drift".
+/// Fixed rather than a flow knob for v1: forgiving enough that one
+/// stray empty pass never pauses a run, tight enough that a spinning
+/// loop stops within three.
+const DRIFT_LIMIT: u32 = 3;
+
+/// The pause summary a pass leaves behind — its last report's words,
+/// or a stock line when nothing has reported yet (a run paused at the
+/// loop top before its first pass).
+fn last_summary(pass: &[StageReport]) -> &str {
+    pass.last()
+        .map_or("budget exhausted", |report| report.summary())
+}
+
 /// The staged kernel. Stateless — everything a run needs arrives in its
 /// [`KernelContext`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,7 +68,7 @@ pub struct PipelineKernel;
 #[async_trait]
 impl Kernel for PipelineKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
-        ctx.budget_usage.start();
+        let _active = ctx.budget_usage.activate();
         let (mut iteration, mut human) = match &ctx.resume {
             Some(resume) => (resume.next_iteration, Some(resume.human.clone())),
             None => {
@@ -74,12 +87,13 @@ impl Kernel for PipelineKernel {
         // for the first iteration; nothing came before it.
         let mut prior: Vec<StageReport> = Vec::new();
         let mut plan_feedback: Vec<Feedback> = Vec::new();
-        let mut guardrails = guardrails::Guardrails::default();
         // The commit drift detection measures against. Sampled at the
         // loop boundary rather than threaded up from the stages: any
         // new commit — the engine's checkpoint or one the agent made
         // itself — is durable progress.
         let mut head = ctx.workspace.head().await?;
+        let mut no_commit_iterations: u32 = 0;
+        let mut timeout_failures: u32 = 0;
         loop {
             // Before booting anything: with `iteration - 1` passes
             // completed, has any budget already run out? This is what
@@ -89,7 +103,7 @@ impl Kernel for PipelineKernel {
                 .budgets
                 .exhausted(&ctx.budget_usage, iteration.saturating_sub(1))
             {
-                return pause_for_budget(&ctx, budget, guardrails.summary()).await;
+                return pause_for_budget(&ctx, budget, last_summary(&prior)).await;
             }
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
@@ -114,17 +128,22 @@ impl Kernel for PipelineKernel {
                             outcome: IterationOutcome::Completed,
                         })
                         .await?;
+                    timeout_failures = 0;
                     let new_head = ctx.workspace.head().await?;
-                    let committed = new_head != head;
+                    no_commit_iterations = if new_head == head {
+                        no_commit_iterations + 1
+                    } else {
+                        0
+                    };
                     head = new_head;
-                    if let Some(budget) = guardrails.completed(&ctx, iteration, &pass, committed) {
-                        return pause_for_budget(&ctx, budget, guardrails.summary()).await;
+                    if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
+                        return pause_for_budget(&ctx, budget, last_summary(&pass)).await;
                     }
-                    if guardrails.drifted() {
+                    if no_commit_iterations >= DRIFT_LIMIT {
                         return conclude(
                             &ctx,
                             RunOutcome::Paused(PauseReason::Drift),
-                            Some(guardrails.summary()),
+                            Some(last_summary(&pass)),
                         )
                         .await;
                     }
@@ -156,19 +175,23 @@ impl Kernel for PipelineKernel {
                             outcome: IterationOutcome::TimedOut,
                         })
                         .await?;
-                    guardrails.timed_out(iteration, ctx.budgets.iteration_timeout);
+                    timeout_failures += 1;
+                    let summary = format!(
+                        "iteration {iteration} timed out after {} seconds",
+                        ctx.budgets.iteration_timeout.as_secs()
+                    );
                     iteration += 1;
                     // Deliberately verify's knobs: `on_fail` is the
                     // flow's one word on how much failure to tolerate
                     // and what to do then. Only the label is its own —
                     // the human reading the pause must see a timeout,
                     // not a failed check.
-                    if guardrails.timeout_failures() > ctx.verify.on_fail.retries {
+                    if timeout_failures > ctx.verify.on_fail.retries {
                         let outcome = match ctx.verify.on_fail.then {
                             FailAction::Pause => RunOutcome::Paused(PauseReason::Timeout),
                             FailAction::Fail => RunOutcome::Failed,
                         };
-                        return conclude(&ctx, outcome, Some(guardrails.summary())).await;
+                        return conclude(&ctx, outcome, Some(&summary)).await;
                     }
                     plan_feedback = vec![Feedback::IterationTimedOut {
                         timeout: ctx.budgets.iteration_timeout,
@@ -299,6 +322,8 @@ enum StageEnd {
     /// The stage produced no trustworthy report — a crashed agent or a
     /// report still malformed after its one repair.
     Fail,
+    /// The hard iteration deadline fired mid-stage; the bracket has
+    /// already destroyed the sandbox it interrupted.
     TimedOut,
     /// The run's cancel token fired, mid-stage or at the boundary
     /// before this stage booted anything: a finished stage's work
@@ -504,7 +529,6 @@ async fn conclude(
     outcome: RunOutcome,
     summary: Option<&str>,
 ) -> Result<RunOutcome, KernelError> {
-    ctx.budget_usage.stop();
     ctx.events
         .emit(RunEvent::StateChanged {
             state: outcome.into(),
