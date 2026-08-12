@@ -17,6 +17,7 @@ use crate::report::{Answer, Question};
 /// rather than by spelling its wording out a second time.
 pub(crate) const VERIFY_FAILED_HEADING: &str = "## Verify checks failed";
 pub(crate) const SKEPTIC_REFUTED_HEADING: &str = "## Completion claim refuted";
+pub(crate) const ITERATION_TIMED_OUT_HEADING: &str = "## Iteration timed out";
 pub(crate) const HUMAN_INPUT_HEADING: &str = "## Human input";
 
 /// Why the previous work did not count as progress — machine feedback
@@ -29,6 +30,9 @@ pub enum Feedback {
     /// A fresh skeptic found concrete evidence against a completion
     /// claim; the next plan must account for each finding.
     SkepticRefuted { findings: Vec<String> },
+    /// The previous iteration exceeded its hard cap and its sandbox
+    /// was destroyed; the next attempt must avoid hanging the same way.
+    IterationTimedOut { timeout: std::time::Duration },
 }
 
 /// Renders one machine verdict as a prompt section, with its
@@ -58,6 +62,13 @@ pub fn feedback(feedback: &Feedback) -> String {
                 fenced(&findings),
             )
         }
+        Feedback::IterationTimedOut { timeout } => format!(
+            "{ITERATION_TIMED_OUT_HEADING}\n\n\
+             The previous iteration exceeded its {} second timeout and its \
+             sandbox was destroyed. Continue from the checkpointed workspace \
+             without repeating the hang.\n",
+            timeout.as_secs(),
+        ),
     }
 }
 

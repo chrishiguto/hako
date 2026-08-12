@@ -24,11 +24,13 @@ use async_trait::async_trait;
 use crate::event::{IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
+use crate::notify::Notification;
 use crate::preamble::{Feedback, HumanInput};
 use crate::run::{PauseReason, RunOutcome};
 use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
 use crate::workspace::WorkspaceError;
+use proto::BudgetKind;
 use proto::flow::{FailAction, KernelName};
 use proto::pipeline::{Stage, StageReport};
 use proto::report::ReportStatus;
@@ -44,6 +46,20 @@ const STAGES: [Stage; 4] = [
     Stage::Simplify,
 ];
 
+/// The `K` in "K consecutive no-commit iterations pause as drift".
+/// Fixed rather than a flow knob for v1: forgiving enough that one
+/// stray empty pass never pauses a run, tight enough that a spinning
+/// loop stops within three.
+const DRIFT_LIMIT: u32 = 3;
+
+/// The pause summary a pass leaves behind — its last report's words,
+/// or a stock line when nothing has reported yet (a run paused at the
+/// loop top before its first pass).
+fn last_summary(pass: &[StageReport]) -> &str {
+    pass.last()
+        .map_or("budget exhausted", |report| report.summary())
+}
+
 /// The staged kernel. Stateless — everything a run needs arrives in its
 /// [`KernelContext`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,6 +68,7 @@ pub struct PipelineKernel;
 #[async_trait]
 impl Kernel for PipelineKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
+        let _active = ctx.budget_usage.activate();
         let (mut iteration, mut human) = match &ctx.resume {
             Some(resume) => (resume.next_iteration, Some(resume.human.clone())),
             None => {
@@ -70,10 +87,24 @@ impl Kernel for PipelineKernel {
         // for the first iteration; nothing came before it.
         let mut prior: Vec<StageReport> = Vec::new();
         let mut plan_feedback: Vec<Feedback> = Vec::new();
+        // The commit drift detection measures against. Sampled at the
+        // loop boundary rather than threaded up from the stages: any
+        // new commit — the engine's checkpoint or one the agent made
+        // itself — is durable progress.
+        let mut head = ctx.workspace.head().await?;
+        let mut no_commit_iterations: u32 = 0;
+        let mut timeout_failures: u32 = 0;
         loop {
+            if let Some(budget) = ctx
+                .budgets
+                .exhausted(&ctx.budget_usage, iteration.saturating_sub(1))
+            {
+                return pause_for_budget(&ctx, budget, last_summary(&prior)).await;
+            }
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
+            let deadline = tokio::time::Instant::now() + ctx.budgets.iteration_timeout;
             // The resumed answers belong to the iteration the pause
             // interrupted, so only that first iteration carries them.
             match run_iteration(
@@ -82,6 +113,7 @@ impl Kernel for PipelineKernel {
                 &prior,
                 std::mem::take(&mut plan_feedback),
                 human.take(),
+                deadline,
             )
             .await?
             {
@@ -92,6 +124,25 @@ impl Kernel for PipelineKernel {
                             outcome: IterationOutcome::Completed,
                         })
                         .await?;
+                    timeout_failures = 0;
+                    let new_head = ctx.workspace.head().await?;
+                    no_commit_iterations = if new_head == head {
+                        no_commit_iterations + 1
+                    } else {
+                        0
+                    };
+                    head = new_head;
+                    if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
+                        return pause_for_budget(&ctx, budget, last_summary(&pass)).await;
+                    }
+                    if no_commit_iterations >= DRIFT_LIMIT {
+                        return conclude(
+                            &ctx,
+                            RunOutcome::Paused(PauseReason::Drift),
+                            Some(last_summary(&pass)),
+                        )
+                        .await;
+                    }
                     prior = pass;
                     plan_feedback = feedback;
                     iteration += 1;
@@ -100,9 +151,9 @@ impl Kernel for PipelineKernel {
                 // `IterationFinished` closes a pass that never
                 // finished. Only a full pass or a hard failure emits
                 // one.
-                IterationEnd::Done => return conclude(&ctx, RunOutcome::Done).await,
-                IterationEnd::Pause(reason) => {
-                    return conclude(&ctx, RunOutcome::Paused(reason)).await;
+                IterationEnd::Done => return conclude(&ctx, RunOutcome::Done, None).await,
+                IterationEnd::Pause { reason, summary } => {
+                    return conclude(&ctx, RunOutcome::Paused(reason), Some(&summary)).await;
                 }
                 IterationEnd::Fail => {
                     ctx.events
@@ -111,9 +162,40 @@ impl Kernel for PipelineKernel {
                             outcome: IterationOutcome::Failed,
                         })
                         .await?;
-                    return conclude(&ctx, RunOutcome::Failed).await;
+                    return conclude(&ctx, RunOutcome::Failed, None).await;
                 }
-                IterationEnd::Cancelled => return conclude(&ctx, RunOutcome::Cancelled).await,
+                IterationEnd::TimedOut => {
+                    ctx.events
+                        .emit(RunEvent::IterationFinished {
+                            iteration,
+                            outcome: IterationOutcome::TimedOut,
+                        })
+                        .await?;
+                    timeout_failures += 1;
+                    let summary = format!(
+                        "iteration {iteration} timed out after {} seconds",
+                        ctx.budgets.iteration_timeout.as_secs()
+                    );
+                    iteration += 1;
+                    // Deliberately verify's knobs: `on_fail` is the
+                    // flow's one word on how much failure to tolerate
+                    // and what to do then. Only the label is its own —
+                    // the human reading the pause must see a timeout,
+                    // not a failed check.
+                    if timeout_failures > ctx.verify.on_fail.retries {
+                        let outcome = match ctx.verify.on_fail.then {
+                            FailAction::Pause => RunOutcome::Paused(PauseReason::Timeout),
+                            FailAction::Fail => RunOutcome::Failed,
+                        };
+                        return conclude(&ctx, outcome, Some(&summary)).await;
+                    }
+                    plan_feedback = vec![Feedback::IterationTimedOut {
+                        timeout: ctx.budgets.iteration_timeout,
+                    }];
+                }
+                IterationEnd::Cancelled => {
+                    return conclude(&ctx, RunOutcome::Cancelled, None).await;
+                }
             }
         }
     }
@@ -136,10 +218,16 @@ enum IterationEnd {
     Done,
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
-    Pause(PauseReason),
+    Pause {
+        reason: PauseReason,
+        summary: String,
+    },
     /// A stage or the skeptic produced no trustworthy report; the
     /// iteration counts as failed.
     Fail,
+    /// The hard iteration deadline fired; the live sandbox has already
+    /// been destroyed by its bracket.
+    TimedOut,
     /// The run's cancel token fired; the iteration stops where it
     /// stands.
     Cancelled,
@@ -156,6 +244,7 @@ async fn run_iteration(
     prior: &[StageReport],
     mut plan_feedback: Vec<Feedback>,
     mut human: Option<HumanInput>,
+    deadline: tokio::time::Instant,
 ) -> Result<IterationEnd, KernelError> {
     let mut pass: Vec<StageReport> = Vec::new();
     for (index, &stage) in STAGES.iter().enumerate() {
@@ -173,29 +262,36 @@ async fn run_iteration(
             handoff,
             feedback,
             stage_human.as_ref(),
+            deadline,
         )
         .await?
         {
             StageEnd::Advance(report) => pass.push(report),
             StageEnd::Done(claim) => {
-                return Ok(match skeptic::judge(ctx, iteration, &claim).await? {
-                    Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
-                    Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
-                        // A refuted claim still advanced the work, so
-                        // the next plan reads it alongside the
-                        // findings.
-                        pass.push(claim);
-                        IterationEnd::Continue {
-                            pass,
-                            feedback: vec![Feedback::SkepticRefuted { findings }],
+                return Ok(
+                    match skeptic::judge(ctx, iteration, &claim, deadline).await? {
+                        Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
+                        Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
+                            // A refuted claim still advanced the work, so
+                            // the next plan reads it alongside the
+                            // findings.
+                            pass.push(claim);
+                            IterationEnd::Continue {
+                                pass,
+                                feedback: vec![Feedback::SkepticRefuted { findings }],
+                            }
                         }
-                    }
-                    Bracketed::Finished(skeptic::SkepticEnd::Failed) => IterationEnd::Fail,
-                    Bracketed::Cancelled => IterationEnd::Cancelled,
-                });
+                        Bracketed::Finished(skeptic::SkepticEnd::Failed) => IterationEnd::Fail,
+                        Bracketed::Cancelled => IterationEnd::Cancelled,
+                        Bracketed::TimedOut => IterationEnd::TimedOut,
+                    },
+                );
             }
-            StageEnd::Pause(reason) => return Ok(IterationEnd::Pause(reason)),
+            StageEnd::Pause { reason, summary } => {
+                return Ok(IterationEnd::Pause { reason, summary });
+            }
             StageEnd::Fail => return Ok(IterationEnd::Fail),
+            StageEnd::TimedOut => return Ok(IterationEnd::TimedOut),
             StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
         }
     }
@@ -215,10 +311,16 @@ enum StageEnd {
     Done(StageReport),
     /// The run pauses now, mid-pipeline — a `blocked`/`needs_input`
     /// report, or verify failures that outran the retry budget.
-    Pause(PauseReason),
+    Pause {
+        reason: PauseReason,
+        summary: String,
+    },
     /// The stage produced no trustworthy report — a crashed agent or a
     /// report still malformed after its one repair.
     Fail,
+    /// The hard iteration deadline fired mid-stage; the bracket has
+    /// already destroyed the sandbox it interrupted.
+    TimedOut,
     /// The run's cancel token fired, mid-stage or at the boundary
     /// before this stage booted anything: a finished stage's work
     /// stands, no further stage starts, and the run ends `Cancelled` —
@@ -238,13 +340,16 @@ async fn execute_stage(
     handoff: &[StageReport],
     mut feedback: Vec<Feedback>,
     human: Option<&HumanInput>,
+    deadline: tokio::time::Instant,
 ) -> Result<StageEnd, KernelError> {
     let mut verify_failures: u32 = 0;
     loop {
-        let drive = match drive_stage(ctx, iteration, stage, handoff, &feedback, human).await? {
-            Bracketed::Finished(drive) => drive,
-            Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
-        };
+        let drive =
+            match drive_stage(ctx, iteration, stage, handoff, &feedback, human, deadline).await? {
+                Bracketed::Finished(drive) => drive,
+                Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
+                Bracketed::TimedOut => return Ok(StageEnd::TimedOut),
+            };
         let StageDrive::Reported { report, verify } = drive else {
             return Ok(StageEnd::Fail);
         };
@@ -253,7 +358,10 @@ async fn execute_stage(
             verify_failures += 1;
             if verify_failures > ctx.verify.on_fail.retries {
                 return Ok(match ctx.verify.on_fail.then {
-                    FailAction::Pause => StageEnd::Pause(PauseReason::VerifyFailed),
+                    FailAction::Pause => StageEnd::Pause {
+                        reason: PauseReason::VerifyFailed,
+                        summary: report.summary().into(),
+                    },
                     FailAction::Fail => StageEnd::Fail,
                 });
             }
@@ -268,8 +376,14 @@ async fn execute_stage(
         return Ok(match report.status() {
             ReportStatus::Continue => StageEnd::Advance(report),
             ReportStatus::Done => StageEnd::Done(report),
-            ReportStatus::Blocked => StageEnd::Pause(PauseReason::Blocked),
-            ReportStatus::NeedsInput => StageEnd::Pause(PauseReason::AwaitingHuman),
+            ReportStatus::Blocked => StageEnd::Pause {
+                reason: PauseReason::Blocked,
+                summary: report.summary().into(),
+            },
+            ReportStatus::NeedsInput => StageEnd::Pause {
+                reason: PauseReason::AwaitingHuman,
+                summary: report.summary().into(),
+            },
         });
     }
 }
@@ -297,8 +411,9 @@ async fn drive_stage(
     handoff: &[StageReport],
     feedback: &[Feedback],
     human: Option<&HumanInput>,
+    deadline: tokio::time::Instant,
 ) -> Result<Bracketed<StageDrive>, KernelError> {
-    invocation::in_fresh_sandbox(ctx, async |sandbox| {
+    invocation::in_fresh_sandbox_until(ctx, Some(deadline), async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
         let prompt = frame::compose(&frame::Frame {
             stage,
@@ -392,14 +507,42 @@ fn runs_verify(stage: Stage, status: ReportStatus) -> bool {
     status == ReportStatus::Done || (is_mutating(stage) && status == ReportStatus::Continue)
 }
 
+async fn pause_for_budget(
+    ctx: &KernelContext,
+    budget: BudgetKind,
+    summary: &str,
+) -> Result<RunOutcome, KernelError> {
+    ctx.events
+        .emit(RunEvent::BudgetExhausted { budget })
+        .await?;
+    conclude(ctx, RunOutcome::Paused(PauseReason::Budget), Some(summary)).await
+}
+
 /// Every ending goes out the same door: the terminal `state_changed`
-/// event, then the outcome to the caller.
-async fn conclude(ctx: &KernelContext, outcome: RunOutcome) -> Result<RunOutcome, KernelError> {
+/// event, the pause notification when the ending is one, then the
+/// outcome to the caller.
+async fn conclude(
+    ctx: &KernelContext,
+    outcome: RunOutcome,
+    summary: Option<&str>,
+) -> Result<RunOutcome, KernelError> {
     ctx.events
         .emit(RunEvent::StateChanged {
             state: outcome.into(),
         })
         .await?;
+    if let RunOutcome::Paused(reason) = outcome {
+        // An unreachable webhook must not turn a clean pause into a
+        // failed run: the human loses the ping, never the work.
+        let _ = ctx
+            .notifier
+            .notify(&Notification {
+                run_id: ctx.run_id.clone(),
+                reason,
+                summary: summary.unwrap_or("run paused").into(),
+            })
+            .await;
+    }
     Ok(outcome)
 }
 

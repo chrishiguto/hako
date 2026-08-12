@@ -85,8 +85,9 @@ pub(super) async fn judge(
     ctx: &KernelContext,
     iteration: u32,
     claim: &StageReport,
+    deadline: tokio::time::Instant,
 ) -> Result<Bracketed<SkepticEnd>, KernelError> {
-    invocation::in_fresh_sandbox(ctx, async |sandbox| {
+    invocation::in_fresh_sandbox_until(ctx, Some(deadline), async |sandbox| {
         let mut domain_prompts = Vec::with_capacity(STAGES.len());
         for &stage in &STAGES {
             domain_prompts.push((stage, resolve_prompt(ctx, sandbox, stage).await?));

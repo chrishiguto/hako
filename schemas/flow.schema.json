@@ -152,14 +152,33 @@
       "description": "Where the daemon pushes run lifecycle notifications.",
       "type": "object",
       "properties": {
+        "format": {
+          "description": "The payload shape the webhook expects. The flow author knows\nwhat their URL points at, so the format is declared, never\nsniffed from a response.",
+          "$ref": "#/$defs/NotifyFormat"
+        },
         "webhook": {
-          "description": "URL POSTed to when the run pauses, finishes, or fails.",
+          "description": "URL POSTed to whenever the run pauses.",
           "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "webhook"
+      ]
+    },
+    "NotifyFormat": {
+      "description": "A pause notification's payload shape.",
+      "oneOf": [
+        {
+          "description": "The message as a plain-text body — what ntfy takes.",
+          "type": "string",
+          "const": "text"
+        },
+        {
+          "description": "The same message wrapped as JSON `{\"text\": …}` — what a Slack\nincoming webhook requires.",
+          "type": "string",
+          "const": "slack"
+        }
       ]
     },
     "OnFail": {

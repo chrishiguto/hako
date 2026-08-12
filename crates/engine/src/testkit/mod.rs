@@ -30,7 +30,7 @@ pub use sandbox::{
 
 use std::sync::Arc;
 
-use crate::budget::Budgets;
+use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
 use crate::event::RunEvent;
 use crate::kernel::KernelContext;
@@ -65,6 +65,7 @@ pub fn context() -> KernelContext {
     KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
+        budget_usage: BudgetUsage::default(),
         resume: None,
         // A fresh token nobody holds the other end of: never fires.
         cancel: CancelToken::new(),

@@ -31,13 +31,29 @@ pub enum PauseReason {
     Blocked,
     /// Verify checks failed and the configured retries are exhausted.
     VerifyFailed,
-    /// Consecutive iterations produced no commits and an unchanged
-    /// remaining list — the loop is spinning, not progressing.
+    /// Consecutive iterations hit the hard iteration timeout and the
+    /// configured retries are exhausted.
+    Timeout,
+    /// Consecutive iterations produced no commits — the loop is
+    /// spinning without durable progress.
     Drift,
     /// A budget ran out; the current iteration was finished first.
     Budget,
     /// The agent asked structured questions a human must answer.
     AwaitingHuman,
+}
+
+impl PauseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::VerifyFailed => "verify_failed",
+            Self::Timeout => "timeout",
+            Self::Drift => "drift",
+            Self::Budget => "budget",
+            Self::AwaitingHuman => "awaiting_human",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -70,11 +86,13 @@ mod tests {
         let reasons = [
             (PauseReason::Blocked, "blocked"),
             (PauseReason::VerifyFailed, "verify_failed"),
+            (PauseReason::Timeout, "timeout"),
             (PauseReason::Drift, "drift"),
             (PauseReason::Budget, "budget"),
             (PauseReason::AwaitingHuman, "awaiting_human"),
         ];
         for (reason, wire) in reasons {
+            assert_eq!(reason.as_str(), wire);
             assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
         }
     }

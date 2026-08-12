@@ -237,6 +237,17 @@ impl StageReport {
         }
     }
 
+    /// The human-facing account every stage report carries.
+    pub fn summary(&self) -> &str {
+        match self {
+            Self::Plan(report) => &report.summary,
+            Self::Implement(report) => &report.summary,
+            Self::Review(report) => &report.summary,
+            Self::Simplify(report) => &report.summary,
+            Self::Deliver(report) => &report.summary,
+        }
+    }
+
     /// This report's own payload as JSON — the inner shape, not the
     /// enum wrapper. What a stage-scoped event embeds: the same bytes a
     /// typed consumer re-parses against this stage's type. Infallible —

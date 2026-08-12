@@ -57,6 +57,7 @@ pub trait ReportContract {
 pub enum Bracketed<T> {
     Finished(T),
     Cancelled,
+    TimedOut,
 }
 
 /// Boots a fresh sandbox over the workspace, runs `work` inside it,
@@ -72,8 +73,22 @@ pub async fn in_fresh_sandbox<T>(
     ctx: &KernelContext,
     work: impl AsyncFnOnce(&SandboxHandle) -> Result<T, KernelError>,
 ) -> Result<Bracketed<T>, KernelError> {
+    in_fresh_sandbox_until(ctx, None, work).await
+}
+
+/// The deadline-aware bracket used by kernels whose iteration spans
+/// several fresh sandboxes. Teardown remains outside the race, so a
+/// hard timeout cannot leak the VM whose work it drops.
+pub async fn in_fresh_sandbox_until<T>(
+    ctx: &KernelContext,
+    deadline: Option<tokio::time::Instant>,
+    work: impl AsyncFnOnce(&SandboxHandle) -> Result<T, KernelError>,
+) -> Result<Bracketed<T>, KernelError> {
     if ctx.cancel.is_cancelled() {
         return Ok(Bracketed::Cancelled);
+    }
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Ok(Bracketed::TimedOut);
     }
     // Every sandbox gets the same env: the run's secrets resolved
     // once, at submit. Copied rather than re-resolved because a store
@@ -89,11 +104,19 @@ pub async fn in_fresh_sandbox<T>(
     let result = tokio::select! {
         result = work(&sandbox) => result.map(Bracketed::Finished),
         () = ctx.cancel.cancelled() => Ok(Bracketed::Cancelled),
+        () = wait_until(deadline) => Ok(Bracketed::TimedOut),
     };
     let destroyed = ctx.sandbox.destroy(sandbox).await;
     let result = result?;
     destroyed?;
     Ok(result)
+}
+
+async fn wait_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// One output stream's path from raw bytes to loggable text. Chunks
@@ -230,7 +253,9 @@ pub async fn invoke(
     }
 
     let stdout = into_text(stdout);
-    if let Some(usage) = ctx.agent.token_usage(&stdout) {
+    let usage = ctx.agent.token_usage(&stdout);
+    if let Some(usage) = usage {
+        ctx.budget_usage.record_tokens(usage);
         ctx.events
             .emit(RunEvent::TokensUsed { iteration, usage })
             .await?;

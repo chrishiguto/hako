@@ -299,8 +299,26 @@ pub struct SecretsConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NotifyConfig {
-    /// URL POSTed to when the run pauses, finishes, or fails.
+    /// URL POSTed to whenever the run pauses.
     pub webhook: String,
+    /// The payload shape the webhook expects. The flow author knows
+    /// what their URL points at, so the format is declared, never
+    /// sniffed from a response.
+    #[serde(default)]
+    pub format: NotifyFormat,
+}
+
+/// A pause notification's payload shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyFormat {
+    /// The message as a plain-text body — what ntfy takes.
+    #[default]
+    Text,
+    /// The same message wrapped as JSON `{"text": …}` — what a Slack
+    /// incoming webhook requires.
+    Slack,
 }
 
 /// A duration as a flow author writes one: a positive integer with a
@@ -496,7 +514,16 @@ mod tests {
         );
         assert_eq!(flow.workspace.repo, ".");
         assert_eq!(flow.secrets.env, [SecretName::new("GH_TOKEN")]);
-        assert_eq!(flow.notify.unwrap().webhook, "https://ntfy.sh/hako");
+        let notify = flow.notify.unwrap();
+        assert_eq!(notify.webhook, "https://ntfy.sh/hako");
+        assert_eq!(notify.format, NotifyFormat::Text, "plain text by default");
+    }
+
+    #[test]
+    fn a_notify_section_can_declare_the_slack_shape() {
+        let flow = REPRESENTATIVE_FLOW.replace("[notify]", "[notify]\nformat = \"slack\"");
+        let flow = FlowConfig::from_toml(&flow).unwrap();
+        assert_eq!(flow.notify.unwrap().format, NotifyFormat::Slack);
     }
 
     #[test]
