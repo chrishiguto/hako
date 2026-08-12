@@ -12,7 +12,7 @@ struct Request {
     body: String,
 }
 
-fn stub(response: &'static str) -> (String, Receiver<Request>) {
+fn stub(response: String) -> (String, Receiver<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let (requests, received) = mpsc::channel();
@@ -88,7 +88,6 @@ fn run_submits_to_a_remote_daemon_and_returns_the_run_id() {
         "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
         response_body.len()
     );
-    let response: &'static str = Box::leak(response.into_boxed_str());
     let (address, request) = stub(response);
 
     let output = hako(&[
@@ -124,7 +123,6 @@ fn run_uses_the_remote_daemon_from_the_environment() {
         "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
         response_body.len()
     );
-    let response: &'static str = Box::leak(response.into_boxed_str());
     let (address, request) = stub(response);
 
     let output = hako_with_env(
@@ -179,7 +177,6 @@ fn list_renders_every_state_and_pause_reason() {
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
         response_body.len()
     );
-    let response: &'static str = Box::leak(response.into_boxed_str());
     let (address, _) = stub(response);
 
     let output = hako(&["--address", &address, "list"]);
@@ -269,8 +266,13 @@ fn auto_start_daemon_helper() {
         return;
     }
 
+    // The token the CLI handed us must be the one it persisted for
+    // future clients — generated, written, and transmitted as one
+    // value.
     let token = std::env::var("HAKO_TOKEN").unwrap();
-    assert_ne!(token, "hako-local");
+    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap();
+    let persisted = std::fs::read_to_string(Path::new(&config_home).join("hako/token")).unwrap();
+    assert_eq!(token, persisted);
     let listener = TcpListener::bind(std::env::var("HAKO_ADDR").unwrap()).unwrap();
     for expected_path in ["/v1/runs", "/v1/runs", "/v1/runs"] {
         let (mut stream, _) = listener.accept().unwrap();
