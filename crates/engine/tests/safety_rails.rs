@@ -439,17 +439,14 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(outcome, RunOutcome::Paused(PauseReason::VerifyFailed));
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Timeout));
     assert_eq!(sandbox.created(), 1);
     assert_eq!(sandbox.destroyed(), 1);
     assert!(events.events().contains(&RunEvent::IterationFinished {
         iteration: 1,
         outcome: IterationOutcome::TimedOut,
     }));
-    assert_eq!(
-        notifier.notifications()[0].reason,
-        PauseReason::VerifyFailed
-    );
+    assert_eq!(notifier.notifications()[0].reason, PauseReason::Timeout);
 }
 
 #[tokio::test]

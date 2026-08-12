@@ -154,9 +154,14 @@ impl Kernel for PipelineKernel {
                         .await?;
                     guardrails.timed_out(iteration, ctx.budgets.iteration_timeout);
                     iteration += 1;
+                    // Deliberately verify's knobs: `on_fail` is the
+                    // flow's one word on how much failure to tolerate
+                    // and what to do then. Only the label is its own —
+                    // the human reading the pause must see a timeout,
+                    // not a failed check.
                     if guardrails.timeout_failures() > ctx.verify.on_fail.retries {
                         let outcome = match ctx.verify.on_fail.then {
-                            FailAction::Pause => RunOutcome::Paused(PauseReason::VerifyFailed),
+                            FailAction::Pause => RunOutcome::Paused(PauseReason::Timeout),
                             FailAction::Fail => RunOutcome::Failed,
                         };
                         return conclude(&ctx, outcome, Some(guardrails.summary())).await;

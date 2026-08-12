@@ -113,7 +113,7 @@ A soft cap on a run — iterations, wall-clock, or tokens. Exhaustion finishes t
 _Avoid_: limit, quota
 
 **Pause**:
-A resumable run state carrying a reason: blocked, verify_failed, drift, budget, or awaiting_human. Every pause notifies the user.
+A resumable run state carrying a reason: blocked, verify_failed, timeout, drift, budget, or awaiting_human. Every pause notifies the user.
 _Avoid_: stop, halt
 
 **Drift**:

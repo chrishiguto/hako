@@ -31,6 +31,9 @@ pub enum PauseReason {
     Blocked,
     /// Verify checks failed and the configured retries are exhausted.
     VerifyFailed,
+    /// Consecutive iterations hit the hard iteration timeout and the
+    /// configured retries are exhausted.
+    Timeout,
     /// Consecutive iterations produced no commits — the loop is
     /// spinning without durable progress.
     Drift,
@@ -45,6 +48,7 @@ impl PauseReason {
         match self {
             Self::Blocked => "blocked",
             Self::VerifyFailed => "verify_failed",
+            Self::Timeout => "timeout",
             Self::Drift => "drift",
             Self::Budget => "budget",
             Self::AwaitingHuman => "awaiting_human",
@@ -82,6 +86,7 @@ mod tests {
         let reasons = [
             (PauseReason::Blocked, "blocked"),
             (PauseReason::VerifyFailed, "verify_failed"),
+            (PauseReason::Timeout, "timeout"),
             (PauseReason::Drift, "drift"),
             (PauseReason::Budget, "budget"),
             (PauseReason::AwaitingHuman, "awaiting_human"),
