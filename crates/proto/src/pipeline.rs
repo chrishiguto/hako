@@ -59,16 +59,21 @@ impl Stage {
     }
 }
 
-/// The legal `[prompts]` keys for a pipeline flow. The four core slots
-/// fall back to kernel-shipped defaults; `deliver` is optional and runs
-/// only when the flow names its prompt.
-pub const PROMPT_SLOTS: [&str; 5] = [
-    Stage::Plan.as_str(),
-    Stage::Implement.as_str(),
-    Stage::Review.as_str(),
-    Stage::Simplify.as_str(),
-    Stage::Deliver.as_str(),
-];
+/// The legal `[prompts]` keys for a pipeline flow — every stage, in
+/// kernel order, derived from [`Stage::ALL`] so the two sets cannot
+/// drift: a stage cannot execute without a slot the flow may name, and
+/// no slot survives its stage. The four core slots fall back to
+/// kernel-shipped defaults; `deliver` is optional and runs only when
+/// the flow names its prompt.
+pub const PROMPT_SLOTS: [&str; Stage::ALL.len()] = {
+    let mut slots = [""; Stage::ALL.len()];
+    let mut index = 0;
+    while index < slots.len() {
+        slots[index] = Stage::ALL[index].as_str();
+        index += 1;
+    }
+    slots
+};
 
 /// What the plan stage leaves behind: the work unit this iteration
 /// drives and the intended route through it.
