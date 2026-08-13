@@ -34,6 +34,10 @@ fn artifacts() -> anyhow::Result<Vec<(String, String)>> {
             render(&proto::pipeline::stage_schema(stage))?,
         ));
     }
+    artifacts.push((
+        format!("{SCHEMAS_DIR}/report/fanout/plan.schema.json"),
+        render(&proto::fanout::plan_schema())?,
+    ));
     Ok(artifacts)
 }
 

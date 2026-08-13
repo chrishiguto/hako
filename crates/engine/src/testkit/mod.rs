@@ -1,4 +1,4 @@
-//! In-process fakes for the six seams, a defaulted [`KernelContext`],
+//! In-process fakes for the seven seams, a defaulted [`KernelContext`],
 //! real-git fixtures, and the pipeline run harness — the payoff of the
 //! seam design, paid once.
 //!
@@ -17,8 +17,8 @@ mod repo;
 mod sandbox;
 
 pub use fakes::{
-    AGENT_BIN, MapSecrets, NoAgent, NoSecrets, RecordingNotifier, RecordingSink, ScriptedAgent,
-    StubNotifier, Transcript, exec, secret_env,
+    AGENT_BIN, MapSecrets, NoAgent, NoRunSpawner, NoSecrets, RecordingNotifier, RecordingSink,
+    ScriptedAgent, StubNotifier, Transcript, exec, secret_env,
 };
 pub use harness::{Ran, drive_pipeline, pipeline_context, stage_events};
 pub use prompt::{
@@ -85,6 +85,7 @@ pub fn context() -> KernelContext {
         budgets: Budgets::default(),
         budget_usage: BudgetUsage::default(),
         replay: None,
+        scope: None,
         // A fresh token nobody holds the other end of: never fires.
         cancel: CancelToken::new(),
         verify: VerifyConfig::default(),
@@ -94,6 +95,7 @@ pub fn context() -> KernelContext {
         agent: Arc::new(NoAgent),
         events: Arc::new(RecordingSink::default()),
         notifier: Arc::new(StubNotifier),
+        run_spawner: Arc::new(NoRunSpawner),
         secrets: SecretEnv::default(),
     }
 }

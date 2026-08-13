@@ -1,5 +1,5 @@
 //! Cooperative run cancellation. The token rides the `KernelContext`
-//! as plain data, like budgets — not a seventh seam: it is never
+//! as plain data, like budgets — not a seam: it is never
 //! faked and never swapped, a test fires the real thing. The host
 //! keeps a clone and signals; the engine observes it in exactly one
 //! place — the sandbox bracket, which checks at entry and races the

@@ -25,7 +25,8 @@ pub(crate) mod skeptic;
 
 use async_trait::async_trait;
 
-use self::ending::{conclude, last_summary, pause_for_budget};
+use self::ending::last_summary;
+use crate::ending::{conclude, pause_for_budget};
 use crate::event::{IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
@@ -480,6 +481,9 @@ async fn drive_stage(
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
         let prompt = frame::compose(&frame::Frame {
             stage,
+            scope: (stage == Stage::Plan)
+                .then_some(ctx.scope.as_deref())
+                .flatten(),
             handoff,
             feedback,
             human,

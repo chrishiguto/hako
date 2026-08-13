@@ -193,6 +193,27 @@ async fn a_prompt_override_replaces_the_shipped_default() {
     assert!(skeptic.contains("CUSTOM PLAN RULES"), "{skeptic}");
 }
 
+#[tokio::test]
+async fn a_fanout_child_plan_is_scoped_to_its_assigned_unit() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        vec![reports("done", "done"), unrefuted()],
+    ));
+    let (mut ctx, _) = pipeline_context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        PromptsConfig::default(),
+    );
+    ctx.scope = Some("issue #31: add the API".into());
+
+    assert_eq!(PipelineKernel.run(ctx).await.unwrap(), RunOutcome::Done);
+    let plan = &sandbox.agent_prompts()[0];
+    assert!(plan.contains("## Assigned work unit"), "{plan}");
+    assert!(plan.contains("issue #31: add the API"), "{plan}");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {

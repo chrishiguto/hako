@@ -115,6 +115,9 @@ pub enum KernelName {
     /// The staged loop: one work unit per iteration, driven through a
     /// fixed stage sequence the kernel owns in Rust.
     Pipeline,
+    /// The dispatcher: one planning pass spawns an independent child
+    /// pipeline run for every unit it names.
+    Fanout,
 }
 
 impl KernelName {
@@ -123,13 +126,14 @@ impl KernelName {
     /// the one enumeration the compiler cannot check: the ordinal test
     /// below catches an insertion that forgets it; a forgotten append
     /// rests on review.
-    pub const ALL: [Self; 1] = [Self::Pipeline];
+    pub const ALL: [Self; 2] = [Self::Pipeline, Self::Fanout];
 
     /// The wire string flows select the kernel by — the same string
     /// serde reads, spelled once for error messages and run metadata.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pipeline => "pipeline",
+            Self::Fanout => "fanout",
         }
     }
 
@@ -139,6 +143,7 @@ impl KernelName {
     pub fn prompt_slots(self) -> &'static [&'static str] {
         match self {
             Self::Pipeline => &crate::pipeline::PROMPT_SLOTS,
+            Self::Fanout => &crate::fanout::PROMPT_SLOTS,
         }
     }
 }
@@ -424,7 +429,44 @@ mod schema {
     /// disagree with them. Committed at `schemas/flow.schema.json`,
     /// drift-checked in CI, and embedded by the CLI for `hako schema`.
     pub fn json_schema() -> Schema {
-        crate::schema::root_schema_for::<FlowConfig>()
+        let schema = crate::schema::root_schema_for::<FlowConfig>();
+        let mut value = serde_json::to_value(schema).expect("flow schema serializes");
+        let conditions: Vec<serde_json::Value> = KernelName::ALL
+            .into_iter()
+            .map(|kernel| {
+                let properties: serde_json::Map<String, serde_json::Value> = kernel
+                    .prompt_slots()
+                    .iter()
+                    .map(|slot| ((*slot).to_string(), serde_json::json!({"type": "string"})))
+                    .collect();
+                serde_json::json!({
+                    "if": {
+                        "patternProperties": {
+                            "^loop$": {
+                                "type": "object",
+                                "properties": {"kernel": {"const": kernel.as_str()}},
+                                "required": ["kernel"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "then": {
+                        "patternProperties": {
+                            "^prompts$": {
+                                "type": "object",
+                                "properties": properties,
+                                "additionalProperties": false
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        value
+            .as_object_mut()
+            .expect("root flow schema is an object")
+            .insert("allOf".into(), conditions.into());
+        serde_json::from_value(value).expect("conditioned flow schema is valid")
     }
 
     impl JsonSchema for PromptsConfig {
@@ -432,14 +474,9 @@ mod schema {
             "PromptsConfig".into()
         }
 
-        /// One optional string property per published slot, closed
-        /// like every other table — an unknown slot fails the schema
-        /// just as it fails [`FlowConfig::from_toml`]. One property
-        /// set serves all kernels, which is exact only while every
-        /// kernel publishes the same slots (one kernel today); the
-        /// agreement suite's exactness test fails the day a kernel
-        /// diverges, naming the needed split into per-kernel
-        /// conditionals.
+        /// The union of published prompt slots. [`json_schema`] adds a
+        /// per-kernel conditional that narrows this table to the slots
+        /// selected by `[loop].kernel`.
         fn json_schema(_: &mut SchemaGenerator) -> Schema {
             let properties: serde_json::Map<String, serde_json::Value> = KernelName::ALL
                 .into_iter()
@@ -684,6 +721,7 @@ mod tests {
         fn ordinal(kernel: KernelName) -> usize {
             match kernel {
                 KernelName::Pipeline => 0,
+                KernelName::Fanout => 1,
             }
         }
         for (index, kernel) in KernelName::ALL.into_iter().enumerate() {
@@ -696,6 +734,11 @@ mod tests {
         let parsed: KernelName = serde_json::from_value(json!("pipeline")).unwrap();
         assert_eq!(parsed, KernelName::Pipeline);
         assert_eq!(KernelName::Pipeline.as_str(), "pipeline");
+
+        let parsed: KernelName = serde_json::from_value(json!("fanout")).unwrap();
+        assert_eq!(parsed, KernelName::Fanout);
+        assert_eq!(KernelName::Fanout.as_str(), "fanout");
+        assert_eq!(KernelName::Fanout.prompt_slots(), ["plan"]);
     }
 
     #[test]

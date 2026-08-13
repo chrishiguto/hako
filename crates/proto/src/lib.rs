@@ -23,6 +23,7 @@
 
 pub mod budget;
 pub mod event;
+pub mod fanout;
 pub mod flow;
 pub mod pipeline;
 pub mod report;

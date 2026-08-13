@@ -12,12 +12,14 @@ use uuid::Uuid;
 use crate::ServerError;
 use crate::projection;
 use crate::runtime::{EngineRuntime, ResolvedRun, RunLaunch};
+use crate::spawner;
 
 /// The live index over durable run directories. The map owns no run
 /// state: status is reduced from each event log whenever it is read.
+#[derive(Clone)]
 pub(crate) struct RunRegistry {
     runs_root: PathBuf,
-    runs: RwLock<BTreeMap<RunId, RunRecord>>,
+    runs: Arc<RwLock<BTreeMap<RunId, RunRecord>>>,
 }
 
 /// One registry entry. Published status is reduced from the event
@@ -48,6 +50,7 @@ struct LiveRun {
     resolved: ResolvedRun,
     budgets: Budgets,
     budget_usage: BudgetUsage,
+    scope: Option<String>,
 }
 
 /// A running execution: the cancel token the kernel watches and the
@@ -125,6 +128,7 @@ impl RunRecord {
         resolved: ResolvedRun,
         budgets: Budgets,
         budget_usage: BudgetUsage,
+        scope: Option<String>,
     ) -> Self {
         Self {
             dir,
@@ -135,6 +139,7 @@ impl RunRecord {
                 resolved,
                 budgets,
                 budget_usage,
+                scope,
             })),
         }
     }
@@ -239,7 +244,7 @@ impl RunRegistry {
         }
         Ok(Self {
             runs_root,
-            runs: RwLock::new(runs),
+            runs: Arc::new(RwLock::new(runs)),
         })
     }
 
@@ -254,6 +259,16 @@ impl RunRegistry {
         flow: FlowConfig,
         resolved: ResolvedRun,
         runtime: &EngineRuntime,
+    ) -> Result<RunId, engine::StoreError> {
+        self.submit_scoped(flow, resolved, runtime, None).await
+    }
+
+    pub(super) async fn submit_scoped(
+        &self,
+        flow: FlowConfig,
+        resolved: ResolvedRun,
+        runtime: &EngineRuntime,
+        scope: Option<String>,
     ) -> Result<RunId, engine::StoreError> {
         let run_id = RunId::new(Uuid::now_v7().to_string());
         let dir = RunDir::create(
@@ -286,6 +301,7 @@ impl RunRegistry {
         let cancel = CancelToken::new();
         let budgets = Budgets::from(&flow.budget);
         let budget_usage = BudgetUsage::default();
+        let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
         let task = runtime.launch(RunLaunch {
             dir: dir.clone(),
             flow: flow.clone(),
@@ -295,6 +311,8 @@ impl RunRegistry {
             budgets: budgets.clone(),
             budget_usage: budget_usage.clone(),
             replay: None,
+            scope: scope.clone(),
+            run_spawner,
         });
         runs.insert(
             run_id.clone(),
@@ -305,6 +323,7 @@ impl RunRegistry {
                 resolved,
                 budgets,
                 budget_usage,
+                scope,
             ),
         );
         Ok(run_id)
@@ -324,7 +343,7 @@ impl RunRegistry {
             return Ok(ResumeOutcome::NotPaused);
         }
 
-        let (execution, flow, resolved, mut budgets, budget_usage) = {
+        let (execution, flow, resolved, mut budgets, budget_usage, scope) = {
             let mut runs = self.runs.write().await;
             let record = runs.get_mut(run_id).expect("run remained indexed");
             match &mut record.liveness {
@@ -334,6 +353,7 @@ impl RunRegistry {
                     live.resolved.clone(),
                     live.budgets.clone(),
                     live.budget_usage.clone(),
+                    live.scope.clone(),
                 ),
                 Liveness::Detached => return Ok(ResumeOutcome::Detached),
             }
@@ -351,6 +371,7 @@ impl RunRegistry {
             .await?;
         let replay = guard.dir.events().await?;
         let cancel = CancelToken::new();
+        let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
         let task = runtime.launch(RunLaunch {
             dir: guard.dir.clone(),
             flow,
@@ -360,6 +381,8 @@ impl RunRegistry {
             budgets: budgets.clone(),
             budget_usage,
             replay: Some(replay),
+            scope,
+            run_spawner,
         });
         let mut runs = self.runs.write().await;
         let record = runs.get_mut(run_id).expect("run remained indexed");
@@ -540,6 +563,43 @@ repo = {:?}
             repo.to_str().unwrap()
         ))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn registry_spawner_launches_and_watches_a_scoped_pipeline_child() {
+        let runs_root = tempfile::tempdir().unwrap();
+        let repo = seeded_repo();
+        let sandbox = Arc::new(ScriptedSandbox::repeating(exec("planned\n", 0)));
+        sandbox.write_report_on_exec(br#"{"status":"blocked","summary":"not ready"}"#);
+        let runtime =
+            EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
+        let flow = flow_over(repo.path());
+        let resolved = runtime.resolve(&flow).await.unwrap();
+        let registry = RunRegistry::load(runs_root.path().to_path_buf())
+            .await
+            .unwrap();
+        let spawner = spawner::for_parent(registry.clone(), &flow, &resolved, &runtime);
+
+        let child = spawner
+            .spawn(engine::ChildRunSpec {
+                scope: "issue #31: add the API".into(),
+            })
+            .await
+            .unwrap();
+        let history = spawner.watch(&child).await.unwrap();
+
+        assert!(history.iter().any(|envelope| matches!(
+            envelope.event,
+            engine::RunEvent::StateChanged {
+                state: RunState::Paused {
+                    reason: engine::PauseReason::Blocked
+                }
+            }
+        )));
+        let execs = sandbox.execs();
+        let prompt = execs[0].argv.last().unwrap();
+        assert!(prompt.contains("## Assigned work unit"), "{prompt}");
+        assert!(prompt.contains("issue #31: add the API"), "{prompt}");
     }
 
     /// Cancel rides the token through the kernel's sandbox bracket:

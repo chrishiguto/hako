@@ -154,23 +154,34 @@ fn every_integer_format_in_the_schema_carries_bounds() {
     assert!(found > 0, "the walk matched no integer formats");
 }
 
-/// The `prompts` schema lists one property set for all kernels, so it
-/// stays exact only while every kernel publishes the same slots —
-/// today's one-kernel set trivially does. The day a kernel diverges,
-/// this fails, and `PromptsConfig`'s manual `JsonSchema` impl must
-/// split `[prompts]` into per-kernel conditionals.
 #[test]
 fn the_prompts_schema_is_exact_for_every_kernel() {
-    let schema: &serde_json::Value = &SCHEMA;
-    let properties: BTreeSet<&str> = schema["$defs"]["PromptsConfig"]["properties"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
+    let all_slots: BTreeSet<&str> = KernelName::ALL
+        .into_iter()
+        .flat_map(KernelName::prompt_slots)
+        .copied()
         .collect();
     for kernel in KernelName::ALL {
-        let published: BTreeSet<&str> = kernel.prompt_slots().iter().copied().collect();
-        assert_eq!(properties, published, "{}", kernel.as_str());
+        for slot in &all_slots {
+            let flow = MINIMAL_FLOW.replace(
+                "kernel = \"pipeline\"",
+                &format!("kernel = \"{}\"", kernel.as_str()),
+            );
+            let flow = format!("{flow}\n[prompts]\n{slot} = \"prompts/{slot}.md\"\n");
+            let expected = kernel.prompt_slots().contains(slot);
+            assert_eq!(
+                schema_accepts(&flow),
+                expected,
+                "{}: {slot}",
+                kernel.as_str()
+            );
+            assert_eq!(
+                serde_accepts(&flow),
+                expected,
+                "{}: {slot}",
+                kernel.as_str()
+            );
+        }
     }
 }
 

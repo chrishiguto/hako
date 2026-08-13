@@ -125,6 +125,8 @@ pub(crate) struct RunLaunch {
     pub(crate) budgets: Budgets,
     pub(crate) budget_usage: engine::BudgetUsage,
     pub(crate) replay: Option<Vec<engine::EventEnvelope>>,
+    pub(crate) scope: Option<String>,
+    pub(crate) run_spawner: Arc<dyn engine::RunSpawner>,
 }
 
 /// A flow the daemon cannot start, as the submit route answers for
@@ -153,6 +155,17 @@ pub(crate) struct ResolvedRun {
     pub(crate) secrets: SecretEnv,
 }
 
+impl ResolvedRun {
+    pub(crate) fn for_kernel(&self, kernel: api::proto::flow::KernelName) -> Self {
+        Self {
+            kernel: engine::kernel::resolve(kernel),
+            agent: self.agent.clone(),
+            notifier: self.notifier.clone(),
+            secrets: self.secrets.clone(),
+        }
+    }
+}
+
 async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), engine::KernelError> {
     let run_id = &launch.dir.meta().run_id;
     let clone_dest = launch.dir.path().join("workspace");
@@ -169,6 +182,7 @@ async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), eng
         budgets: launch.budgets,
         budget_usage: launch.budget_usage,
         replay: launch.replay,
+        scope: launch.scope,
         cancel: launch.cancel,
         verify: launch.flow.verify,
         prompts: launch.flow.prompts,
@@ -177,6 +191,7 @@ async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), eng
         agent: launch.resolved.agent,
         events: launch.events,
         notifier: launch.resolved.notifier,
+        run_spawner: launch.run_spawner,
         secrets: launch.resolved.secrets,
     };
     launch.resolved.kernel.run(context).await.map(|_| ())
