@@ -24,6 +24,10 @@ Check here first to find the right document, then open that file directly. `/dom
 
 - `docs/GLOSSARY.md` — Glossary (Living) — Ubiquitous language for hako: kernel, kernel dialect, flow, run, iteration, sandbox, workspace, secret, secret store, prompt slot, report, status, verified done, pause, drift, budget, daemon, client. Topics: terminology, domain language.
 
+## Guides
+
+- `docs/quickstart.md` — Guide (Living) — Takes a remote Tailscale daemon and thin client through a real clone-mode Claude run to Verified Done; covers image bake, secrets, checkpoints, and the local e2e variant. Topics: quickstart, deployment, smolvm, Claude, Tailscale, e2e.
+
 ## Specs / PRDs
 
 Specs and PRDs are not repo documents — they live in the issue tracker. See `docs/agents/issue-tracker.md` to query them.
