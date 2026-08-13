@@ -119,10 +119,10 @@ async fn a_full_iteration_and_its_skeptic_each_get_a_fresh_sandbox() {
     assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
 }
 
-// ---------- AC 2: preamble carries prior reports and the stage's schema ----------
+// ---------- AC 2: preamble carries current-iteration reports and the stage's schema ----------
 
 #[tokio::test]
-async fn each_stage_preamble_carries_prior_reports_and_its_own_schema() {
+async fn each_stage_preamble_carries_earlier_reports_from_its_iteration() {
     let ran = run_default(
         vec![
             reports("continue", "PLAN-MARKER"),
@@ -600,13 +600,13 @@ async fn checkpoints_land_after_mutating_stages_and_scratch_stays_out_of_history
 // ---------- the loop across iterations, repair, and hard failure ----------
 
 #[tokio::test]
-async fn a_full_pass_starts_a_fresh_iteration_that_reads_the_last() {
+async fn a_full_pass_starts_a_fresh_iteration_without_report_history() {
     // Iteration 1 completes a full pass; iteration 2's plan claims done.
     let ran = run_default(
         vec![
-            reports("continue", "planned"),
-            reports("continue", "built"),
-            reports("continue", "reviewed"),
+            reports("continue", "ITER1-PLAN"),
+            reports("continue", "ITER1-IMPLEMENT"),
+            reports("continue", "ITER1-REVIEW"),
             reports("continue", "ITER1-SIMPLIFY"),
             reports("done", "nothing left"),
             unrefuted(),
@@ -633,11 +633,18 @@ async fn a_full_pass_starts_a_fresh_iteration_that_reads_the_last() {
         iteration_events,
         ["started 1", "finished 1 Completed", "started 2"]
     );
-    // The second iteration's plan (the fifth prompt) reads the first
-    // iteration's reports.
+    // Reports from the completed iteration remain historical; its
+    // successor starts from the workspace without a report hand-off.
     let second_plan = &ran.prompts[4];
-    assert!(carries_handoff(second_plan), "{second_plan}");
-    assert!(second_plan.contains("ITER1-SIMPLIFY"), "{second_plan}");
+    assert!(!carries_handoff(second_plan), "{second_plan}");
+    for marker in [
+        "ITER1-PLAN",
+        "ITER1-IMPLEMENT",
+        "ITER1-REVIEW",
+        "ITER1-SIMPLIFY",
+    ] {
+        assert!(!second_plan.contains(marker), "{marker}: {second_plan}");
+    }
 }
 
 #[tokio::test]
@@ -784,7 +791,7 @@ async fn done_requires_green_checks_and_an_unrefuted_fresh_skeptic() {
 }
 
 #[tokio::test]
-async fn a_refuting_skeptic_feeds_the_next_plan_and_the_loop_continues() {
+async fn a_refuting_skeptic_feeds_only_its_findings_to_the_next_plan() {
     let ran = run_default(
         vec![
             reports("done", "the first claim"),
@@ -822,6 +829,8 @@ async fn a_refuting_skeptic_feeds_the_next_plan_and_the_loop_continues() {
         second_plan.contains("TODO.md still lists the API as unfinished"),
         "{second_plan}"
     );
+    assert!(!carries_handoff(second_plan), "{second_plan}");
+    assert!(!second_plan.contains("the first claim"), "{second_plan}");
     assert_eq!(
         ran.events
             .iter()

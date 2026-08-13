@@ -5,8 +5,8 @@
 //! sections wrap a stage, and in what order:
 //!
 //! 1. a header naming the stage,
-//! 2. the prior stages' reports, so hand-off is engine-guaranteed
-//!    rather than agent-remembered,
+//! 2. earlier stages' reports from this iteration, so hand-off is
+//!    engine-guaranteed rather than agent-remembered,
 //! 3. machine feedback to resolve — a verify failure on a re-run or a
 //!    skeptic's findings on the next plan,
 //! 4. the human's input, when the run resumed from a pause,
@@ -28,7 +28,7 @@ use crate::workspace::REPORT_FILE;
 use proto::pipeline::{Stage, StageReport};
 
 /// The hand-off section's headings — the section's own and the one
-/// opening each prior stage's report. Published in-crate so the
+/// opening each earlier stage's report. Published in-crate so the
 /// testkit's prompt markers and the section stay one definition.
 pub(crate) const HANDOFF_HEADING: &str = "## Reports so far";
 
@@ -47,7 +47,7 @@ pub struct Frame<'a> {
     /// A parent fanout run's opaque assignment. Only the plan stage
     /// receives one; its report hands the chosen unit to later stages.
     pub scope: Option<&'a str>,
-    /// The prior stages' reports the agent reads before its task.
+    /// Earlier stages' reports from this iteration.
     pub handoff: &'a [StageReport],
     /// Feedback on the previous attempt; empty on a first run. A
     /// slice because one attempt can draw more than one kind of
@@ -95,10 +95,9 @@ fn header(stage: Stage) -> String {
     )
 }
 
-/// The prior stages' reports, each fenced so its agent-authored text
-/// cannot break out of its block. `None` when nothing came before —
-/// the plan stage of the very first iteration — so no empty section is
-/// added.
+/// Earlier stages' reports from this iteration, each fenced so its
+/// agent-authored text cannot break out of its block. `None` when the
+/// handoff is empty, so no empty section is added.
 fn handoff_section(handoff: &[StageReport]) -> Option<String> {
     if handoff.is_empty() {
         return None;
@@ -198,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handoff_carries_prior_reports_fenced() {
+    fn the_handoff_carries_current_iteration_reports_fenced() {
         let handoff = [plan_report("drive issue #7")];
         let text = compose(&Frame {
             handoff: &handoff,
@@ -212,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_pass_plan_has_no_handoff_section() {
+    fn an_empty_handoff_adds_no_section() {
         let text = compose(&frame(Stage::Plan, "pick the work"));
         assert!(!text.contains("## Reports so far"), "{text}");
     }

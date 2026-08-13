@@ -47,11 +47,11 @@ The hardware-isolated microVM an iteration executes in, created and destroyed wi
 _Avoid_: container
 
 **Workspace**:
-The persistent directory a run works on — a run-owned git clone on a run branch by default, an explicitly mounted checkout otherwise. The only state that survives across iterations.
+The persistent directory a run works on — a run-owned git clone on a run branch by default, an explicitly mounted checkout otherwise. The only agent-memory channel across iterations; a fresh plan derives the state of the work from it.
 _Avoid_: checkout, working copy
 
 **Event Log**:
-The append-only record of everything a run did; the source of truth for clients, resumption, and audit.
+The append-only record of everything a run did; the source of truth for clients, resumption, and audit. The Engine may replay it to reconstruct factual control state, but recorded information does not thereby become context for a later agent.
 _Avoid_: run history, logs
 
 **Run Projection**:
@@ -84,10 +84,10 @@ A named point where a kernel accepts a domain prompt — part of the kernel's di
 _Avoid_: prompt key, prompt variable
 
 **Preamble**:
-The frame a kernel composes around its prompts: feedback, human answers, and the report contract — the kernel-authored section that states the status semantics and quotes the report schema, wrapping the overridable domain prompt so an override cannot reach it. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
+The frame a kernel composes around its prompts: current-iteration Report handoff, feedback, human answers, and the report contract — the kernel-authored section that states the status semantics and quotes the report schema, wrapping the overridable domain prompt so an override cannot reach it. The engine supplies the shared pieces; which sections, in what order, is kernel policy.
 
 **Report**:
-The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core. What each status means, and how the loop branches on it, is kernel-owned — stated in the report contract, never the domain prompt.
+The schema-validated file an agent writes to end an invocation, carrying the uniform status — continue, done, blocked, or needs_input — plus its kernel's own payload; the payload shapes are the kernel's dialect, the status vocabulary the shared core. In Pipeline, Reports are active handoff state only for later stages of the current iteration; once the iteration completes they are Event Log history, not context for the next plan. What each status means, and how the loop branches on it, is kernel-owned — stated in the report contract, never the domain prompt.
 _Avoid_: progress report, outputs, output extraction
 
 **Report Core**:
