@@ -66,6 +66,14 @@ impl Kernel for PipelineKernel {
             Some(events) => {
                 let point = resume::ResumePoint::from_events(events)
                     .map_err(|error| KernelError::Resume(error.to_string()))?;
+                // Checked here, where the point is born, so the loop
+                // below can trust every entry stage it is handed.
+                if !active_stages(&ctx.prompts).any(|stage| stage == point.stage) {
+                    return Err(KernelError::Resume(format!(
+                        "stage `{}` is not active in this flow",
+                        point.stage.as_str()
+                    )));
+                }
                 (point.iteration, Some(point))
             }
             None => {
@@ -96,41 +104,27 @@ impl Kernel for PipelineKernel {
                 .budgets
                 .exhausted(&ctx.budget_usage, iteration.saturating_sub(1))
             {
-                return pause_for_budget(&ctx, iteration, budget, last_summary(&prior)).await;
+                // Work a loop-top pause parks belongs to the last
+                // iteration the log announced: the interrupted one
+                // when re-entering mid-pass, otherwise the one that
+                // came before this.
+                let announced = match &resumed {
+                    Some(point) if !point.starts_iteration => iteration,
+                    _ => iteration.saturating_sub(1),
+                };
+                return pause_for_budget(&ctx, announced, budget, last_summary(&prior)).await;
             }
             let resume = resumed.take();
-            if resume
-                .as_ref()
-                .is_none_or(|point| matches!(&point.position, resume::Position::NewIteration))
-            {
+            if resume.as_ref().is_none_or(|point| point.starts_iteration) {
                 ctx.events
                     .emit(RunEvent::IterationStarted { iteration })
                     .await?;
             }
             let deadline = tokio::time::Instant::now() + ctx.budgets.iteration_timeout;
-            let (completed, interrupted, human) = match resume {
-                Some(resume::ResumePoint {
-                    position: resume::Position::Interrupted { stage, completed },
-                    human,
-                    ..
-                }) => (completed, stage, human),
-                Some(resume::ResumePoint {
-                    position: resume::Position::NewIteration,
-                    human,
-                    ..
-                }) => (Vec::new(), Stage::Plan, human),
-                None => (Vec::new(), Stage::Plan, None),
-            };
             match run_iteration(
                 &ctx,
                 iteration,
-                IterationStart {
-                    prior: &prior,
-                    completed,
-                    interrupted,
-                    plan_feedback: std::mem::take(&mut plan_feedback),
-                    human,
-                },
+                IterationStart::of(resume, &prior, std::mem::take(&mut plan_feedback)),
                 deadline,
             )
             .await?
@@ -188,10 +182,9 @@ impl Kernel for PipelineKernel {
                     return conclude(&ctx, iteration, RunOutcome::Failed, None).await;
                 }
                 IterationEnd::TimedOut => {
-                    let timed_out_iteration = iteration;
                     ctx.events
                         .emit(RunEvent::IterationFinished {
-                            iteration: timed_out_iteration,
+                            iteration,
                             outcome: IterationOutcome::TimedOut,
                         })
                         .await?;
@@ -210,7 +203,7 @@ impl Kernel for PipelineKernel {
                             FailAction::Pause => RunOutcome::Paused(PauseReason::Timeout),
                             FailAction::Fail => RunOutcome::Failed,
                         };
-                        return conclude(&ctx, timed_out_iteration, outcome, Some(&summary)).await;
+                        return conclude(&ctx, iteration, outcome, Some(&summary)).await;
                     }
                     iteration += 1;
                     plan_feedback = vec![Feedback::IterationTimedOut {
@@ -225,12 +218,34 @@ impl Kernel for PipelineKernel {
     }
 }
 
+/// Where one pass begins: fresh at plan, or exactly where a replayed
+/// pause interrupted it.
 struct IterationStart<'a> {
     prior: &'a [StageReport],
     completed: Vec<StageReport>,
     interrupted: Stage,
     plan_feedback: Vec<Feedback>,
     human: Option<HumanInput>,
+}
+
+impl<'a> IterationStart<'a> {
+    fn of(
+        resume: Option<resume::ResumePoint>,
+        prior: &'a [StageReport],
+        plan_feedback: Vec<Feedback>,
+    ) -> Self {
+        let (interrupted, completed, human) = resume
+            .map_or((Stage::Plan, Vec::new(), None), |point| {
+                (point.stage, point.completed, point.human)
+            });
+        Self {
+            prior,
+            completed,
+            interrupted,
+            plan_feedback,
+            human,
+        }
+    }
 }
 
 /// How one iteration ended, as the run loop reads it. Every ending
@@ -265,11 +280,13 @@ enum IterationEnd {
     Cancelled,
 }
 
-/// Drives one iteration through the stages. Plan opens a fresh unit,
-/// so it reads the previous iteration's reports and the feedback the
-/// loop carried in; every later stage reads what this iteration
-/// produced before it. A resumed run's human input reaches the first
-/// stage of this iteration and no other.
+/// Drives one iteration through the stages, entering at the start's
+/// stage — the run loop has already checked it is active in this
+/// flow. Plan opens a fresh unit, so it reads the previous
+/// iteration's reports and the feedback the loop carried in; every
+/// later stage reads what this iteration produced before it. A
+/// resumed run's human input reaches the first stage of this
+/// iteration and no other.
 async fn run_iteration(
     ctx: &KernelContext,
     iteration: u32,
@@ -283,20 +300,19 @@ async fn run_iteration(
         mut plan_feedback,
         mut human,
     } = start;
-    let mut stages = active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted);
-    let Some(first) = stages.next() else {
-        return Err(KernelError::Resume(format!(
-            "stage `{}` is not active in this flow",
-            interrupted.as_str()
-        )));
-    };
-    for (index, stage) in std::iter::once(first).chain(stages).enumerate() {
-        let handoff = if stage == Stage::Plan && completed.is_empty() {
+    for stage in active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted) {
+        // Plan is always the first active stage, so it appears only
+        // as the opener of a full pass — a resume never re-enters at
+        // plan with reports completed ahead of it. One predicate per
+        // hand-off therefore covers both entries: plan reads the
+        // previous iteration and carries the loop's feedback, every
+        // other stage reads this pass.
+        let handoff = if stage == Stage::Plan {
             prior
         } else {
             completed.as_slice()
         };
-        let feedback = if index == 0 && stage == Stage::Plan {
+        let feedback = if stage == Stage::Plan {
             std::mem::take(&mut plan_feedback)
         } else {
             Vec::new()

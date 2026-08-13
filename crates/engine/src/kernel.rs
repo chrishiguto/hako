@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::agent::AgentAdapter;
 use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
-use crate::event::{EventSink, EventSinkError};
+use crate::event::{EventEnvelope, EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
 use crate::run::{RunId, RunOutcome};
@@ -54,7 +54,7 @@ pub struct KernelContext {
     /// The replayed Event Log when the host relaunches a paused run.
     /// It stays in the shared wire vocabulary; the owning kernel
     /// derives its typed resume point from it.
-    pub replay: Option<Vec<crate::event::EventEnvelope>>,
+    pub replay: Option<Vec<EventEnvelope>>,
     /// The run's cooperative cancel flag — a value like [`budgets`],
     /// not a seventh seam: nothing fakes it, the host fires the same
     /// token a test would. The sandbox bracket is its single

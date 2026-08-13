@@ -9,22 +9,27 @@ use std::collections::BTreeMap;
 
 use proto::event::{EventEnvelope, RunEvent};
 use proto::pipeline::{Stage, StageReport};
-use proto::report::Answer;
+use proto::report::{Answer, Question};
 
 use crate::preamble::HumanInput;
 
+/// Where a resumed run re-enters its loop. [`from_events`]
+/// (Self::from_events) is the only constructor, and it upholds the
+/// shape's one invariant: a point that starts a fresh iteration always
+/// re-enters at plan with nothing completed.
 pub(super) struct ResumePoint {
     pub iteration: u32,
-    pub position: Position,
+    /// Whether the loop must announce this iteration — a fresh one
+    /// opening after a boundary pause. Re-entering the interrupted
+    /// iteration announces nothing: its `iteration_started` is
+    /// already on the log.
+    pub starts_iteration: bool,
+    /// The stage the pass re-enters at — plan when starting fresh.
+    pub stage: Stage,
+    /// The interrupted iteration's reports from before the pause, in
+    /// kernel order; empty when starting fresh.
+    pub completed: Vec<StageReport>,
     pub human: Option<HumanInput>,
-}
-
-pub(super) enum Position {
-    NewIteration,
-    Interrupted {
-        stage: Stage,
-        completed: Vec<StageReport>,
-    },
 }
 
 impl ResumePoint {
@@ -122,61 +127,66 @@ impl<'a> Replay<'a> {
         let Some(iteration) = self.iteration else {
             return Err(ResumeError::MissingIteration);
         };
-        let (iteration, position, questions) = if self.finished {
-            (
-                iteration.saturating_add(1),
-                Position::NewIteration,
-                Vec::new(),
-            )
-        } else {
-            // Every mid-pipeline pause lands after its stage started;
-            // plan is the can't-happen fallback that keeps the pass
-            // whole rather than a panic.
-            let interrupted = self.interrupted.unwrap_or(Stage::Plan);
-            let mut completed = Vec::new();
-            let mut questions = Vec::new();
-            for (&stage, &(seq, report)) in &self.reports {
-                match stage.cmp(&interrupted) {
-                    Ordering::Less => completed.push(parse_report(seq, stage, report)?),
-                    // The interrupted stage's own report is not part of
-                    // the hand-off — the stage re-runs — but its
-                    // questions are what the answers attribute to.
-                    Ordering::Equal => {
-                        questions = parse_report(seq, stage, report)?.questions().to_vec();
-                    }
-                    // A stage past the interrupted one cannot have
-                    // reported in a well-formed log; a stray is noise,
-                    // not hand-off material.
-                    Ordering::Greater => {}
+        if self.finished {
+            // The pause closed its pass; the resume opens the next
+            // iteration at the top.
+            return Ok(ResumePoint {
+                iteration: iteration.saturating_add(1),
+                starts_iteration: true,
+                stage: Stage::Plan,
+                completed: Vec::new(),
+                human: human_input(self.answers, self.note, Vec::new()),
+            });
+        }
+        // Every mid-pipeline pause lands after its stage started; plan
+        // is the can't-happen fallback that keeps the pass whole
+        // rather than a panic.
+        let interrupted = self.interrupted.unwrap_or(Stage::Plan);
+        let mut completed = Vec::new();
+        let mut questions = Vec::new();
+        for (&stage, &(seq, report)) in &self.reports {
+            match stage.cmp(&interrupted) {
+                Ordering::Less => completed.push(parse_report(seq, stage, report)?),
+                // The interrupted stage's own report is not part of
+                // the hand-off — the stage re-runs — but its
+                // questions are what the answers attribute to.
+                Ordering::Equal => {
+                    questions = parse_report(seq, stage, report)?.questions().to_vec();
                 }
+                // A stage past the interrupted one cannot have
+                // reported in a well-formed log; a stray is noise,
+                // not hand-off material.
+                Ordering::Greater => {}
             }
-            (
-                iteration,
-                Position::Interrupted {
-                    stage: interrupted,
-                    completed,
-                },
-                questions,
-            )
-        };
-        let human = (!self.answers.is_empty() || self.note.is_some()).then(|| HumanInput {
-            answers: self
-                .answers
-                .into_iter()
-                .map(|(question_id, answer)| Answer {
-                    question_id,
-                    answer,
-                })
-                .collect(),
-            questions,
-            note: self.note,
-        });
+        }
         Ok(ResumePoint {
             iteration,
-            position,
-            human,
+            starts_iteration: false,
+            stage: interrupted,
+            completed,
+            human: human_input(self.answers, self.note, questions),
         })
     }
+}
+
+/// `None` when the human said nothing — the preamble's contract is
+/// that no human input means no section, never an empty one.
+fn human_input(
+    answers: BTreeMap<String, String>,
+    note: Option<String>,
+    questions: Vec<Question>,
+) -> Option<HumanInput> {
+    (!answers.is_empty() || note.is_some()).then(|| HumanInput {
+        answers: answers
+            .into_iter()
+            .map(|(question_id, answer)| Answer {
+                question_id,
+                answer,
+            })
+            .collect(),
+        questions,
+        note,
+    })
 }
 
 fn parse_report(
@@ -295,12 +305,10 @@ mod tests {
         events.extend([answered("q1", "sqlite"), resumed(Some("keep it narrow"))]);
         let point = point(events);
         assert_eq!(point.iteration, 7);
-        let Position::Interrupted { stage, completed } = &point.position else {
-            panic!("expected an interrupted position");
-        };
-        assert_eq!(*stage, Stage::Implement);
-        assert_eq!(completed.len(), 1);
-        assert_eq!(completed[0].stage(), Stage::Plan);
+        assert!(!point.starts_iteration);
+        assert_eq!(point.stage, Stage::Implement);
+        assert_eq!(point.completed.len(), 1);
+        assert_eq!(point.completed[0].stage(), Stage::Plan);
         let human = point.human.unwrap();
         assert_eq!(human.answers.len(), 1);
         assert_eq!(human.answers[0].question_id, "q1");
@@ -322,10 +330,7 @@ mod tests {
             resumed(None),
         ]);
         let point = point(events);
-        let Position::Interrupted { stage, .. } = &point.position else {
-            panic!("expected an interrupted position");
-        };
-        assert_eq!(*stage, Stage::Implement);
+        assert_eq!(point.stage, Stage::Implement);
         let human = point.human.unwrap();
         assert_eq!(human.answers[0].answer, "sqlite");
         assert_eq!(human.note.as_deref(), Some("keep it narrow"));
@@ -396,9 +401,7 @@ mod tests {
             paused(PauseReason::VerifyFailed),
             resumed(None),
         ];
-        let Position::Interrupted { completed, .. } = point(events).position else {
-            panic!("expected an interrupted position");
-        };
+        let completed = point(events).completed;
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].summary(), "second");
     }
@@ -418,7 +421,9 @@ mod tests {
         ];
         let point = point(events);
         assert_eq!(point.iteration, 4);
-        assert!(matches!(point.position, Position::NewIteration));
+        assert!(point.starts_iteration);
+        assert_eq!(point.stage, Stage::Plan);
+        assert!(point.completed.is_empty());
         assert_eq!(point.human.unwrap().note.as_deref(), Some("one more"));
     }
 

@@ -12,8 +12,8 @@ use engine::testkit::{
     seeded_repo, skeptic, stage_events, tracked_files, unrefuted,
 };
 use engine::{
-    FailAction, IterationOutcome, Kernel, OnFail, PauseReason, PipelineKernel, PromptsConfig,
-    RunEvent, RunOutcome, RunState, VerifyConfig,
+    FailAction, IterationOutcome, Kernel, KernelError, OnFail, PauseReason, PipelineKernel,
+    PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig,
 };
 use proto::pipeline::Stage;
 
@@ -491,6 +491,42 @@ async fn a_replayed_mid_pipeline_pause_resumes_at_the_interrupted_stage() {
         resumed.contains("Note: keep the schema narrow"),
         "{resumed}"
     );
+}
+
+/// A replay aimed at a stage this flow never runs — deliver without a
+/// configured prompt — fails the resume loudly before anything boots,
+/// naming the stage instead of silently running an empty pass.
+#[tokio::test]
+async fn a_resume_aimed_at_an_inactive_stage_fails_loudly() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), vec![]));
+    let (mut ctx, _sink) = pipeline_context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        PromptsConfig::default(),
+    );
+    ctx.replay = Some(event_log(vec![
+        RunEvent::IterationStarted { iteration: 1 },
+        RunEvent::StageStarted {
+            iteration: 1,
+            stage: "deliver".into(),
+        },
+        RunEvent::StateChanged {
+            state: RunState::Paused {
+                reason: PauseReason::AwaitingHuman,
+            },
+        },
+        RunEvent::RunResumed {
+            note: None,
+            extend: None,
+        },
+    ]));
+
+    let error = PipelineKernel.run(ctx).await.unwrap_err();
+    assert!(matches!(error, KernelError::Resume(_)), "{error}");
+    assert!(error.to_string().contains("deliver"), "{error}");
+    assert_eq!(sandbox.created(), 0);
 }
 
 // ---------- AC 5: checkpoints after mutating stages; scratch excluded ----------
