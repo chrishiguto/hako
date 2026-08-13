@@ -87,9 +87,10 @@ impl EngineRuntime {
         })
     }
 
-    pub(crate) fn launch(&self, launch: RunLaunch) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn launch(&self, launch: RunLaunch) -> LaunchedRun {
         let runtime = self.clone();
-        tokio::spawn(async move {
+        let (settle, settled) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
             let dir = launch.dir.clone();
             let events = launch.events.clone();
             let result = std::panic::AssertUnwindSafe(drive_run(&runtime, launch))
@@ -108,8 +109,22 @@ impl EngineRuntime {
                     })
                     .await;
             }
-        })
+            // Unconditional and last: a watcher learns the task is
+            // gone even when the terminal event write above failed,
+            // and judges the run by its log.
+            let _ = settle.send(true);
+        });
+        LaunchedRun { task, settled }
     }
+}
+
+/// A launched execution: the driving task and its settle signal.
+pub(crate) struct LaunchedRun {
+    pub(crate) task: tokio::task::JoinHandle<()>,
+    /// Flips true when the driving task has fully wound down — after
+    /// every event the run will ever write, whether or not the last
+    /// write succeeded.
+    pub(crate) settled: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Everything one kernel launch needs, fresh or resumed. A carrier,

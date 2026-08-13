@@ -46,6 +46,11 @@ enum Liveness {
 /// runs, the execution.
 struct LiveRun {
     execution: Option<Execution>,
+    /// The current execution's settle signal. Held here rather than
+    /// on [`Execution`] so it outlives a cancel taking the execution:
+    /// a receiver cloned from it still fires when the drained task
+    /// finishes.
+    settled: tokio::sync::watch::Receiver<bool>,
     flow: FlowConfig,
     resolved: ResolvedRun,
     budgets: Budgets,
@@ -121,26 +126,11 @@ impl RunRecord {
         }
     }
 
-    fn live(
-        dir: RunDir,
-        execution: Execution,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        budgets: Budgets,
-        budget_usage: BudgetUsage,
-        scope: Option<String>,
-    ) -> Self {
+    fn live(dir: RunDir, live: LiveRun) -> Self {
         Self {
             dir,
             commands: Arc::new(Mutex::new(())),
-            liveness: Liveness::Live(Box::new(LiveRun {
-                execution: Some(execution),
-                flow,
-                resolved,
-                budgets,
-                budget_usage,
-                scope,
-            })),
+            liveness: Liveness::Live(Box::new(live)),
         }
     }
 }
@@ -302,7 +292,7 @@ impl RunRegistry {
         let budgets = Budgets::from(&flow.budget);
         let budget_usage = BudgetUsage::default();
         let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
-        let task = runtime.launch(RunLaunch {
+        let launched = runtime.launch(RunLaunch {
             dir: dir.clone(),
             flow: flow.clone(),
             resolved: resolved.clone(),
@@ -318,12 +308,18 @@ impl RunRegistry {
             run_id.clone(),
             RunRecord::live(
                 dir,
-                Execution { cancel, task },
-                flow,
-                resolved,
-                budgets,
-                budget_usage,
-                scope,
+                LiveRun {
+                    execution: Some(Execution {
+                        cancel,
+                        task: launched.task,
+                    }),
+                    settled: launched.settled,
+                    flow,
+                    resolved,
+                    budgets,
+                    budget_usage,
+                    scope,
+                },
             ),
         );
         Ok(run_id)
@@ -372,7 +368,7 @@ impl RunRegistry {
         let replay = guard.dir.events().await?;
         let cancel = CancelToken::new();
         let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
-        let task = runtime.launch(RunLaunch {
+        let launched = runtime.launch(RunLaunch {
             dir: guard.dir.clone(),
             flow,
             resolved,
@@ -389,7 +385,11 @@ impl RunRegistry {
         // Still live: nothing detaches a record while its command
         // lock — held right here — serializes every mutation.
         if let Liveness::Live(live) = &mut record.liveness {
-            live.execution = Some(Execution { cancel, task });
+            live.execution = Some(Execution {
+                cancel,
+                task: launched.task,
+            });
+            live.settled = launched.settled;
             live.budgets = budgets;
         }
         Ok(ResumeOutcome::Resumed(guard.dir))
@@ -493,6 +493,20 @@ impl RunRegistry {
             .map(|record| record.dir.clone())
     }
 
+    /// The settle signal of the run's current execution — flips true
+    /// once its driving task has fully wound down and the log holds
+    /// every event the run will write. `None` for an unknown run or a
+    /// record detached by a daemon restart.
+    pub(super) async fn settled(
+        &self,
+        run_id: &RunId,
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        match &self.runs.read().await.get(run_id)?.liveness {
+            Liveness::Live(live) => Some(live.settled.clone()),
+            Liveness::Detached => None,
+        }
+    }
+
     /// Every indexed run, newest first. Infallible by design: one
     /// damaged run directory must not empty the fleet view — the list
     /// is how an operator finds the broken run, so its failure rides
@@ -587,6 +601,10 @@ repo = {:?}
             .await
             .unwrap();
         let history = spawner.watch(&child).await.unwrap();
+        // A watch opened after the child has already settled answers
+        // immediately, from the signal's current value.
+        let rewatched = spawner.watch(&child).await.unwrap();
+        assert_eq!(history.len(), rewatched.len());
 
         assert!(history.iter().any(|envelope| matches!(
             envelope.event,

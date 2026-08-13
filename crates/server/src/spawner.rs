@@ -55,18 +55,25 @@ impl RunSpawner for RegistryRunSpawner {
             .get(run_id)
             .await
             .ok_or_else(|| RunSpawnerError(format!("child run {run_id} vanished")))?;
-        loop {
-            let projection = dir
-                .project()
-                .await
-                .map_err(|error| RunSpawnerError(error.to_string()))?;
-            if projection.state != RunState::Running {
-                return dir
-                    .events()
-                    .await
-                    .map_err(|error| RunSpawnerError(error.to_string()));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if let Some(mut settled) = self.registry.settled(run_id).await {
+            // An Err means the signal's sender dropped without firing;
+            // the task is gone either way, and the log below judges.
+            let _ = settled.wait_for(|done| *done).await;
         }
+        // One projection read, after the signal: `Running` here means
+        // the task died without landing its terminal event — answered
+        // loudly, never by waiting on a log that will not change.
+        let projection = dir
+            .project()
+            .await
+            .map_err(|error| RunSpawnerError(error.to_string()))?;
+        if projection.state == RunState::Running {
+            return Err(RunSpawnerError(format!(
+                "child run {run_id} settled without a terminal event"
+            )));
+        }
+        dir.events()
+            .await
+            .map_err(|error| RunSpawnerError(error.to_string()))
     }
 }
