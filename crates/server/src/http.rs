@@ -96,7 +96,7 @@ async fn submit_run(
         .map_err(HttpError::from)?;
     let run_id = state
         .registry
-        .submit(flow, resolved, &state.runtime)
+        .submit(flow, resolved, &state.runtime, None)
         .await
         .map_err(HttpError::store)?;
     Ok((

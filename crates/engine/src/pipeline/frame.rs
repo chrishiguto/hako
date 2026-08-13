@@ -44,6 +44,9 @@ pub struct Frame<'a> {
     /// The stage being framed — names the header and picks the schema
     /// the contract quotes.
     pub stage: Stage,
+    /// A parent fanout run's opaque assignment. Only the plan stage
+    /// receives one; its report hands the chosen unit to later stages.
+    pub scope: Option<&'a str>,
     /// The prior stages' reports the agent reads before its task.
     pub handoff: &'a [StageReport],
     /// Feedback on the previous attempt; empty on a first run. A
@@ -63,6 +66,12 @@ pub struct Frame<'a> {
 /// of the section order documented above.
 pub fn compose(frame: &Frame<'_>) -> String {
     let mut sections = vec![header(frame.stage)];
+    if let Some(scope) = frame.scope {
+        sections.push(format!(
+            "## Assigned work unit\n\nThis child pipeline is scoped to the following unit. Plan only this unit:\n\n{}",
+            preamble::fenced(scope)
+        ));
+    }
     if let Some(reports) = handoff_section(frame.handoff) {
         sections.push(reports);
     }
@@ -141,6 +150,7 @@ mod tests {
     fn frame<'a>(stage: Stage, domain_prompt: &'a str) -> Frame<'a> {
         Frame {
             stage,
+            scope: None,
             handoff: &[],
             feedback: &[],
             human: None,

@@ -28,11 +28,18 @@ fn walk_objects(
 /// The schema must carry the same strictness as the serde types:
 /// every object schema anywhere in it rejects unknown keys, or an
 /// editor would bless documents strict serde rejects.
+///
+/// An object *shape* declares `type: "object"` — schemars stamps it
+/// on every generated definition — and only shapes are held to
+/// closed-ness. A bare `properties`/`required` map is a composition
+/// node (an `if` condition or `then` narrowing) over a shape that is
+/// already closed elsewhere: it blesses no document on its own, and
+/// closing an `if` is itself a bug — the condition would fail, and
+/// its narrowing silently vanish, once the matched table gains a key.
 pub fn assert_every_object_rejects_unknown_keys(schema: &serde_json::Value) {
     let mut found = 0;
     walk_objects(schema, "", &mut |entries, path| {
-        let is_object_schema = entries.contains_key("properties")
-            || entries.get("type") == Some(&serde_json::json!("object"));
+        let is_object_schema = entries.get("type") == Some(&serde_json::json!("object"));
         if is_object_schema {
             found += 1;
             assert_eq!(

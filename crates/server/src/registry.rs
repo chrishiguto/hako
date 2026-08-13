@@ -12,12 +12,14 @@ use uuid::Uuid;
 use crate::ServerError;
 use crate::projection;
 use crate::runtime::{EngineRuntime, ResolvedRun, RunLaunch};
+use crate::spawner;
 
 /// The live index over durable run directories. The map owns no run
 /// state: status is reduced from each event log whenever it is read.
+#[derive(Clone)]
 pub(crate) struct RunRegistry {
     runs_root: PathBuf,
-    runs: RwLock<BTreeMap<RunId, RunRecord>>,
+    runs: Arc<RwLock<BTreeMap<RunId, RunRecord>>>,
 }
 
 /// One registry entry. Published status is reduced from the event
@@ -44,10 +46,16 @@ enum Liveness {
 /// runs, the execution.
 struct LiveRun {
     execution: Option<Execution>,
+    /// The current execution's settle signal. Held here rather than
+    /// on [`Execution`] so it outlives a cancel taking the execution:
+    /// a receiver cloned from it still fires when the drained task
+    /// finishes.
+    settled: tokio::sync::watch::Receiver<bool>,
     flow: FlowConfig,
     resolved: ResolvedRun,
     budgets: Budgets,
     budget_usage: BudgetUsage,
+    scope: Option<String>,
 }
 
 /// A running execution: the cancel token the kernel watches and the
@@ -118,24 +126,11 @@ impl RunRecord {
         }
     }
 
-    fn live(
-        dir: RunDir,
-        execution: Execution,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        budgets: Budgets,
-        budget_usage: BudgetUsage,
-    ) -> Self {
+    fn live(dir: RunDir, live: LiveRun) -> Self {
         Self {
             dir,
             commands: Arc::new(Mutex::new(())),
-            liveness: Liveness::Live(Box::new(LiveRun {
-                execution: Some(execution),
-                flow,
-                resolved,
-                budgets,
-                budget_usage,
-            })),
+            liveness: Liveness::Live(Box::new(live)),
         }
     }
 }
@@ -239,7 +234,7 @@ impl RunRegistry {
         }
         Ok(Self {
             runs_root,
-            runs: RwLock::new(runs),
+            runs: Arc::new(RwLock::new(runs)),
         })
     }
 
@@ -248,12 +243,14 @@ impl RunRegistry {
     /// event sink is opened before anything is published so the one
     /// fallible step can still unwind the directory; a failure here
     /// must not leave a run a restarted daemon would misreport as
-    /// running forever.
+    /// running forever. `scope` is a parent fanout's assignment for a
+    /// child run; `None` for a run submitted directly.
     pub(crate) async fn submit(
         &self,
         flow: FlowConfig,
         resolved: ResolvedRun,
         runtime: &EngineRuntime,
+        scope: Option<String>,
     ) -> Result<RunId, engine::StoreError> {
         let run_id = RunId::new(Uuid::now_v7().to_string());
         let dir = RunDir::create(
@@ -286,7 +283,8 @@ impl RunRegistry {
         let cancel = CancelToken::new();
         let budgets = Budgets::from(&flow.budget);
         let budget_usage = BudgetUsage::default();
-        let task = runtime.launch(RunLaunch {
+        let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
+        let launched = runtime.launch(RunLaunch {
             dir: dir.clone(),
             flow: flow.clone(),
             resolved: resolved.clone(),
@@ -295,16 +293,25 @@ impl RunRegistry {
             budgets: budgets.clone(),
             budget_usage: budget_usage.clone(),
             replay: None,
+            scope: scope.clone(),
+            run_spawner,
         });
         runs.insert(
             run_id.clone(),
             RunRecord::live(
                 dir,
-                Execution { cancel, task },
-                flow,
-                resolved,
-                budgets,
-                budget_usage,
+                LiveRun {
+                    execution: Some(Execution {
+                        cancel,
+                        task: launched.task,
+                    }),
+                    settled: launched.settled,
+                    flow,
+                    resolved,
+                    budgets,
+                    budget_usage,
+                    scope,
+                },
             ),
         );
         Ok(run_id)
@@ -324,7 +331,7 @@ impl RunRegistry {
             return Ok(ResumeOutcome::NotPaused);
         }
 
-        let (execution, flow, resolved, mut budgets, budget_usage) = {
+        let (execution, flow, resolved, mut budgets, budget_usage, scope) = {
             let mut runs = self.runs.write().await;
             let record = runs.get_mut(run_id).expect("run remained indexed");
             match &mut record.liveness {
@@ -334,6 +341,7 @@ impl RunRegistry {
                     live.resolved.clone(),
                     live.budgets.clone(),
                     live.budget_usage.clone(),
+                    live.scope.clone(),
                 ),
                 Liveness::Detached => return Ok(ResumeOutcome::Detached),
             }
@@ -351,7 +359,8 @@ impl RunRegistry {
             .await?;
         let replay = guard.dir.events().await?;
         let cancel = CancelToken::new();
-        let task = runtime.launch(RunLaunch {
+        let run_spawner = spawner::for_parent(self.clone(), &flow, &resolved, runtime);
+        let launched = runtime.launch(RunLaunch {
             dir: guard.dir.clone(),
             flow,
             resolved,
@@ -360,13 +369,19 @@ impl RunRegistry {
             budgets: budgets.clone(),
             budget_usage,
             replay: Some(replay),
+            scope,
+            run_spawner,
         });
         let mut runs = self.runs.write().await;
         let record = runs.get_mut(run_id).expect("run remained indexed");
         // Still live: nothing detaches a record while its command
         // lock — held right here — serializes every mutation.
         if let Liveness::Live(live) = &mut record.liveness {
-            live.execution = Some(Execution { cancel, task });
+            live.execution = Some(Execution {
+                cancel,
+                task: launched.task,
+            });
+            live.settled = launched.settled;
             live.budgets = budgets;
         }
         Ok(ResumeOutcome::Resumed(guard.dir))
@@ -470,6 +485,20 @@ impl RunRegistry {
             .map(|record| record.dir.clone())
     }
 
+    /// The settle signal of the run's current execution — flips true
+    /// once its driving task has fully wound down and the log holds
+    /// every event the run will write. `None` for an unknown run or a
+    /// record detached by a daemon restart.
+    pub(super) async fn settled(
+        &self,
+        run_id: &RunId,
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        match &self.runs.read().await.get(run_id)?.liveness {
+            Liveness::Live(live) => Some(live.settled.clone()),
+            Liveness::Detached => None,
+        }
+    }
+
     /// Every indexed run, newest first. Infallible by design: one
     /// damaged run directory must not empty the fleet view — the list
     /// is how an operator finds the broken run, so its failure rides
@@ -542,6 +571,47 @@ repo = {:?}
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn registry_spawner_launches_and_watches_a_scoped_pipeline_child() {
+        let runs_root = tempfile::tempdir().unwrap();
+        let repo = seeded_repo();
+        let sandbox = Arc::new(ScriptedSandbox::repeating(exec("planned\n", 0)));
+        sandbox.write_report_on_exec(br#"{"status":"blocked","summary":"not ready"}"#);
+        let runtime =
+            EngineRuntime::new(sandbox.clone(), Arc::new(StubNotifier), Arc::new(NoSecrets));
+        let flow = flow_over(repo.path());
+        let resolved = runtime.resolve(&flow).await.unwrap();
+        let registry = RunRegistry::load(runs_root.path().to_path_buf())
+            .await
+            .unwrap();
+        let spawner = spawner::for_parent(registry.clone(), &flow, &resolved, &runtime);
+
+        let child = spawner
+            .spawn(engine::ChildRunSpec {
+                scope: "issue #31: add the API".into(),
+            })
+            .await
+            .unwrap();
+        let history = spawner.watch(&child).await.unwrap();
+        // A watch opened after the child has already settled answers
+        // immediately, from the signal's current value.
+        let rewatched = spawner.watch(&child).await.unwrap();
+        assert_eq!(history.len(), rewatched.len());
+
+        assert!(history.iter().any(|envelope| matches!(
+            envelope.event,
+            engine::RunEvent::StateChanged {
+                state: RunState::Paused {
+                    reason: engine::PauseReason::Blocked
+                }
+            }
+        )));
+        let execs = sandbox.execs();
+        let prompt = execs[0].argv.last().unwrap();
+        assert!(prompt.contains("## Assigned work unit"), "{prompt}");
+        assert!(prompt.contains("issue #31: add the API"), "{prompt}");
+    }
+
     /// Cancel rides the token through the kernel's sandbox bracket:
     /// the hung agent exec is abandoned, its sandbox destroyed, and
     /// the terminal `cancelled` event is on disk before `cancel`
@@ -561,7 +631,10 @@ repo = {:?}
 
         let flow = flow_over(repo.path());
         let resolved = runtime.resolve(&flow).await.unwrap();
-        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+        let run_id = registry
+            .submit(flow, resolved, &runtime, None)
+            .await
+            .unwrap();
 
         // Fire the cancel only once the agent exec is provably in
         // flight — the mid-exec case, where an abort would leak.
@@ -613,7 +686,10 @@ repo = {:?}
 
         let flow = flow_over(repo.path());
         let resolved = runtime.resolve(&flow).await.unwrap();
-        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+        let run_id = registry
+            .submit(flow, resolved, &runtime, None)
+            .await
+            .unwrap();
 
         // Let the run reach its own ending before any cancel exists.
         let dir = registry.get(&run_id).await.unwrap();

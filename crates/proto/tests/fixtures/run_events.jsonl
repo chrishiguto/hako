@@ -24,6 +24,8 @@
 {"type":"budget_exhausted","budget":"iterations"}
 {"type":"budget_exhausted","budget":"wall_clock"}
 {"type":"budget_exhausted","budget":"tokens"}
+{"type":"child_run_started","child_run_id":"child-1","scope":"issue #31"}
+{"type":"child_run_finished","child_run_id":"child-1","state":"done","iterations":1,"usage":{"input":1200,"output":340}}
 {"type":"question_answered","question_id":"q1","answer":"plain files"}
 {"type":"run_resumed","note":"skip the flaky suite"}
 {"type":"run_resumed","note":null}

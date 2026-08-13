@@ -37,6 +37,84 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "loop": {
+            "properties": {
+              "kernel": {
+                "const": "pipeline"
+              }
+            },
+            "required": [
+              "kernel"
+            ]
+          }
+        },
+        "required": [
+          "loop"
+        ]
+      },
+      "then": {
+        "properties": {
+          "prompts": {
+            "type": "object",
+            "properties": {
+              "deliver": {
+                "type": "string"
+              },
+              "implement": {
+                "type": "string"
+              },
+              "plan": {
+                "type": "string"
+              },
+              "review": {
+                "type": "string"
+              },
+              "simplify": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "loop": {
+            "properties": {
+              "kernel": {
+                "const": "fanout"
+              }
+            },
+            "required": [
+              "kernel"
+            ]
+          }
+        },
+        "required": [
+          "loop"
+        ]
+      },
+      "then": {
+        "properties": {
+          "prompts": {
+            "type": "object",
+            "properties": {
+              "plan": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "loop",
     "agent",
@@ -132,6 +210,11 @@
           "description": "The staged loop: one work unit per iteration, driven through a\nfixed stage sequence the kernel owns in Rust.",
           "type": "string",
           "const": "pipeline"
+        },
+        {
+          "description": "The dispatcher: one planning pass spawns an independent child\npipeline run for every unit it names.",
+          "type": "string",
+          "const": "fanout"
         }
       ]
     },

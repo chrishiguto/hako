@@ -93,6 +93,18 @@ pub enum RunEvent {
     BudgetExhausted {
         budget: BudgetKind,
     },
+    ChildRunStarted {
+        child_run_id: String,
+        scope: String,
+    },
+    ChildRunFinished {
+        child_run_id: String,
+        #[serde(flatten)]
+        state: RunState,
+        iterations: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TokenUsage>,
+    },
     QuestionAnswered {
         question_id: String,
         answer: String,

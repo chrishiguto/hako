@@ -18,8 +18,11 @@ _Avoid_: kernel types, kernel schema
 **Pipeline** (v1, specced):
 The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize executable stages' prompts; stages communicate only through schema-validated stage reports. The four core stages always run; delivery has no generic default and runs only when its prompt slot is configured. An unrefuted `done` from any stage ends the run mid-pass — later stages, configured delivery included, do not run.
 
-**Fanout** (post-v1):
+**Fanout**:
 The dispatcher kernel: its plan stage decomposes ready work into independent units and spawns one child Pipeline run per unit — one child, one branch, one PR. Parallelism composes at the run level, never inside a run.
+
+**Run Spawner**:
+The host boundary Fanout uses to submit a child Pipeline run and watch its durable events until it settles. The daemon binds it to the Run Registry; engine tests bind it to an in-memory fake, so the Engine never depends on the daemon.
 
 **Flow**:
 A TOML file that parameterizes a kernel: agent, budgets, verify checks, workspace, secret names. Contains no logic and no objective — those belong to the kernel and the domain prompt.

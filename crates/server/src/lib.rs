@@ -9,6 +9,7 @@ mod projection;
 mod registry;
 mod runtime;
 mod secrets;
+mod spawner;
 
 use std::path::PathBuf;
 use std::sync::Arc;

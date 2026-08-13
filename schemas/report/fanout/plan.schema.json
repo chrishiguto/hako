@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanReport",
+  "description": "What a fanout planning pass leaves behind.",
+  "type": "object",
+  "properties": {
+    "blockers": {
+      "description": "What prevents the planner from finding ready work.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "questions": {
+      "description": "Questions only a human can answer.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/ReportStatus"
+    },
+    "summary": {
+      "description": "What the planning pass found and why these units may proceed\nindependently.",
+      "type": "string"
+    },
+    "units": {
+      "description": "Independent work units. Each string is passed verbatim to one\nchild pipeline; tracker and frontier semantics live here, not\nin the engine.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary"
+  ],
+  "$defs": {
+    "Question": {
+      "description": "A question the agent needs a human to answer before it can proceed.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The handle an answer is addressed to (`hako answer <run> <id>`).",
+          "type": "string"
+        },
+        "options": {
+          "description": "Suggested answers; free-text is always allowed.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "ReportStatus": {
+      "description": "The agent's claim about where the loop stands. `done` is a claim,\nnot a verdict — the engine accepts it only after verify checks pass\nand a skeptic iteration fails to refute it.",
+      "type": "string",
+      "enum": [
+        "continue",
+        "done",
+        "blocked",
+        "needs_input"
+      ]
+    }
+  }
+}

@@ -9,9 +9,11 @@ use crate::agent::AgentAdapter;
 use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
 use crate::event::{EventEnvelope, EventSink, EventSinkError};
+use crate::fanout::FanoutKernel;
 use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
 use crate::run::{RunId, RunOutcome};
+use crate::run_spawner::{RunSpawner, RunSpawnerError};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretEnv, SecretsError};
 use crate::workspace::{Workspace, WorkspaceError};
@@ -38,6 +40,7 @@ pub trait Kernel: Send + Sync {
 pub fn resolve(name: KernelName) -> Arc<dyn Kernel> {
     match name {
         KernelName::Pipeline => Arc::new(PipelineKernel),
+        KernelName::Fanout => Arc::new(FanoutKernel),
     }
 }
 
@@ -55,8 +58,11 @@ pub struct KernelContext {
     /// It stays in the shared wire vocabulary; the owning kernel
     /// derives its typed resume point from it.
     pub replay: Option<Vec<EventEnvelope>>,
+    /// An opaque work unit assigned by a parent fanout run. Only a
+    /// child pipeline's plan interprets it.
+    pub scope: Option<String>,
     /// The run's cooperative cancel flag — a value like [`budgets`],
-    /// not a seventh seam: nothing fakes it, the host fires the same
+    /// not a seam: nothing fakes it, the host fires the same
     /// token a test would. The sandbox bracket is its single
     /// observation point, so a kernel never checks it; it only answers
     /// a cancelled bracket with [`RunOutcome::Cancelled`] through its
@@ -84,6 +90,8 @@ pub struct KernelContext {
     pub agent: Arc<dyn AgentAdapter>,
     pub events: Arc<dyn EventSink>,
     pub notifier: Arc<dyn Notifier>,
+    /// The daemon-owned child-run boundary used only by fanout.
+    pub run_spawner: Arc<dyn RunSpawner>,
     /// The run's secrets, already resolved — a value like [`budgets`],
     /// not a seam. The host resolves them once at submit, where a gap
     /// still fails the submission that could be fixed; a kernel only
@@ -116,6 +124,8 @@ pub enum KernelError {
     /// this shared vocabulary imports none of them.
     #[error("cannot resume run: {0}")]
     Resume(String),
+    #[error(transparent)]
+    RunSpawner(#[from] RunSpawnerError),
 }
 
 #[cfg(test)]

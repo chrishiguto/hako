@@ -10,10 +10,12 @@ use crate::agent::AgentAdapter;
 use crate::budget::TokenUsage;
 use crate::event::{EventSink, EventSinkError, RunEvent};
 use crate::notify::{Notification, Notifier, NotifierError};
+use crate::run_spawner::{ChildRunSpec, RunSpawner, RunSpawnerError};
 use crate::sandbox::{ExecEvent, ExecSpec, ExitStatus, SandboxError};
 use crate::secrets::{
     SecretEnv, SecretName, SecretRequirement, SecretValue, SecretsError, SecretsProvider,
 };
+use crate::{EventEnvelope, RunId};
 
 /// One scripted exec: the events its stream replays.
 pub type Transcript = Vec<Result<ExecEvent, SandboxError>>;
@@ -108,6 +110,20 @@ impl AgentAdapter for NoAgent {
 
     fn token_usage(&self, _stdout: &str) -> Option<TokenUsage> {
         None
+    }
+}
+
+/// Refuses child work so a forgotten test override fails loudly.
+pub struct NoRunSpawner;
+
+#[async_trait]
+impl RunSpawner for NoRunSpawner {
+    async fn spawn(&self, _child: ChildRunSpec) -> Result<RunId, RunSpawnerError> {
+        unreachable!("this test spawns no child run")
+    }
+
+    async fn watch(&self, _run_id: &RunId) -> Result<Vec<EventEnvelope>, RunSpawnerError> {
+        unreachable!("this test watches no child run")
     }
 }
 

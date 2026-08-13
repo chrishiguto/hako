@@ -30,6 +30,8 @@ fn variant_tripwire(event: &RunEvent) {
         | RunEvent::SkepticVerdict { .. }
         | RunEvent::TokensUsed { .. }
         | RunEvent::BudgetExhausted { .. }
+        | RunEvent::ChildRunStarted { .. }
+        | RunEvent::ChildRunFinished { .. }
         | RunEvent::QuestionAnswered { .. }
         | RunEvent::RunResumed { .. } => {}
     }
@@ -83,6 +85,8 @@ fn the_fixture_covers_every_event_variant() {
         "skeptic_verdict",
         "tokens_used",
         "budget_exhausted",
+        "child_run_started",
+        "child_run_finished",
         "question_answered",
         "run_resumed",
     ]

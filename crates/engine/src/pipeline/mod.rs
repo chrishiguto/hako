@@ -18,18 +18,18 @@
 //! `blocked`/`needs_input` pause it immediately, mid-pipeline.
 
 mod contract;
-mod ending;
 pub(crate) mod frame;
 mod resume;
 pub(crate) mod skeptic;
 
 use async_trait::async_trait;
 
-use self::ending::{conclude, last_summary, pause_for_budget};
+use crate::ending::{conclude, pause_for_budget};
 use crate::event::{IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
 use crate::preamble::{Feedback, HumanInput};
+use crate::report::{self, Disposition};
 use crate::run::{PauseReason, RunOutcome};
 use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
@@ -37,6 +37,13 @@ use crate::workspace::WorkspaceError;
 use proto::flow::{FailAction, KernelName, PromptsConfig};
 use proto::pipeline::{Stage, StageReport};
 use proto::report::ReportStatus;
+
+/// The words a budget pause reports: the last report of the pass, or
+/// the plain fact when the budget fell before any report landed.
+fn last_summary(pass: &[StageReport]) -> &str {
+    pass.last()
+        .map_or("budget exhausted", |report| report.summary())
+}
 
 /// A shipped default makes a stage part of every flow; a configured
 /// prompt opts into stages whose policy is too project-specific for a
@@ -436,15 +443,11 @@ async fn execute_stage(
 
         // Verify passed or was skipped: the report's own status decides
         // where the run goes.
-        return Ok(match report.status() {
-            ReportStatus::Continue => StageEnd::Advance(report),
-            ReportStatus::Done => StageEnd::Done(report),
-            ReportStatus::Blocked => StageEnd::Pause {
-                reason: PauseReason::Blocked,
-                summary: report.summary().into(),
-            },
-            ReportStatus::NeedsInput => StageEnd::Pause {
-                reason: PauseReason::AwaitingHuman,
+        return Ok(match report::disposition(report.status()) {
+            Disposition::Advance => StageEnd::Advance(report),
+            Disposition::Claimed => StageEnd::Done(report),
+            Disposition::Pause(reason) => StageEnd::Pause {
+                reason,
                 summary: report.summary().into(),
             },
         });
@@ -478,8 +481,15 @@ async fn drive_stage(
 ) -> Result<Bracketed<StageDrive>, KernelError> {
     invocation::in_fresh_sandbox_until(ctx, Some(deadline), async |sandbox| {
         let domain_prompt = resolve_prompt(ctx, sandbox, stage).await?;
+        // A parent's assignment reaches the unit-choosing stage only.
+        let scope = if stage == Stage::Plan {
+            ctx.scope.as_deref()
+        } else {
+            None
+        };
         let prompt = frame::compose(&frame::Frame {
             stage,
+            scope,
             handoff,
             feedback,
             human,
@@ -529,22 +539,15 @@ async fn drive_stage(
     .await
 }
 
-/// The stage's domain prompt: the flow's override for the slot, read
-/// fresh from the workspace, or the kernel-shipped default when the
-/// slot is unset.
+/// The stage's domain prompt: the flow's override for the slot, or
+/// the kernel-shipped default when the slot is unset.
 async fn resolve_prompt(
     ctx: &KernelContext,
     sandbox: &SandboxHandle,
     stage: Stage,
 ) -> Result<String, KernelError> {
-    match ctx.prompts.get(stage.as_str()) {
-        Some(path) => {
-            let guest_path = ctx.workspace.guest_path(path)?;
-            let raw = ctx.sandbox.get_file(sandbox, &guest_path).await?;
-            String::from_utf8(raw).map_err(|error| {
-                WorkspaceError(format!("prompt `{path}` is not UTF-8: {error}")).into()
-            })
-        }
+    match invocation::read_prompt_override(ctx, sandbox, stage.as_str()).await? {
+        Some(prompt) => Ok(prompt),
         None => contract::default_prompt(stage)
             .map(str::to_owned)
             .ok_or_else(|| {
