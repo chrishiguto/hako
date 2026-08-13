@@ -111,7 +111,9 @@ pub enum KernelError {
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
     /// The replayed Event Log does not describe a valid resume point
-    /// for the selected kernel.
+    /// for the selected kernel. The detail arrives flattened to a
+    /// string on purpose: each kernel owns its resume dialect, and
+    /// this shared vocabulary imports none of them (ADR 0010).
     #[error("cannot resume run: {0}")]
     Resume(String),
 }
