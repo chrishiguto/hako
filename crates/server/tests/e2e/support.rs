@@ -7,6 +7,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use api::{EventEnvelope, RunEvent, RunState};
 use serde_json::Value;
 
 const DAEMON_TOKEN: &str = "hako-e2e-local-token";
@@ -41,9 +42,16 @@ pub fn run() {
     let attached = hako(address, &["attach", run_id]);
     assert_success("hako attach", &attached);
     let events_text = String::from_utf8(attached.stdout).unwrap();
-    let events: Vec<Value> = events_text
+    // Typed parsing is the point: every attach line must read as the
+    // published language, so wire drift fails loudly here instead of
+    // silently emptying a stringly filter further down.
+    let events: Vec<EventEnvelope> = events_text
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!("attach output is not a published EventEnvelope: {error}\n{line}")
+            })
+        })
         .collect();
     let workspace = root.path().join("runs").join(run_id).join("workspace");
     assert_verified_done(&events, &workspace);
@@ -173,9 +181,14 @@ fn assert_success(operation: &str, output: &Output) {
     );
 }
 
-fn assert_verified_done(events: &[Value], workspace: &Path) {
+fn assert_verified_done(events: &[EventEnvelope], workspace: &Path) {
     let terminal = events.last().expect("the Event Log is empty");
-    if terminal["type"] != "state_changed" || terminal["state"] != "done" {
+    if !matches!(
+        terminal.event,
+        RunEvent::StateChanged {
+            state: RunState::Done
+        }
+    ) {
         panic!(
             "run did not reach Verified Done:\n{}\nworkspace:\n{}",
             event_trace(events),
@@ -187,19 +200,21 @@ fn assert_verified_done(events: &[Value], workspace: &Path) {
     // the number of check events depends on which path the run took.
     // The invariant is that no check ever went red and each configured
     // check gated the run at least once.
-    let checks: Vec<&Value> = events
+    let checks: Vec<(&str, bool)> = events
         .iter()
-        .filter(|event| event["type"] == "verify_check_finished")
+        .filter_map(|envelope| match &envelope.event {
+            RunEvent::VerifyCheckFinished {
+                command, passed, ..
+            } => Some((command.as_str(), *passed)),
+            _ => None,
+        })
         .collect();
     assert!(
-        checks.iter().all(|event| event["passed"] == true),
+        checks.iter().all(|(_, passed)| *passed),
         "a Verify Check failed:\n{}",
         event_trace(events)
     );
-    let commands: BTreeSet<&str> = checks
-        .iter()
-        .filter_map(|event| event["command"].as_str())
-        .collect();
+    let commands: BTreeSet<&str> = checks.iter().map(|(command, _)| *command).collect();
     assert_eq!(
         commands,
         BTreeSet::from(CHECKS),
@@ -207,10 +222,15 @@ fn assert_verified_done(events: &[Value], workspace: &Path) {
         event_trace(events)
     );
     assert!(
-        events.iter().any(|event| {
-            event["type"] == "skeptic_verdict"
-                && event["refuted"] == false
-                && event["findings"].as_array().is_some_and(Vec::is_empty)
+        events.iter().any(|envelope| {
+            matches!(
+                &envelope.event,
+                RunEvent::SkepticVerdict {
+                    refuted: false,
+                    findings,
+                    ..
+                } if findings.is_empty()
+            )
         }),
         "no unrefuted Skeptic Iteration was recorded:\n{}",
         event_trace(events)
@@ -229,29 +249,34 @@ fn workspace_trace(workspace: &Path) -> String {
     .join("\n")
 }
 
-fn event_trace(events: &[Value]) -> String {
+fn event_trace(events: &[EventEnvelope]) -> String {
     events
         .iter()
-        .map(|event| match event["type"].as_str().unwrap_or("unknown") {
-            "stage_started" => format!("stage_started {}", event["stage"]),
-            "stage_reported" => format!(
-                "stage_reported {} status={}",
-                event["stage"], event["report"]["status"]
-            ),
-            "verify_check_finished" => format!(
-                "verify_check_finished passed={} command={}",
-                event["passed"], event["command"]
-            ),
-            "report_rejected" => format!("report_rejected errors={}", event["errors"]),
-            "skeptic_verdict" => format!("skeptic_verdict refuted={}", event["refuted"]),
-            "state_changed" => format!("state_changed state={}", event["state"]),
-            kind => kind.to_owned(),
+        .map(|envelope| match &envelope.event {
+            RunEvent::StageStarted { stage, .. } => format!("stage_started {stage}"),
+            RunEvent::StageReported { stage, report, .. } => {
+                format!("stage_reported {stage} status={}", report["status"])
+            }
+            RunEvent::VerifyCheckFinished {
+                command, passed, ..
+            } => format!("verify_check_finished passed={passed} command={command}"),
+            RunEvent::ReportRejected { errors, .. } => format!("report_rejected errors={errors:?}"),
+            RunEvent::SkepticVerdict { refuted, .. } => {
+                format!("skeptic_verdict refuted={refuted}")
+            }
+            RunEvent::StateChanged { state } => format!("state_changed state={state:?}"),
+            // The rest matter to the trace only as waypoints; agent
+            // output in particular must stay out of the diagnostics.
+            event => serde_json::to_value(event).unwrap()["type"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn assert_checkpointed(workspace: &Path, events: &[Value], run_id: &str) {
+fn assert_checkpointed(workspace: &Path, events: &[EventEnvelope], run_id: &str) {
     assert_eq!(
         fs::read_to_string(workspace.join("SMOKE_RESULT.txt")).unwrap(),
         RESULT
@@ -275,15 +300,19 @@ fn assert_checkpointed(workspace: &Path, events: &[Value], run_id: &str) {
     assert_eq!(git(workspace, &["ls-files", ".hako"]), "");
     assert_eq!(git(workspace, &["status", "--porcelain"]), "?? .hako/");
 
-    let iterations: BTreeSet<u64> = events
+    let iterations: BTreeSet<u32> = events
         .iter()
-        .filter(|event| event["type"] == "iteration_started")
-        .map(|event| event["iteration"].as_u64().unwrap())
+        .filter_map(|envelope| match &envelope.event {
+            RunEvent::IterationStarted { iteration } => Some(*iteration),
+            _ => None,
+        })
         .collect();
-    let checkpoints: BTreeSet<u64> = events
+    let checkpoints: BTreeSet<u32> = events
         .iter()
-        .filter(|event| event["type"] == "workspace_checkpointed")
-        .map(|event| event["iteration"].as_u64().unwrap())
+        .filter_map(|envelope| match &envelope.event {
+            RunEvent::WorkspaceCheckpointed { iteration, .. } => Some(*iteration),
+            _ => None,
+        })
         .collect();
     assert!(!iterations.is_empty(), "the run started no iteration");
     assert_eq!(
@@ -292,11 +321,9 @@ fn assert_checkpointed(workspace: &Path, events: &[Value], run_id: &str) {
     );
 
     let head = git(workspace, &["rev-parse", "HEAD"]);
-    assert!(
-        events
-            .iter()
-            .any(|event| { event["type"] == "workspace_checkpointed" && event["commit"] == head })
-    );
+    assert!(events.iter().any(|envelope| {
+        matches!(&envelope.event, RunEvent::WorkspaceCheckpointed { commit, .. } if *commit == head)
+    }));
 }
 
 fn assert_source_untouched(source: &Path, original_head: &str) {
