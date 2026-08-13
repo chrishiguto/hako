@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use api::proto::flow::FlowConfig;
 use api::{BudgetExtension, RunListEntry};
-use engine::{
-    BudgetUsage, Budgets, CancelToken, EventSink, HumanInput, RunDir, RunId, RunResume, SecretEnv,
-};
+use engine::{BudgetUsage, Budgets, CancelToken, EventSink, RunDir, RunId, SecretEnv};
 use futures_util::future::join_all;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -296,7 +294,7 @@ impl RunRegistry {
             cancel: cancel.clone(),
             budgets: budgets.clone(),
             budget_usage: budget_usage.clone(),
-            resume: None,
+            replay: None,
         });
         runs.insert(
             run_id.clone(),
@@ -345,64 +343,13 @@ impl RunRegistry {
         }
         apply_extension(&mut budgets, extend.clone());
 
-        let history = guard.dir.events().await?;
-        let pause_at = history
-            .iter()
-            .rposition(|event| {
-                matches!(
-                    event.event,
-                    engine::RunEvent::StateChanged {
-                        state: engine::RunState::Paused { .. }
-                    }
-                )
-            })
-            .unwrap_or(0);
-        // Re-answering a question before the resume is a correction:
-        // the latest answer wins, and the preamble carries each
-        // question exactly once.
-        let mut answers: Vec<engine::Answer> = Vec::new();
-        for event in &history[pause_at..] {
-            let engine::RunEvent::QuestionAnswered {
-                question_id,
-                answer,
-            } = &event.event
-            else {
-                continue;
-            };
-            match answers
-                .iter_mut()
-                .find(|answered| answered.question_id == *question_id)
-            {
-                Some(answered) => answered.answer = answer.clone(),
-                None => answers.push(engine::Answer {
-                    question_id: question_id.clone(),
-                    answer: answer.clone(),
-                }),
-            }
-        }
-        let next_iteration = history
-            .iter()
-            .filter_map(|event| match event.event {
-                engine::RunEvent::IterationStarted { iteration } => Some(iteration),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        let resume = RunResume {
-            next_iteration,
-            human: HumanInput {
-                answers,
-                questions: guard.projected.pending_questions().to_vec(),
-                note: note.clone(),
-            },
-        };
         let sink = guard.scrubbed_sink().await?;
         // The command lands in the log like everything else — the
         // granted extension included, so the record of how far this
         // run may go survives the daemon that granted it.
         sink.emit(engine::RunEvent::RunResumed { note, extend })
             .await?;
+        let replay = guard.dir.events().await?;
         let cancel = CancelToken::new();
         let task = runtime.launch(RunLaunch {
             dir: guard.dir.clone(),
@@ -412,7 +359,7 @@ impl RunRegistry {
             cancel: cancel.clone(),
             budgets: budgets.clone(),
             budget_usage,
-            resume: Some(resume),
+            replay: Some(replay),
         });
         let mut runs = self.runs.write().await;
         let record = runs.get_mut(run_id).expect("run remained indexed");

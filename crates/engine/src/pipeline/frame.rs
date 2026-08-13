@@ -67,8 +67,8 @@ pub fn compose(frame: &Frame<'_>) -> String {
         sections.push(reports);
     }
     sections.extend(frame.feedback.iter().map(preamble::feedback));
-    if let Some(human) = frame.human.and_then(preamble::human_input) {
-        sections.push(human);
+    if let Some(human) = frame.human {
+        sections.push(preamble::human_input(human));
     }
     sections.push(frame.domain_prompt.trim().to_owned());
     sections.push(report_contract(frame.stage));
@@ -243,22 +243,6 @@ mod tests {
         });
         assert!(text.contains(preamble::HUMAN_INPUT_HEADING), "{text}");
         assert!(text.contains("sqlite"), "{text}");
-    }
-
-    /// The frame leans on [`preamble::human_input`] returning `None`
-    /// rather than judging emptiness itself.
-    #[test]
-    fn a_silent_human_adds_no_section() {
-        let human = HumanInput {
-            answers: vec![],
-            questions: vec![],
-            note: None,
-        };
-        let text = compose(&Frame {
-            human: Some(&human),
-            ..frame(Stage::Plan, "pick the work")
-        });
-        assert!(!text.contains(preamble::HUMAN_INPUT_HEADING), "{text}");
     }
 
     /// Order is the frame's, not the caller's, and the contract has
