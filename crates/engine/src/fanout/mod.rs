@@ -30,7 +30,11 @@ pub struct FanoutKernel;
 impl Kernel for FanoutKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         let _active = ctx.budget_usage.activate();
-        let (mut iteration, mut child_iterations) = match &ctx.replay {
+        let ResumeState {
+            mut iteration,
+            mut child_iterations,
+            mut notification_summary,
+        } = match &ctx.replay {
             Some(events) => resume_progress(events)?,
             None => {
                 ctx.events
@@ -39,18 +43,19 @@ impl Kernel for FanoutKernel {
                         agent: ctx.agent.name().into(),
                     })
                     .await?;
-                (1, 0)
+                ResumeState::default()
             }
         };
         let mut feedback = Vec::new();
         loop {
             if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations) {
-                // No summary: the only report reachable at loop-top
-                // with prior work is a done-claim the skeptic refuted,
-                // and a refuted claim must not be surfaced as what the
-                // run last did. (`Continue` re-checks the budget with
-                // its summary in hand before looping.)
-                return pause_for_budget(&ctx, iteration.saturating_sub(1), budget, None).await;
+                return pause_for_budget(
+                    &ctx,
+                    iteration.saturating_sub(1),
+                    budget,
+                    notification_summary.as_deref(),
+                )
+                .await;
             }
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
@@ -68,6 +73,7 @@ impl Kernel for FanoutKernel {
                     {
                         return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
                     }
+                    notification_summary = Some(summary);
                     feedback.clear();
                     iteration += 1;
                 }
@@ -78,6 +84,7 @@ impl Kernel for FanoutKernel {
                             outcome: IterationOutcome::Completed,
                         })
                         .await?;
+                    notification_summary = None;
                     feedback = findings;
                     iteration += 1;
                 }
@@ -366,8 +373,27 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
     }
 }
 
-/// Rebuilds `(next iteration, settled child iterations)` from a
-/// replayed log. Only settled children are counted, which is sound
+#[derive(Clone)]
+struct ResumeState {
+    iteration: u32,
+    child_iterations: u32,
+    /// Notification state is deliberately separate from planner
+    /// memory: replaying a Report does not put it in a later preamble.
+    notification_summary: Option<String>,
+}
+
+impl Default for ResumeState {
+    fn default() -> Self {
+        Self {
+            iteration: 1,
+            child_iterations: 0,
+            notification_summary: None,
+        }
+    }
+}
+
+/// Rebuilds Fanout's resume state in one forward fold. Only settled
+/// children are counted, which is sound
 /// because every pause this kernel can reach happens after
 /// `watch_batch` drained its batch: a cleanly paused log never holds
 /// a `child_run_started` without its `child_run_finished`. A log
@@ -375,26 +401,39 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
 /// so such a log never replays; the day detached resume lands, this
 /// must learn to re-watch those orphans instead of replanning over
 /// them.
-fn resume_progress(events: &[EventEnvelope]) -> Result<(u32, u32), KernelError> {
-    if !events
-        .iter()
-        .any(|envelope| matches!(envelope.event, RunEvent::RunResumed { .. }))
-    {
-        return Err(KernelError::Resume(
-            "fanout replay has no resume command".into(),
-        ));
+fn resume_progress(events: &[EventEnvelope]) -> Result<ResumeState, KernelError> {
+    let mut state = ResumeState::default();
+    let mut resumed = None;
+    for envelope in events {
+        match &envelope.event {
+            RunEvent::IterationFinished { iteration, .. } => {
+                state.iteration = state.iteration.max(iteration.saturating_add(1));
+            }
+            RunEvent::ChildRunFinished { iterations, .. } => {
+                state.child_iterations = state.child_iterations.saturating_add(*iterations);
+            }
+            RunEvent::StageReported { stage, report, .. } => {
+                if stage != "plan" {
+                    return Err(KernelError::Resume(format!(
+                        "stage event at seq {} names unknown fanout stage `{stage}`",
+                        envelope.seq
+                    )));
+                }
+                let report: PlanReport =
+                    serde_json::from_value(report.clone()).map_err(|error| {
+                        KernelError::Resume(format!(
+                            "fanout report at seq {} is invalid: {error}",
+                            envelope.seq
+                        ))
+                    })?;
+                state.notification_summary = Some(report.summary);
+            }
+            RunEvent::SkepticVerdict { refuted: true, .. } => {
+                state.notification_summary = None;
+            }
+            RunEvent::RunResumed { .. } => resumed = Some(state.clone()),
+            _ => {}
+        }
     }
-    let last_finished = events.iter().filter_map(|envelope| match envelope.event {
-        RunEvent::IterationFinished { iteration, .. } => Some(iteration),
-        _ => None,
-    });
-    let iteration = last_finished.max().unwrap_or(0).saturating_add(1);
-    let child_iterations = events
-        .iter()
-        .filter_map(|envelope| match envelope.event {
-            RunEvent::ChildRunFinished { iterations, .. } => Some(iterations),
-            _ => None,
-        })
-        .fold(0_u32, u32::saturating_add);
-    Ok((iteration, child_iterations))
+    resumed.ok_or_else(|| KernelError::Resume("fanout replay has no resume command".into()))
 }

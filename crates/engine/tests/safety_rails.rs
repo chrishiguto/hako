@@ -9,11 +9,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use engine::testkit::{
     self, AgentStep, RecordingNotifier, RecordingSink, ScriptedAgent, ScriptedSandbox,
-    StagedSandbox, event_log, exec, reports, seeded_repo,
+    StagedSandbox, event_log, exec, reports, seeded_repo, skeptic,
 };
 use engine::{
     Budgets, FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason,
-    PipelineKernel, RunEvent, RunOutcome, RunState, TokenUsage, VerifyConfig, Workspace,
+    PipelineKernel, RunEvent, RunOutcome, TokenUsage, VerifyConfig, Workspace,
 };
 use proto::budget::BudgetKind;
 
@@ -87,23 +87,11 @@ fn no_change_sandbox() -> Arc<ScriptedSandbox> {
     sandbox
 }
 
-fn resumed_after_completed_iteration(note: Option<&str>) -> Vec<engine::EventEnvelope> {
-    event_log([
-        RunEvent::IterationStarted { iteration: 1 },
-        RunEvent::IterationFinished {
-            iteration: 1,
-            outcome: IterationOutcome::Completed,
-        },
-        RunEvent::StateChanged {
-            state: RunState::Paused {
-                reason: PauseReason::Budget,
-            },
-        },
-        RunEvent::RunResumed {
-            note: note.map(str::to_owned),
-            extend: None,
-        },
-    ])
+fn replay_after_resume(events: Vec<RunEvent>, note: Option<&str>) -> Vec<engine::EventEnvelope> {
+    event_log(events.into_iter().chain([RunEvent::RunResumed {
+        note: note.map(str::to_owned),
+        extend: None,
+    }]))
 }
 
 #[tokio::test]
@@ -282,7 +270,7 @@ async fn an_extended_iteration_budget_continues_on_resume() {
         report: Some(r#"{"refuted":false,"findings":[]}"#.into()),
     });
     let sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), steps));
-    let (first, _, _) = context(
+    let (first, first_events, _) = context(
         workspace.path(),
         sandbox.clone(),
         Arc::new(ScriptedAgent::new()),
@@ -307,9 +295,10 @@ async fn an_extended_iteration_budget_continues_on_resume() {
         },
         VerifyConfig::default(),
     );
-    resumed.replay = Some(resumed_after_completed_iteration(Some(
-        "one more iteration",
-    )));
+    resumed.replay = Some(replay_after_resume(
+        first_events.events(),
+        Some("one more iteration"),
+    ));
 
     assert_eq!(PipelineKernel.run(resumed).await.unwrap(), RunOutcome::Done);
 }
@@ -333,7 +322,7 @@ async fn a_token_extension_keeps_what_the_run_spent_before_resume() {
             output: 1,
         })) as Arc<dyn engine::AgentAdapter>
     };
-    let (mut first, _, _) = context(
+    let (mut first, first_events, _) = context(
         workspace.path(),
         sandbox.clone(),
         agent(),
@@ -360,7 +349,7 @@ async fn a_token_extension_keeps_what_the_run_spent_before_resume() {
         VerifyConfig::default(),
     );
     resumed.budget_usage = usage;
-    resumed.replay = Some(resumed_after_completed_iteration(None));
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
 
     assert_eq!(
         PipelineKernel.run(resumed).await.unwrap(),
@@ -394,7 +383,7 @@ async fn a_token_paused_run_resumed_without_extension_pauses_before_booting() {
             output: 1,
         })) as Arc<dyn engine::AgentAdapter>
     };
-    let (mut first, _, _) = context(
+    let (mut first, first_events, _) = context(
         workspace.path(),
         sandbox.clone(),
         agent(),
@@ -416,7 +405,7 @@ async fn a_token_paused_run_resumed_without_extension_pauses_before_booting() {
         VerifyConfig::default(),
     );
     resumed.budget_usage = usage;
-    resumed.replay = Some(resumed_after_completed_iteration(None));
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
 
     assert_eq!(
         PipelineKernel.run(resumed).await.unwrap(),
@@ -431,6 +420,122 @@ async fn a_token_paused_run_resumed_without_extension_pauses_before_booting() {
         budget: BudgetKind::Tokens,
     }));
     assert_eq!(notifier.notifications().len(), 1);
+    assert_eq!(
+        notifier.notifications()[0].summary.as_deref(),
+        Some("simplified the work")
+    );
+}
+
+#[tokio::test]
+async fn a_mid_iteration_resume_reuses_the_latest_report_summary() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        vec![AgentStep {
+            stdout: "tokens used\n".into(),
+            code: 0,
+            report: Some(
+                r#"{"status":"needs_input","summary":"need a storage choice","questions":[]}"#
+                    .into(),
+            ),
+        }],
+    ));
+    let usage = engine::BudgetUsage::default();
+    let budgets = Budgets {
+        max_tokens: Some(1),
+        ..Budgets::default()
+    };
+    let agent = || {
+        Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 1,
+            output: 0,
+        })) as Arc<dyn engine::AgentAdapter>
+    };
+    let (mut first, first_events, _) = context(
+        workspace.path(),
+        sandbox.clone(),
+        agent(),
+        budgets.clone(),
+        VerifyConfig::default(),
+    );
+    first.budget_usage = usage.clone();
+    assert_eq!(
+        PipelineKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(PauseReason::AwaitingHuman)
+    );
+
+    let (mut resumed, _, notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        agent(),
+        budgets,
+        VerifyConfig::default(),
+    );
+    resumed.budget_usage = usage;
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(sandbox.created(), 1, "resume booted no new sandbox");
+    assert_eq!(
+        notifier.notifications()[0].summary.as_deref(),
+        Some("need a storage choice")
+    );
+}
+
+#[tokio::test]
+async fn a_refuted_pipeline_report_is_ineligible_after_resume() {
+    let workspace = seeded_repo();
+    let mut steps = vec![
+        reports("done", "premature claim"),
+        skeptic(true, &["TODO remains"]),
+    ];
+    for step in &mut steps {
+        step.stdout = "tokens used\n".into();
+    }
+    let sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), steps));
+    let usage = engine::BudgetUsage::default();
+    let budgets = Budgets {
+        max_tokens: Some(2),
+        ..Budgets::default()
+    };
+    let agent = || {
+        Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 1,
+            output: 0,
+        })) as Arc<dyn engine::AgentAdapter>
+    };
+    let (mut first, first_events, first_notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        agent(),
+        budgets.clone(),
+        VerifyConfig::default(),
+    );
+    first.budget_usage = usage.clone();
+    assert_eq!(
+        PipelineKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(first_notifier.notifications()[0].summary, None);
+
+    let (mut resumed, _, notifier) = context(
+        workspace.path(),
+        sandbox,
+        agent(),
+        budgets,
+        VerifyConfig::default(),
+    );
+    resumed.budget_usage = usage;
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(notifier.notifications()[0].summary, None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -439,6 +544,7 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let sandbox = Arc::new(ScriptedSandbox::hanging().with_barrier(barrier.clone()));
     let budgets = Budgets {
+        max_iterations: Some(1),
         iteration_timeout: Duration::from_secs(30),
         ..Budgets::default()
     };
@@ -453,8 +559,8 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
         workspace.path(),
         sandbox.clone(),
         Arc::new(ScriptedAgent::new()),
-        budgets,
-        verify,
+        budgets.clone(),
+        verify.clone(),
     );
     let task = tokio::spawn(PipelineKernel.run(ctx));
     barrier.wait().await;
@@ -477,6 +583,22 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
         outcome: IterationOutcome::TimedOut,
     }));
     assert_eq!(notifier.notifications()[0].reason, PauseReason::Timeout);
+
+    let (mut resumed, _, resumed_notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets,
+        verify,
+    );
+    resumed.replay = Some(replay_after_resume(events.events(), None));
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(sandbox.created(), 1, "resume booted no new sandbox");
+    assert_eq!(resumed_notifier.notifications()[0].summary, None);
 }
 
 /// The scripted sandbox with an agent that commits its own work:

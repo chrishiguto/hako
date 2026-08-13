@@ -19,6 +19,10 @@ use crate::preamble::HumanInput;
 /// re-enters at plan with nothing completed.
 pub(super) struct ResumePoint {
     pub iteration: u32,
+    /// The latest Report summary still eligible for an immediate
+    /// loop-top pause notification. This is replay state, not agent
+    /// memory: it never joins `completed` or a later preamble.
+    pub notification_summary: Option<String>,
     /// Whether the loop must announce this iteration — a fresh one
     /// opening after a boundary pause. Re-entering the interrupted
     /// iteration announces nothing: its `iteration_started` is
@@ -63,6 +67,9 @@ struct Replay<'a> {
     /// The latest report each stage of the current iteration emitted —
     /// a verify retry's report supersedes its predecessor's.
     reports: BTreeMap<Stage, (u64, &'a serde_json::Value)>,
+    /// Kept raw so superseded or refuted history need not be parsed;
+    /// only the Report still eligible at the resume point is decoded.
+    eligible_report: Option<(u64, Stage, &'a serde_json::Value)>,
     /// Human input no stage has read yet. An answer or note is
     /// delivered by the first stage that starts after it, so whatever
     /// is still pending at the resume belongs to the stage that
@@ -98,9 +105,11 @@ impl<'a> Replay<'a> {
                 stage,
                 report,
             } if self.iteration == Some(*iteration) => {
-                self.reports
-                    .insert(stage_named(envelope.seq, stage)?, (envelope.seq, report));
+                let stage = stage_named(envelope.seq, stage)?;
+                self.reports.insert(stage, (envelope.seq, report));
+                self.eligible_report = Some((envelope.seq, stage, report));
             }
+            RunEvent::SkepticVerdict { refuted: true, .. } => self.eligible_report = None,
             RunEvent::StateChanged {
                 state: proto::run::RunState::Paused { .. },
             } => self.paused = true,
@@ -127,11 +136,18 @@ impl<'a> Replay<'a> {
         let Some(iteration) = self.iteration else {
             return Err(ResumeError::MissingIteration);
         };
+        let notification_summary = self
+            .eligible_report
+            .map(|(seq, stage, report)| {
+                parse_report(seq, stage, report).map(|report| report.summary().to_owned())
+            })
+            .transpose()?;
         if self.finished {
             // The pause closed its pass; the resume opens the next
             // iteration at the top.
             return Ok(ResumePoint {
                 iteration: iteration.saturating_add(1),
+                notification_summary,
                 starts_iteration: true,
                 stage: Stage::Plan,
                 completed: Vec::new(),
@@ -161,6 +177,7 @@ impl<'a> Replay<'a> {
         }
         Ok(ResumePoint {
             iteration,
+            notification_summary,
             starts_iteration: false,
             stage: interrupted,
             completed,

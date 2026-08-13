@@ -90,9 +90,21 @@ fn fanout_context(
     Arc<RecordingSink>,
     Arc<RecordingNotifier>,
 ) {
+    fanout_context_with_output(reports, spawner, "planned\n")
+}
+
+fn fanout_context_with_output(
+    reports: &[&[u8]],
+    spawner: Arc<FakeSpawner>,
+    output: &str,
+) -> (
+    engine::KernelContext,
+    Arc<RecordingSink>,
+    Arc<RecordingNotifier>,
+) {
     let workspace = seeded_repo();
     let path = workspace.keep();
-    let sandbox = Arc::new(ScriptedSandbox::repeating(exec("planned\n", 0)));
+    let sandbox = Arc::new(ScriptedSandbox::repeating(exec(output, 0)));
     for report in reports {
         sandbox.write_report_on_exec(report.to_vec());
     }
@@ -108,6 +120,13 @@ fn fanout_context(
         ..context()
     };
     (ctx, events, notifier)
+}
+
+fn replay_after_resume(events: Vec<RunEvent>) -> Vec<EventEnvelope> {
+    event_log(events.into_iter().chain([RunEvent::RunResumed {
+        note: None,
+        extend: None,
+    }]))
 }
 
 #[tokio::test]
@@ -209,6 +228,154 @@ async fn a_budget_paused_fanout_resumes_after_an_extension() {
             .events()
             .contains(&RunEvent::IterationStarted { iteration: 2 })
     );
+}
+
+#[tokio::test]
+async fn a_budget_paused_fanout_reuses_its_batch_summary_after_resume() {
+    let spawner = Arc::new(FakeSpawner::with_children([terminal(
+        RunState::Done,
+        TokenUsage {
+            input: 6,
+            output: 4,
+        },
+    )]));
+    let (mut first, first_events, _) = fanout_context(
+        &[br#"{"status":"continue","summary":"one ready","units":["a"]}"#],
+        spawner,
+    );
+    let usage = first.budget_usage.clone();
+    first.budgets = Budgets {
+        max_tokens: Some(10),
+        ..Budgets::default()
+    };
+    assert_eq!(
+        FanoutKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+
+    let (mut resumed, _, notifier) = fanout_context(&[], Arc::new(FakeSpawner::default()));
+    resumed.budget_usage = usage;
+    resumed.budgets = Budgets {
+        max_tokens: Some(10),
+        ..Budgets::default()
+    };
+    resumed.replay = Some(replay_after_resume(first_events.events()));
+
+    assert_eq!(
+        FanoutKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+    assert_eq!(
+        notifier.notifications()[0].summary.as_deref(),
+        Some("one ready")
+    );
+}
+
+#[tokio::test]
+async fn a_fanout_resume_before_any_report_has_no_summary() {
+    let budgets = Budgets {
+        max_iterations: Some(0),
+        ..Budgets::default()
+    };
+    let (mut first, first_events, _) = fanout_context(&[], Arc::new(FakeSpawner::default()));
+    first.budgets = budgets.clone();
+    assert_eq!(
+        FanoutKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+
+    let (mut resumed, _, notifier) = fanout_context(&[], Arc::new(FakeSpawner::default()));
+    resumed.budgets = budgets;
+    resumed.replay = Some(replay_after_resume(first_events.events()));
+
+    assert_eq!(
+        FanoutKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+    assert_eq!(notifier.notifications()[0].summary, None);
+}
+
+#[tokio::test]
+async fn a_mid_iteration_fanout_resume_reuses_the_plan_summary() {
+    let usage = engine::BudgetUsage::default();
+    let budgets = Budgets {
+        max_tokens: Some(1),
+        ..Budgets::default()
+    };
+    let agent = || {
+        Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 1,
+            output: 0,
+        }))
+    };
+    let (mut first, first_events, _) = fanout_context_with_output(
+        &[br#"{"status":"needs_input","summary":"choose the frontier","units":[]}"#],
+        Arc::new(FakeSpawner::default()),
+        "tokens used\n",
+    );
+    first.agent = agent();
+    first.budget_usage = usage.clone();
+    first.budgets = budgets.clone();
+    assert_eq!(
+        FanoutKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::AwaitingHuman)
+    );
+
+    let (mut resumed, _, notifier) = fanout_context(&[], Arc::new(FakeSpawner::default()));
+    resumed.budget_usage = usage;
+    resumed.budgets = budgets;
+    resumed.replay = Some(replay_after_resume(first_events.events()));
+
+    assert_eq!(
+        FanoutKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+    assert_eq!(
+        notifier.notifications()[0].summary.as_deref(),
+        Some("choose the frontier")
+    );
+}
+
+#[tokio::test]
+async fn a_refuted_fanout_report_is_ineligible_after_resume() {
+    let usage = engine::BudgetUsage::default();
+    let budgets = Budgets {
+        max_tokens: Some(2),
+        ..Budgets::default()
+    };
+    let agent = || {
+        Arc::new(ScriptedAgent::new().reporting(TokenUsage {
+            input: 1,
+            output: 0,
+        }))
+    };
+    let (mut first, first_events, first_notifier) = fanout_context_with_output(
+        &[
+            br#"{"status":"done","summary":"premature claim","units":[]}"#,
+            br#"{"refuted":true,"findings":["issue remains"]}"#,
+        ],
+        Arc::new(FakeSpawner::default()),
+        "tokens used\n",
+    );
+    first.agent = agent();
+    first.budget_usage = usage.clone();
+    first.budgets = budgets.clone();
+    assert_eq!(
+        FanoutKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+    assert_eq!(first_notifier.notifications()[0].summary, None);
+
+    let (mut resumed, _, notifier) = fanout_context(&[], Arc::new(FakeSpawner::default()));
+    resumed.budget_usage = usage;
+    resumed.budgets = budgets;
+    resumed.replay = Some(replay_after_resume(first_events.events()));
+
+    assert_eq!(
+        FanoutKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(engine::PauseReason::Budget)
+    );
+    assert_eq!(notifier.notifications()[0].summary, None);
 }
 
 #[tokio::test]
