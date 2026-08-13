@@ -31,3 +31,9 @@ schema:
 # the test suite
 test:
     cargo test --workspace --locked
+
+# real daemon + smolvm + Claude smoke; see docs/quickstart.md for prerequisites
+e2e:
+    cargo build --workspace --bins --locked
+    cargo test -p sandbox --test smolvm --locked -- --ignored
+    cargo test -p server --test e2e --locked -- --ignored --nocapture
