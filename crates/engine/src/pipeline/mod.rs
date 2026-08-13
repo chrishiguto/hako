@@ -129,7 +129,8 @@ impl Kernel for PipelineKernel {
             match run_iteration(
                 &ctx,
                 iteration,
-                IterationStart::of(resume, std::mem::take(&mut plan_feedback)),
+                resume,
+                std::mem::take(&mut plan_feedback),
                 deadline,
             )
             .await?
@@ -222,30 +223,6 @@ impl Kernel for PipelineKernel {
     }
 }
 
-/// Where one pass begins: fresh at plan, or exactly where a replayed
-/// pause interrupted it.
-struct IterationStart {
-    completed: Vec<StageReport>,
-    interrupted: Stage,
-    plan_feedback: Vec<Feedback>,
-    human: Option<HumanInput>,
-}
-
-impl IterationStart {
-    fn of(resume: Option<resume::ResumePoint>, plan_feedback: Vec<Feedback>) -> Self {
-        let (interrupted, completed, human) = resume
-            .map_or((Stage::Plan, Vec::new(), None), |point| {
-                (point.stage, point.completed, point.human)
-            });
-        Self {
-            completed,
-            interrupted,
-            plan_feedback,
-            human,
-        }
-    }
-}
-
 /// How one iteration ended, as the run loop reads it. Every ending
 /// lands here, so the loop emits each closing event and keeps its
 /// books in exactly one place.
@@ -278,24 +255,24 @@ enum IterationEnd {
     Cancelled,
 }
 
-/// Drives one iteration through the stages, entering at the start's
-/// stage — the run loop has already checked it is active in this
-/// flow. Plan opens a fresh unit from the Workspace and the explicitly
-/// scoped feedback the loop carried in; every later stage reads what
-/// this iteration produced before it. A resumed run's human input
-/// reaches the first stage of this iteration and no other.
+/// Drives one iteration through the stages, entering fresh at plan or
+/// exactly where the replayed pause interrupted it — the run loop has
+/// already checked that stage is active in this flow. Plan opens a
+/// fresh unit from the Workspace and the explicitly scoped feedback
+/// the loop carried in; every later stage reads what this iteration
+/// produced before it. A resumed run's human input reaches the first
+/// stage of this iteration and no other.
 async fn run_iteration(
     ctx: &KernelContext,
     iteration: u32,
-    start: IterationStart,
+    resume: Option<resume::ResumePoint>,
+    mut plan_feedback: Vec<Feedback>,
     deadline: tokio::time::Instant,
 ) -> Result<IterationEnd, KernelError> {
-    let IterationStart {
-        mut completed,
-        interrupted,
-        mut plan_feedback,
-        mut human,
-    } = start;
+    let (interrupted, mut completed, mut human) = resume
+        .map_or((Stage::Plan, Vec::new(), None), |point| {
+            (point.stage, point.completed, point.human)
+        });
     for stage in active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted) {
         let feedback = if stage == Stage::Plan {
             std::mem::take(&mut plan_feedback)
