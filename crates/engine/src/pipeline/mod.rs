@@ -197,13 +197,21 @@ impl Kernel for PipelineKernel {
                         .await?;
                     return conclude(&ctx, Ending::Failed).await;
                 }
-                IterationEnd::TimedOut => {
+                IterationEnd::TimedOut {
+                    notification_summary: latest,
+                } => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
                             outcome: IterationOutcome::TimedOut,
                         })
                         .await?;
+                    // A pass that reported nothing leaves the summary
+                    // alone: the log's latest eligible Report is still
+                    // the one already held.
+                    if let Some(latest) = latest {
+                        notification_summary = Some(latest);
+                    }
                     timeout_failures += 1;
                     let summary = format!(
                         "iteration {iteration} timed out after {} seconds",
@@ -264,8 +272,13 @@ enum IterationEnd {
     /// iteration counts as failed.
     Fail,
     /// The hard iteration deadline fired; the live sandbox has already
-    /// been destroyed by its bracket.
-    TimedOut,
+    /// been destroyed by its bracket. Carries the latest Report the
+    /// interrupted pass put on the log — `None` when it never reported
+    /// — so the loop's summary keeps matching what a replay of this
+    /// log would rebuild.
+    TimedOut {
+        notification_summary: Option<String>,
+    },
     /// The run's cancel token fired; the iteration stops where it
     /// stands.
     Cancelled,
@@ -289,6 +302,11 @@ async fn run_iteration(
         .map_or((Stage::Plan, Vec::new(), None), |point| {
             (point.stage, point.completed, point.human)
         });
+    // What this pass has put on the log so far — not `completed`,
+    // whose resume-carried reports predate the summary the loop
+    // already holds. A timeout hands this back so the loop's summary
+    // keeps matching the log.
+    let mut latest_emitted: Option<String> = None;
     for stage in active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted) {
         let feedback = if stage == Stage::Plan {
             std::mem::take(&mut plan_feedback)
@@ -307,7 +325,10 @@ async fn run_iteration(
         )
         .await?
         {
-            StageEnd::Advance(report) => completed.push(report),
+            StageEnd::Advance(report) => {
+                latest_emitted = Some(report.summary().to_owned());
+                completed.push(report);
+            }
             StageEnd::Done(claim) => {
                 return Ok(
                     match skeptic::judge(ctx, iteration, &claim, deadline).await? {
@@ -323,7 +344,11 @@ async fn run_iteration(
                         }
                         Bracketed::Finished(skeptic::SkepticEnd::Failed) => IterationEnd::Fail,
                         Bracketed::Cancelled => IterationEnd::Cancelled,
-                        Bracketed::TimedOut => IterationEnd::TimedOut,
+                        // The unjudged claim stays eligible — only a
+                        // refutation retires a Report.
+                        Bracketed::TimedOut => IterationEnd::TimedOut {
+                            notification_summary: Some(claim.summary().to_owned()),
+                        },
                     },
                 );
             }
@@ -331,7 +356,11 @@ async fn run_iteration(
                 return Ok(IterationEnd::Pause { reason, summary });
             }
             StageEnd::Fail => return Ok(IterationEnd::Fail),
-            StageEnd::TimedOut => return Ok(IterationEnd::TimedOut),
+            StageEnd::TimedOut { last_reported } => {
+                return Ok(IterationEnd::TimedOut {
+                    notification_summary: last_reported.or(latest_emitted),
+                });
+            }
             StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
         }
     }
@@ -361,8 +390,11 @@ enum StageEnd {
     /// report still malformed after its one repair.
     Fail,
     /// The hard iteration deadline fired mid-stage; the bracket has
-    /// already destroyed the sandbox it interrupted.
-    TimedOut,
+    /// already destroyed the sandbox it interrupted. Carries the
+    /// summary of the last report this stage's attempts emitted — a
+    /// verify retry's failed predecessor is still on the log, and the
+    /// loop's summary must keep matching the log.
+    TimedOut { last_reported: Option<String> },
     /// The run's cancel token fired, mid-stage or at the boundary
     /// before this stage booted anything: a finished stage's work
     /// stands, no further stage starts, and the run ends `Cancelled` —
@@ -385,16 +417,18 @@ async fn execute_stage(
     deadline: tokio::time::Instant,
 ) -> Result<StageEnd, KernelError> {
     let mut verify_failures: u32 = 0;
+    let mut last_reported: Option<String> = None;
     loop {
         let drive =
             match drive_stage(ctx, iteration, stage, handoff, &feedback, human, deadline).await? {
                 Bracketed::Finished(drive) => drive,
                 Bracketed::Cancelled => return Ok(StageEnd::Cancelled),
-                Bracketed::TimedOut => return Ok(StageEnd::TimedOut),
+                Bracketed::TimedOut => return Ok(StageEnd::TimedOut { last_reported }),
             };
         let StageDrive::Reported { report, verify } = drive else {
             return Ok(StageEnd::Fail);
         };
+        last_reported = Some(report.summary().to_owned());
 
         if let VerifyOutcome::Failed { command, output } = verify {
             verify_failures += 1;

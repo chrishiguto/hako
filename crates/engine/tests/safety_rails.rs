@@ -601,6 +601,131 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
     assert_eq!(resumed_notifier.notifications()[0].summary, None);
 }
 
+/// A pass that reported before its deadline fired stays visible: the
+/// loop-top budget pause after a tolerated timeout carries the pass's
+/// latest Report summary — live, and identically after a no-extension
+/// resume replays the same log.
+#[tokio::test(start_paused = true)]
+async fn a_tolerated_timeout_keeps_the_pass_report_eligible() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(
+        StagedSandbox::new(
+            workspace.path().to_path_buf(),
+            vec![reports("continue", "planned the unit")],
+        )
+        .hangs_when_dry(),
+    );
+    let budgets = Budgets {
+        max_iterations: Some(1),
+        ..Budgets::default()
+    };
+    let verify = VerifyConfig {
+        on_fail: OnFail {
+            retries: 1,
+            then: FailAction::Pause,
+        },
+        ..VerifyConfig::default()
+    };
+    let (first, first_events, first_notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets.clone(),
+        verify.clone(),
+    );
+
+    assert_eq!(
+        PipelineKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(
+        first_notifier.notifications()[0].summary.as_deref(),
+        Some("planned the unit")
+    );
+
+    let resumed_sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), vec![]));
+    let (mut resumed, _, resumed_notifier) = context(
+        workspace.path(),
+        resumed_sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets,
+        verify,
+    );
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(resumed_sandbox.created(), 0, "resume booted no sandbox");
+    assert_eq!(
+        resumed_notifier.notifications()[0].summary.as_deref(),
+        Some("planned the unit")
+    );
+}
+
+/// A `done` claim whose skeptic timed out is unjudged, not refuted —
+/// it stays the eligible summary, live and across a resume, until a
+/// verdict retires it.
+#[tokio::test(start_paused = true)]
+async fn a_skeptic_timeout_keeps_the_unjudged_claim_eligible() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(
+        StagedSandbox::new(
+            workspace.path().to_path_buf(),
+            vec![reports("done", "claims completion")],
+        )
+        .hangs_when_dry(),
+    );
+    let budgets = Budgets {
+        max_iterations: Some(1),
+        ..Budgets::default()
+    };
+    let verify = VerifyConfig {
+        on_fail: OnFail {
+            retries: 1,
+            then: FailAction::Pause,
+        },
+        ..VerifyConfig::default()
+    };
+    let (first, first_events, first_notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets.clone(),
+        verify.clone(),
+    );
+
+    assert_eq!(
+        PipelineKernel.run(first).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(
+        first_notifier.notifications()[0].summary.as_deref(),
+        Some("claims completion")
+    );
+
+    let resumed_sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), vec![]));
+    let (mut resumed, _, resumed_notifier) = context(
+        workspace.path(),
+        resumed_sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets,
+        verify,
+    );
+    resumed.replay = Some(replay_after_resume(first_events.events(), None));
+
+    assert_eq!(
+        PipelineKernel.run(resumed).await.unwrap(),
+        RunOutcome::Paused(PauseReason::Budget)
+    );
+    assert_eq!(resumed_sandbox.created(), 0, "resume booted no sandbox");
+    assert_eq!(
+        resumed_notifier.notifications()[0].summary.as_deref(),
+        Some("claims completion")
+    );
+}
+
 /// The scripted sandbox with an agent that commits its own work:
 /// every exec lands a commit in the workspace before the scripted
 /// "no change" report — the shape `checkpoint` cannot see, because
