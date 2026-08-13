@@ -431,42 +431,48 @@ mod schema {
     pub fn json_schema() -> Schema {
         let schema = crate::schema::root_schema_for::<FlowConfig>();
         let mut value = serde_json::to_value(schema).expect("flow schema serializes");
-        let conditions: Vec<serde_json::Value> = KernelName::ALL
-            .into_iter()
-            .map(|kernel| {
-                let properties: serde_json::Map<String, serde_json::Value> = kernel
-                    .prompt_slots()
-                    .iter()
-                    .map(|slot| ((*slot).to_string(), serde_json::json!({"type": "string"})))
-                    .collect();
-                serde_json::json!({
-                    "if": {
-                        "patternProperties": {
-                            "^loop$": {
-                                "type": "object",
-                                "properties": {"kernel": {"const": kernel.as_str()}},
-                                "required": ["kernel"],
-                                "additionalProperties": false
-                            }
-                        }
-                    },
-                    "then": {
-                        "patternProperties": {
-                            "^prompts$": {
-                                "type": "object",
-                                "properties": properties,
-                                "additionalProperties": false
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
+        let conditions: Vec<serde_json::Value> =
+            KernelName::ALL.into_iter().map(slot_condition).collect();
         value
             .as_object_mut()
             .expect("root flow schema is an object")
             .insert("allOf".into(), conditions.into());
         serde_json::from_value(value).expect("conditioned flow schema is valid")
+    }
+
+    /// One `if`/`then` narrowing `[prompts]` to the slots this kernel
+    /// publishes. The `if` matches on the kernel name alone and must
+    /// stay open — closing `[loop]` here (`additionalProperties`)
+    /// would make the condition fail, and the narrowing silently
+    /// vanish, for any flow using a `[loop]` key added later. The
+    /// closed table lives in the generated `LoopConfig` definition,
+    /// which regenerates with the type.
+    fn slot_condition(kernel: KernelName) -> serde_json::Value {
+        let slots: serde_json::Map<String, serde_json::Value> = kernel
+            .prompt_slots()
+            .iter()
+            .map(|slot| ((*slot).to_string(), serde_json::json!({"type": "string"})))
+            .collect();
+        serde_json::json!({
+            "if": {
+                "required": ["loop"],
+                "properties": {
+                    "loop": {
+                        "required": ["kernel"],
+                        "properties": {"kernel": {"const": kernel.as_str()}}
+                    }
+                }
+            },
+            "then": {
+                "properties": {
+                    "prompts": {
+                        "type": "object",
+                        "properties": slots,
+                        "additionalProperties": false
+                    }
+                }
+            }
+        })
     }
 
     impl JsonSchema for PromptsConfig {

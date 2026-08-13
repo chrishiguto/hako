@@ -185,6 +185,37 @@ fn the_prompts_schema_is_exact_for_every_kernel() {
     }
 }
 
+/// The per-kernel prompt conditional must key on the kernel name
+/// alone. Were its `if` to close the `[loop]` table, the first new
+/// `[loop]` key would make every condition fail — and the slot
+/// narrowing silently vanish — exactly for the flows using that key.
+/// Simulated here by growing `LoopConfig` the way a regenerated
+/// schema would.
+#[test]
+fn the_prompt_conditionals_survive_a_new_loop_key() {
+    let mut grown = SCHEMA.clone();
+    grown["$defs"]["LoopConfig"]["properties"]["max_children"] = serde_json::json!({"type": "integer", "format": "uint32", "minimum": 0, "maximum": 4294967295_u64});
+    let validator = jsonschema::validator_for(&grown).expect("grown schema compiles");
+    let accepts = |flow_toml: &str| {
+        let value: toml::Value = toml::from_str(flow_toml).expect("probe flows are valid TOML");
+        validator.is_valid(&serde_json::to_value(value).unwrap())
+    };
+
+    let fanout_with_new_key = MINIMAL_FLOW.replace(
+        "kernel = \"pipeline\"",
+        "kernel = \"fanout\"\nmax_children = 2",
+    );
+    // The grown table itself must validate, or the assertion below
+    // would pass for the wrong reason.
+    assert!(accepts(&fanout_with_new_key));
+    assert!(
+        !accepts(&format!(
+            "{fanout_with_new_key}\n[prompts]\nimplement = \"prompts/implement.md\"\n"
+        )),
+        "a fanout flow gained a pipeline slot because `[loop]` grew a key"
+    );
+}
+
 /// The representative example documents every flow section, so the
 /// schema's top-level properties must equal its tables — a new
 /// section extends this guard the moment the example gains it, with
