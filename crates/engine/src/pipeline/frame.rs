@@ -96,8 +96,9 @@ fn header(stage: Stage) -> String {
 }
 
 /// Earlier stages' reports from this iteration, each fenced so its
-/// agent-authored text cannot break out of its block. `None` for every
-/// plan stage, so no empty section is added.
+/// agent-authored text cannot break out of its block. `None` when the
+/// handoff is empty — the kernel hands every plan stage an empty one —
+/// so no empty section is added.
 fn handoff_section(handoff: &[StageReport]) -> Option<String> {
     if handoff.is_empty() {
         return None;
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_has_no_handoff_section() {
+    fn an_empty_handoff_adds_no_section() {
         let text = compose(&frame(Stage::Plan, "pick the work"));
         assert!(!text.contains("## Reports so far"), "{text}");
     }
