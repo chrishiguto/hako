@@ -104,6 +104,9 @@ mod tests {
         SkepticContract.parse(text)
     }
 
+    /// The cross-field rule the schema states in `if`/`then`/`else`,
+    /// pinned against the strict parse so the two hand-written
+    /// spellings cannot drift apart.
     #[test]
     fn refuted_and_findings_must_agree() {
         let unrefuted = parse(r#"{"refuted": false, "findings": []}"#).unwrap();
@@ -123,12 +126,18 @@ mod tests {
         );
     }
 
+    /// The strict parse matches the schema's `additionalProperties:
+    /// false` — a kernel report mistakenly served to the skeptic is
+    /// rejected, not half-read.
     #[test]
     fn unknown_fields_are_rejected() {
         let error = parse(r#"{"refuted": false, "findings": [], "status": "done"}"#).unwrap_err();
         assert!(error.contains("unknown field"), "{error}");
     }
 
+    /// The schema is hand-written, not a committed artifact like the
+    /// stage schemas — so at least its JSON validity and title are
+    /// pinned here.
     #[test]
     fn the_schema_is_valid_json_naming_the_contract() {
         let schema: serde_json::Value = serde_json::from_str(REPORT_SCHEMA).unwrap();

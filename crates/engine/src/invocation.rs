@@ -181,18 +181,6 @@ async fn emit_output(
     Ok(())
 }
 
-/// Runs the agent once in the sandbox: exec-stream the invocation,
-/// emit every output chunk and the token usage as events, then fetch
-/// the report the agent wrote — through the sandbox seam, because
-/// scratch is read through the guest's view, never the host's.
-/// One exec, no enforcement — a kernel reads the agent boundary
-/// through [`invoke_to_report`], which drives this.
-///
-/// Every path that ends the streams — clean end or a stream error —
-/// flushes what the seams held, so received output is never lost to a
-/// boundary. The one exception is cancellation, which drops this
-/// future whole: output still in flight is abandoned with the VM,
-/// deliberately (see [`in_fresh_sandbox`]).
 /// The flow's override for a prompt slot, read fresh from the live
 /// workspace through the sandbox — an agent's edit to the file takes
 /// effect on the next read — or `None` when the slot is unset. What
@@ -212,6 +200,18 @@ pub async fn read_prompt_override(
     })
 }
 
+/// Runs the agent once in the sandbox: exec-stream the invocation,
+/// emit every output chunk and the token usage as events, then fetch
+/// the report the agent wrote — through the sandbox seam, because
+/// scratch is read through the guest's view, never the host's.
+/// One exec, no enforcement — a kernel reads the agent boundary
+/// through [`invoke_to_report`], which drives this.
+///
+/// Every path that ends the streams — clean end or a stream error —
+/// flushes what the seams held, so received output is never lost to a
+/// boundary. The one exception is cancellation, which drops this
+/// future whole: output still in flight is abandoned with the VM,
+/// deliberately (see [`in_fresh_sandbox`]).
 pub async fn invoke(
     ctx: &KernelContext,
     iteration: u32,
