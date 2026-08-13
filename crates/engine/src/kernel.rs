@@ -8,10 +8,9 @@ use async_trait::async_trait;
 use crate::agent::AgentAdapter;
 use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
-use crate::event::{EventSink, EventSinkError};
+use crate::event::{EventEnvelope, EventSink, EventSinkError};
 use crate::notify::{Notifier, NotifierError};
 use crate::pipeline::PipelineKernel;
-use crate::preamble::HumanInput;
 use crate::run::{RunId, RunOutcome};
 use crate::sandbox::{Sandbox, SandboxError};
 use crate::secrets::{SecretEnv, SecretsError};
@@ -52,11 +51,10 @@ pub struct KernelContext {
     /// Consumption retained across pause/resume launches. Like
     /// [`budgets`](Self::budgets), this is run data rather than a seam.
     pub budget_usage: BudgetUsage,
-    /// Present when the host starts this context from a paused run.
-    /// The shared boundary carries only the next iteration and the
-    /// human's words; interpreting a kernel-specific resume point is
-    /// the owning kernel's job.
-    pub resume: Option<RunResume>,
+    /// The replayed Event Log when the host relaunches a paused run.
+    /// It stays in the shared wire vocabulary; the owning kernel
+    /// derives its typed resume point from it.
+    pub replay: Option<Vec<EventEnvelope>>,
     /// The run's cooperative cancel flag — a value like [`budgets`],
     /// not a seventh seam: nothing fakes it, the host fires the same
     /// token a test would. The sandbox bracket is its single
@@ -96,15 +94,6 @@ pub struct KernelContext {
     pub secrets: SecretEnv,
 }
 
-/// The dialect-free part of resuming a kernel. Keeping only the cursor
-/// and shared human conversation here lets each kernel derive any
-/// richer resume point without teaching the host its dialect.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunResume {
-    pub next_iteration: u32,
-    pub human: HumanInput,
-}
-
 /// An infrastructure failure the kernel cannot recover from — distinct
 /// from a run that *ends* badly, which is `RunOutcome::Failed`.
 #[derive(Debug, thiserror::Error)]
@@ -121,6 +110,12 @@ pub enum KernelError {
     /// logic rather than a seam; its failures land here.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+    /// The replayed Event Log does not describe a valid resume point
+    /// for the selected kernel. The detail arrives flattened to a
+    /// string on purpose: each kernel owns its resume dialect, and
+    /// this shared vocabulary imports none of them.
+    #[error("cannot resume run: {0}")]
+    Resume(String),
 }
 
 #[cfg(test)]

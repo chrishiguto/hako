@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use crate::budget::{BudgetUsage, Budgets};
 use crate::cancel::CancelToken;
-use crate::event::RunEvent;
+use crate::event::{EventEnvelope, RunEvent};
 use crate::kernel::KernelContext;
 use crate::run::RunId;
 use crate::secrets::SecretEnv;
@@ -56,6 +56,21 @@ pub fn kinds(events: &[RunEvent]) -> Vec<String> {
         .collect()
 }
 
+/// Wraps synthetic events exactly as the persisted Event Log does, so
+/// replay tests need no daemon or store.
+pub fn event_log(events: impl IntoIterator<Item = RunEvent>) -> Vec<EventEnvelope> {
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(seq, event)| EventEnvelope {
+            seq: seq as u64,
+            run_id: "r1".into(),
+            at: format!("2026-07-13T09:{seq:02}:00Z"),
+            event,
+        })
+        .collect()
+}
+
 /// A [`KernelContext`] with every collaborator defaulted, for
 /// struct-update syntax: `KernelContext { sandbox, ..context() }`
 /// overrides only what a test cares about, and a field the engine
@@ -69,7 +84,7 @@ pub fn context() -> KernelContext {
         run_id: RunId::new("r1"),
         budgets: Budgets::default(),
         budget_usage: BudgetUsage::default(),
-        resume: None,
+        replay: None,
         // A fresh token nobody holds the other end of: never fires.
         cancel: CancelToken::new(),
         verify: VerifyConfig::default(),

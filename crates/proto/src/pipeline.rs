@@ -20,8 +20,10 @@ use crate::report::{Question, ReportStatus};
 
 /// The pipeline kernel's report-stage vocabulary, in intended order.
 /// The four core stages always execute; `deliver` executes only when
-/// its prompt is configured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// its prompt is configured. `Ord` follows declaration order — the
+/// kernel order [`ALL`](Self::ALL) pins — so "before the interrupted
+/// stage" is a comparison, not a positional lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Plan,
@@ -56,6 +58,13 @@ impl Stage {
             Self::Simplify => "simplify",
             Self::Deliver => "deliver",
         }
+    }
+
+    /// [`as_str`](Self::as_str)'s inverse: the stage a wire string
+    /// names. `None` for a string outside the vocabulary, so a log
+    /// consumer can fail naming the stranger instead of guessing.
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|stage| stage.as_str() == name)
     }
 }
 
@@ -252,6 +261,17 @@ impl StageReport {
         }
     }
 
+    /// Questions this stage left for a human.
+    pub fn questions(&self) -> &[Question] {
+        match self {
+            Self::Plan(report) => &report.questions,
+            Self::Implement(report) => &report.questions,
+            Self::Review(report) => &report.questions,
+            Self::Simplify(report) => &report.questions,
+            Self::Deliver(report) => &report.questions,
+        }
+    }
+
     /// This report's own payload as JSON — the inner shape, not the
     /// enum wrapper. What a stage-scoped event embeds: the same bytes a
     /// typed consumer re-parses against this stage's type. Infallible —
@@ -389,6 +409,25 @@ mod tests {
         }
         for (index, stage) in Stage::ALL.into_iter().enumerate() {
             assert_eq!(ordinal(stage), index, "{stage:?}");
+        }
+    }
+
+    /// `from_wire` inverts `as_str` over the whole vocabulary and
+    /// rejects a stranger by name.
+    #[test]
+    fn from_wire_inverts_the_wire_string() {
+        for stage in Stage::ALL {
+            assert_eq!(Stage::from_wire(stage.as_str()), Some(stage));
+        }
+        assert_eq!(Stage::from_wire("ship"), None);
+    }
+
+    /// The derived ordering is kernel order, so `a < b` means "a runs
+    /// before b" — what the ordinal test pins, restated for `Ord`.
+    #[test]
+    fn ordering_follows_kernel_order() {
+        for pair in Stage::ALL.windows(2) {
+            assert!(pair[0] < pair[1], "{pair:?}");
         }
     }
 

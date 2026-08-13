@@ -117,23 +117,9 @@ mod tests {
 
     use super::*;
     use crate::run::PauseReason;
+    use crate::testkit::event_log;
     use proto::event::IterationOutcome;
     use proto::report::ReportStatus;
-
-    /// A fixture log: the events enveloped in order, ids and
-    /// timestamps laid down the way the file sink would.
-    fn log(events: Vec<RunEvent>) -> Vec<EventEnvelope> {
-        events
-            .into_iter()
-            .enumerate()
-            .map(|(seq, event)| EventEnvelope {
-                seq: seq as u64,
-                run_id: "r1".into(),
-                at: format!("2026-07-13T09:{:02}:00Z", seq),
-                event,
-            })
-            .collect()
-    }
 
     fn reported(stage: &str, report: serde_json::Value) -> RunEvent {
         RunEvent::StageReported {
@@ -173,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_full_history_projects_in_one_value() {
-        let events = log(vec![
+        let events = event_log(vec![
             RunEvent::RunStarted {
                 kernel: "pipeline".into(),
                 agent: "claude".into(),
@@ -207,7 +193,7 @@ mod tests {
 
     #[test]
     fn the_last_state_change_and_the_last_report_win() {
-        let events = log(vec![
+        let events = event_log(vec![
             paused(PauseReason::Budget),
             reported("plan", json!({"status": "continue", "summary": "first"})),
             finished(1),
@@ -229,7 +215,7 @@ mod tests {
     /// report carried alongside them.
     #[test]
     fn a_pausing_reports_questions_ride_the_core() {
-        let events = log(vec![
+        let events = event_log(vec![
             reported(
                 "plan",
                 json!({
@@ -261,7 +247,7 @@ mod tests {
             ),
             paused(PauseReason::AwaitingHuman),
         ];
-        let waiting = RunProjection::of(&log(asked.clone())).unwrap();
+        let waiting = RunProjection::of(&event_log(asked.clone())).unwrap();
         assert_eq!(waiting.pending_questions().len(), 1);
         assert_eq!(waiting.pending_questions()[0].id, "q1");
 
@@ -270,13 +256,13 @@ mod tests {
             note: Some("use a".into()),
             extend: None,
         });
-        let resumed = RunProjection::of(&log(answered)).unwrap();
+        let resumed = RunProjection::of(&event_log(answered)).unwrap();
         assert!(resumed.pending_questions().is_empty());
     }
 
     #[test]
     fn a_report_without_the_core_is_an_error_naming_its_seq() {
-        let events = log(vec![
+        let events = event_log(vec![
             RunEvent::IterationStarted { iteration: 1 },
             reported("plan", json!({"weird": true})),
         ]);

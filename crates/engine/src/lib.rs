@@ -43,7 +43,7 @@ pub use event::{
     EventEnvelope, EventSink, EventSinkError, IterationOutcome, OutputStream, RunEvent,
     ScrubbingSink,
 };
-pub use kernel::{Kernel, KernelContext, KernelError, RunResume};
+pub use kernel::{Kernel, KernelContext, KernelError};
 pub use notify::{Notification, Notifier, NotifierError};
 pub use pipeline::PipelineKernel;
 pub use preamble::HumanInput;

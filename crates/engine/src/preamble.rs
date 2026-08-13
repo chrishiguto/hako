@@ -104,12 +104,9 @@ pub struct HumanInput {
 
 /// The human-input section: answers attributed to the questions they
 /// addressed — an answer to a question no longer carried keeps its id
-/// as the handle — then the free-form resume note. `None` when the
-/// human said nothing, so a kernel adds no empty section.
-pub fn human_input(input: &HumanInput) -> Option<String> {
-    if input.answers.is_empty() && input.note.is_none() {
-        return None;
-    }
+/// as the handle — then the free-form resume note. Callers represent
+/// no human input with `None`, never an empty value.
+pub fn human_input(input: &HumanInput) -> String {
     let mut text = format!(
         "{HUMAN_INPUT_HEADING}\n\n\
          The run paused and a human responded; treat their words as \
@@ -126,7 +123,7 @@ pub fn human_input(input: &HumanInput) -> Option<String> {
     if let Some(note) = &input.note {
         let _ = write!(text, "\nNote: {note}\n");
     }
-    Some(text)
+    text
 }
 
 #[cfg(test)]
@@ -191,7 +188,7 @@ mod tests {
     fn answers_are_attributed_to_their_questions() {
         let questions = questions(&[("q1", "sqlite or plain files?"), ("q2", "branch name?")]);
         let answers = answers(&[("q1", "sqlite"), ("q2", "run/1")]);
-        let text = human_input(&input(answers, questions, None)).unwrap();
+        let text = human_input(&input(answers, questions, None));
         assert!(
             text.contains("- Q: sqlite or plain files?\n  A: sqlite\n"),
             "{text}"
@@ -201,22 +198,14 @@ mod tests {
 
     #[test]
     fn an_answer_to_an_unknown_question_keeps_its_id_as_the_handle() {
-        let text = human_input(&input(answers(&[("q9", "yes")]), vec![], None)).unwrap();
+        let text = human_input(&input(answers(&[("q9", "yes")]), vec![], None));
         assert!(text.contains("- Q: q9\n  A: yes\n"), "{text}");
     }
 
     #[test]
     fn a_note_alone_still_forms_the_section() {
-        let text = human_input(&input(vec![], vec![], Some("go with the simplest thing"))).unwrap();
+        let text = human_input(&input(vec![], vec![], Some("go with the simplest thing")));
         assert!(text.starts_with("## Human input"), "{text}");
         assert!(text.contains("Note: go with the simplest thing"), "{text}");
-    }
-
-    #[test]
-    fn a_human_with_nothing_to_say_adds_no_section() {
-        assert_eq!(
-            human_input(&input(vec![], questions(&[("q1", "ignored?")]), None)),
-            None
-        );
     }
 }

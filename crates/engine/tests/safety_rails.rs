@@ -9,11 +9,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use engine::testkit::{
     self, AgentStep, RecordingNotifier, RecordingSink, ScriptedAgent, ScriptedSandbox,
-    StagedSandbox, exec, reports, seeded_repo,
+    StagedSandbox, event_log, exec, reports, seeded_repo,
 };
 use engine::{
     Budgets, FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason,
-    PipelineKernel, RunEvent, RunOutcome, RunResume, TokenUsage, VerifyConfig, Workspace,
+    PipelineKernel, RunEvent, RunOutcome, RunState, TokenUsage, VerifyConfig, Workspace,
 };
 use proto::budget::BudgetKind;
 
@@ -85,6 +85,25 @@ fn no_change_sandbox() -> Arc<ScriptedSandbox> {
     let sandbox = Arc::new(ScriptedSandbox::repeating(exec("working\n", 0)));
     sandbox.write_report_on_exec(br#"{"status":"continue","summary":"no change"}"#);
     sandbox
+}
+
+fn resumed_after_completed_iteration(note: Option<&str>) -> Vec<engine::EventEnvelope> {
+    event_log([
+        RunEvent::IterationStarted { iteration: 1 },
+        RunEvent::IterationFinished {
+            iteration: 1,
+            outcome: IterationOutcome::Completed,
+        },
+        RunEvent::StateChanged {
+            state: RunState::Paused {
+                reason: PauseReason::Budget,
+            },
+        },
+        RunEvent::RunResumed {
+            note: note.map(str::to_owned),
+            extend: None,
+        },
+    ])
 }
 
 #[tokio::test]
@@ -265,14 +284,9 @@ async fn an_extended_iteration_budget_continues_on_resume() {
         },
         VerifyConfig::default(),
     );
-    resumed.resume = Some(RunResume {
-        next_iteration: 2,
-        human: engine::HumanInput {
-            answers: vec![],
-            questions: vec![],
-            note: Some("one more iteration".into()),
-        },
-    });
+    resumed.replay = Some(resumed_after_completed_iteration(Some(
+        "one more iteration",
+    )));
 
     assert_eq!(PipelineKernel.run(resumed).await.unwrap(), RunOutcome::Done);
 }
@@ -323,14 +337,7 @@ async fn a_token_extension_keeps_what_the_run_spent_before_resume() {
         VerifyConfig::default(),
     );
     resumed.budget_usage = usage;
-    resumed.resume = Some(RunResume {
-        next_iteration: 2,
-        human: engine::HumanInput {
-            answers: vec![],
-            questions: vec![],
-            note: None,
-        },
-    });
+    resumed.replay = Some(resumed_after_completed_iteration(None));
 
     assert_eq!(
         PipelineKernel.run(resumed).await.unwrap(),
@@ -386,14 +393,7 @@ async fn a_token_paused_run_resumed_without_extension_pauses_before_booting() {
         VerifyConfig::default(),
     );
     resumed.budget_usage = usage;
-    resumed.resume = Some(RunResume {
-        next_iteration: 2,
-        human: engine::HumanInput {
-            answers: vec![],
-            questions: vec![],
-            note: None,
-        },
-    });
+    resumed.replay = Some(resumed_after_completed_iteration(None));
 
     assert_eq!(
         PipelineKernel.run(resumed).await.unwrap(),
@@ -436,6 +436,9 @@ async fn iteration_timeout_destroys_the_sandbox_and_uses_on_fail() {
     let task = tokio::spawn(PipelineKernel.run(ctx));
     barrier.wait().await;
     tokio::time::advance(Duration::from_secs(31)).await;
+    // Git checkpointing uses a real OS child; wall time must run so
+    // Tokio does not outrun the child while the test clock is paused.
+    tokio::time::resume();
 
     let outcome = tokio::time::timeout(Duration::from_secs(5), task)
         .await

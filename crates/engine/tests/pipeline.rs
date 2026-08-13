@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use engine::testkit::{
     AgentStep, Ran, StagedSandbox, carries_handoff, carries_report_from, carries_verify_feedback,
-    crashes, drive_pipeline, kinds, malformed, omits_report, pipeline_context, reports,
+    crashes, drive_pipeline, event_log, kinds, malformed, omits_report, pipeline_context, reports,
     seeded_repo, skeptic, stage_events, tracked_files, unrefuted,
 };
 use engine::{
-    FailAction, IterationOutcome, Kernel, OnFail, PauseReason, PipelineKernel, PromptsConfig,
-    RunEvent, RunOutcome, RunState, VerifyConfig,
+    FailAction, IterationOutcome, Kernel, KernelError, OnFail, PauseReason, PipelineKernel,
+    PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig,
 };
 use proto::pipeline::Stage;
 
@@ -388,6 +388,145 @@ async fn a_needs_input_stage_pauses_awaiting_the_human() {
         .unwrap();
     assert_eq!(reported["questions"][0]["id"], "q1");
     assert_eq!(ran.sandbox.created(), 1);
+    assert_eq!(
+        &kinds(&ran.events)[ran.events.len() - 2..],
+        ["workspace_checkpointed", "state_changed"]
+    );
+    assert!(
+        tracked_files(ran.workspace.path())
+            .iter()
+            .any(|path| path.starts_with("work-")),
+        "the workspace was checkpointed before the pause"
+    );
+}
+
+#[tokio::test]
+async fn a_replayed_mid_pipeline_pause_resumes_at_the_interrupted_stage() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(
+        workspace.path().to_path_buf(),
+        vec![
+            reports("continue", "built after the answer"),
+            reports("continue", "reviewed"),
+            reports("done", "complete"),
+            unrefuted(),
+        ],
+    ));
+    let (mut ctx, sink) = pipeline_context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        PromptsConfig::default(),
+    );
+    ctx.replay = Some(event_log(vec![
+        RunEvent::RunStarted {
+            kernel: "pipeline".into(),
+            agent: "scripted".into(),
+        },
+        RunEvent::IterationStarted { iteration: 7 },
+        RunEvent::StageStarted {
+            iteration: 7,
+            stage: "plan".into(),
+        },
+        RunEvent::StageReported {
+            iteration: 7,
+            stage: "plan".into(),
+            report: serde_json::json!({
+                "status": "continue",
+                "summary": "planned issue #28",
+                "work_unit": "issue #28"
+            }),
+        },
+        RunEvent::StageStarted {
+            iteration: 7,
+            stage: "implement".into(),
+        },
+        RunEvent::StageReported {
+            iteration: 7,
+            stage: "implement".into(),
+            report: serde_json::json!({
+                "status": "needs_input",
+                "summary": "need a storage choice",
+                "questions": [{"id": "q1", "text": "sqlite or files?"}]
+            }),
+        },
+        RunEvent::StateChanged {
+            state: RunState::Paused {
+                reason: PauseReason::AwaitingHuman,
+            },
+        },
+        RunEvent::QuestionAnswered {
+            question_id: "q1".into(),
+            answer: "sqlite".into(),
+        },
+        RunEvent::RunResumed {
+            note: Some("keep the schema narrow".into()),
+            extend: None,
+        },
+    ]));
+
+    assert_eq!(PipelineKernel.run(ctx).await.unwrap(), RunOutcome::Done);
+    assert!(!sink.events().iter().any(|event| matches!(
+        event,
+        RunEvent::RunStarted { .. } | RunEvent::IterationStarted { iteration: 7 }
+    )));
+    assert_eq!(
+        stage_events(&sink.events()),
+        [
+            ("stage_started".into(), "implement".into()),
+            ("stage_reported".into(), "implement".into()),
+            ("stage_started".into(), "review".into()),
+            ("stage_reported".into(), "review".into()),
+            ("stage_started".into(), "simplify".into()),
+            ("stage_reported".into(), "simplify".into()),
+        ]
+    );
+    let resumed = &sandbox.agent_prompts()[0];
+    assert!(resumed.contains("planned issue #28"), "{resumed}");
+    assert!(
+        resumed.contains("Q: sqlite or files?\n  A: sqlite"),
+        "{resumed}"
+    );
+    assert!(
+        resumed.contains("Note: keep the schema narrow"),
+        "{resumed}"
+    );
+}
+
+/// A replay aimed at a stage this flow never runs — deliver without a
+/// configured prompt — fails the resume loudly before anything boots,
+/// naming the stage instead of silently running an empty pass.
+#[tokio::test]
+async fn a_resume_aimed_at_an_inactive_stage_fails_loudly() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(StagedSandbox::new(workspace.path().to_path_buf(), vec![]));
+    let (mut ctx, _sink) = pipeline_context(
+        workspace.path(),
+        sandbox.clone(),
+        VerifyConfig::default(),
+        PromptsConfig::default(),
+    );
+    ctx.replay = Some(event_log(vec![
+        RunEvent::IterationStarted { iteration: 1 },
+        RunEvent::StageStarted {
+            iteration: 1,
+            stage: "deliver".into(),
+        },
+        RunEvent::StateChanged {
+            state: RunState::Paused {
+                reason: PauseReason::AwaitingHuman,
+            },
+        },
+        RunEvent::RunResumed {
+            note: None,
+            extend: None,
+        },
+    ]));
+
+    let error = PipelineKernel.run(ctx).await.unwrap_err();
+    assert!(matches!(error, KernelError::Resume(_)), "{error}");
+    assert!(error.to_string().contains("deliver"), "{error}");
+    assert_eq!(sandbox.created(), 0);
 }
 
 // ---------- AC 5: checkpoints after mutating stages; scratch excluded ----------

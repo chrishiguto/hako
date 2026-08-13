@@ -5,7 +5,7 @@ use engine::agents::{self, AgentConfigError};
 use engine::workspace;
 use engine::{
     AgentAdapter, Budgets, CancelToken, EventSink, Kernel, KernelContext, Notifier, RunDir,
-    RunEvent, RunResume, RunState, Sandbox, SandboxError, SecretEnv, SecretsError, SecretsProvider,
+    RunEvent, RunState, Sandbox, SandboxError, SecretEnv, SecretsError, SecretsProvider,
 };
 use futures_util::FutureExt;
 use sandbox::SmolvmConfig;
@@ -124,7 +124,7 @@ pub(crate) struct RunLaunch {
     pub(crate) cancel: CancelToken,
     pub(crate) budgets: Budgets,
     pub(crate) budget_usage: engine::BudgetUsage,
-    pub(crate) resume: Option<RunResume>,
+    pub(crate) replay: Option<Vec<engine::EventEnvelope>>,
 }
 
 /// A flow the daemon cannot start, as the submit route answers for
@@ -159,7 +159,7 @@ async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), eng
     // Which mode means what — and mount mode's one-active-run lock,
     // which a resume must take back — is the workspace module's
     // knowledge, not this crate's.
-    let workspace = if launch.resume.is_some() {
+    let workspace = if launch.replay.is_some() {
         workspace::reattach(&launch.flow.workspace, run_id, &clone_dest).await?
     } else {
         workspace::prepare(&launch.flow.workspace, run_id, &clone_dest).await?
@@ -168,7 +168,7 @@ async fn drive_run(runtime: &EngineRuntime, launch: RunLaunch) -> Result<(), eng
         run_id: launch.dir.meta().run_id.clone(),
         budgets: launch.budgets,
         budget_usage: launch.budget_usage,
-        resume: launch.resume,
+        replay: launch.replay,
         cancel: launch.cancel,
         verify: launch.flow.verify,
         prompts: launch.flow.prompts,
