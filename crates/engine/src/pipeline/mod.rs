@@ -94,10 +94,7 @@ impl Kernel for PipelineKernel {
             }
         };
 
-        // The reports the plan stage of the next iteration reads —
-        // remaining work and unfixed findings carrying forward. Empty
-        // for the first iteration; nothing came before it.
-        let mut prior: Vec<StageReport> = Vec::new();
+        let mut last_completed_summary = None;
         let mut plan_feedback: Vec<Feedback> = Vec::new();
         // The commit drift detection measures against. Sampled at the
         // loop boundary rather than threaded up from the stages: any
@@ -119,7 +116,15 @@ impl Kernel for PipelineKernel {
                     Some(point) if !point.starts_iteration => iteration,
                     _ => iteration.saturating_sub(1),
                 };
-                return pause_for_budget(&ctx, announced, budget, last_summary(&prior)).await;
+                return pause_for_budget(
+                    &ctx,
+                    announced,
+                    budget,
+                    last_completed_summary
+                        .as_deref()
+                        .unwrap_or("budget exhausted"),
+                )
+                .await;
             }
             let resume = resumed.take();
             if resume.as_ref().is_none_or(|point| point.starts_iteration) {
@@ -131,12 +136,12 @@ impl Kernel for PipelineKernel {
             match run_iteration(
                 &ctx,
                 iteration,
-                IterationStart::of(resume, &prior, std::mem::take(&mut plan_feedback)),
+                IterationStart::of(resume, std::mem::take(&mut plan_feedback)),
                 deadline,
             )
             .await?
             {
-                IterationEnd::Continue { pass, feedback } => {
+                IterationEnd::Continue { summary, feedback } => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
@@ -152,19 +157,18 @@ impl Kernel for PipelineKernel {
                     };
                     head = new_head;
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
-                        return pause_for_budget(&ctx, iteration, budget, last_summary(&pass))
-                            .await;
+                        return pause_for_budget(&ctx, iteration, budget, &summary).await;
                     }
                     if no_commit_iterations >= DRIFT_LIMIT {
                         return conclude(
                             &ctx,
                             iteration,
                             RunOutcome::Paused(PauseReason::Drift),
-                            Some(last_summary(&pass)),
+                            Some(&summary),
                         )
                         .await;
                     }
-                    prior = pass;
+                    last_completed_summary = Some(summary);
                     plan_feedback = feedback;
                     iteration += 1;
                 }
@@ -227,26 +231,20 @@ impl Kernel for PipelineKernel {
 
 /// Where one pass begins: fresh at plan, or exactly where a replayed
 /// pause interrupted it.
-struct IterationStart<'a> {
-    prior: &'a [StageReport],
+struct IterationStart {
     completed: Vec<StageReport>,
     interrupted: Stage,
     plan_feedback: Vec<Feedback>,
     human: Option<HumanInput>,
 }
 
-impl<'a> IterationStart<'a> {
-    fn of(
-        resume: Option<resume::ResumePoint>,
-        prior: &'a [StageReport],
-        plan_feedback: Vec<Feedback>,
-    ) -> Self {
+impl IterationStart {
+    fn of(resume: Option<resume::ResumePoint>, plan_feedback: Vec<Feedback>) -> Self {
         let (interrupted, completed, human) = resume
             .map_or((Stage::Plan, Vec::new(), None), |point| {
                 (point.stage, point.completed, point.human)
             });
         Self {
-            prior,
             completed,
             interrupted,
             plan_feedback,
@@ -261,10 +259,10 @@ impl<'a> IterationStart<'a> {
 enum IterationEnd {
     /// The iteration counts as verified progress and the run goes on:
     /// a full pass, or a `done` claim the skeptic refuted. Carries the
-    /// reports the next plan reads and the feedback it must answer —
-    /// the skeptic's findings, or nothing.
+    /// last summary for operator-facing pauses and any explicitly
+    /// scoped feedback the next plan must answer.
     Continue {
-        pass: Vec<StageReport>,
+        summary: String,
         feedback: Vec<Feedback>,
     },
     /// A `done` claim cleared its verify gate and survived the skeptic
@@ -289,36 +287,26 @@ enum IterationEnd {
 
 /// Drives one iteration through the stages, entering at the start's
 /// stage — the run loop has already checked it is active in this
-/// flow. Plan opens a fresh unit, so it reads the previous
-/// iteration's reports and the feedback the loop carried in; every
-/// later stage reads what this iteration produced before it. A
-/// resumed run's human input reaches the first stage of this
-/// iteration and no other.
+/// flow. Plan opens a fresh unit from the Workspace and the explicitly
+/// scoped feedback the loop carried in; every later stage reads what
+/// this iteration produced before it. A resumed run's human input
+/// reaches the first stage of this iteration and no other.
 async fn run_iteration(
     ctx: &KernelContext,
     iteration: u32,
-    start: IterationStart<'_>,
+    start: IterationStart,
     deadline: tokio::time::Instant,
 ) -> Result<IterationEnd, KernelError> {
     let IterationStart {
-        prior,
         mut completed,
         interrupted,
         mut plan_feedback,
         mut human,
     } = start;
     for stage in active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted) {
-        // Plan is always the first active stage, so it appears only
-        // as the opener of a full pass — a resume never re-enters at
-        // plan with reports completed ahead of it. One predicate per
-        // hand-off therefore covers both entries: plan reads the
-        // previous iteration and carries the loop's feedback, every
-        // other stage reads this pass.
-        let handoff = if stage == Stage::Plan {
-            prior
-        } else {
-            completed.as_slice()
-        };
+        // Reports are hand-off state for this iteration only. Plan
+        // starts with none; every later stage reads this pass.
+        let handoff = completed.as_slice();
         let feedback = if stage == Stage::Plan {
             std::mem::take(&mut plan_feedback)
         } else {
@@ -342,12 +330,12 @@ async fn run_iteration(
                     match skeptic::judge(ctx, iteration, &claim, deadline).await? {
                         Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
                         Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
-                            // A refuted claim still advanced the work, so
-                            // the next plan reads it alongside the
-                            // findings.
+                            // The claim becomes history with the rest of
+                            // the pass; only the skeptic's findings have
+                            // an explicit lifetime in the next plan.
                             completed.push(claim);
                             IterationEnd::Continue {
-                                pass: completed,
+                                summary: last_summary(&completed).to_owned(),
                                 feedback: vec![Feedback::SkepticRefuted { findings }],
                             }
                         }
@@ -366,7 +354,7 @@ async fn run_iteration(
         }
     }
     Ok(IterationEnd::Continue {
-        pass: completed,
+        summary: last_summary(&completed).to_owned(),
         feedback: Vec::new(),
     })
 }

@@ -8,8 +8,8 @@ lay out how to carry it out — not to write the code yet.
   holds a task tracker, backlog, or issue list, pick the next ready
   item; otherwise infer the most valuable next step from the code and
   its history.
-- If earlier stages left remaining work or unresolved findings, weigh
-  those first — they are reported back to you above.
+- If the completion skeptic left unresolved findings, weigh those
+  first — they are reported back to you above.
 - Keep the unit small enough to implement, review, and simplify in one
   pass.
 
