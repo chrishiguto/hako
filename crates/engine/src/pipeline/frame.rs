@@ -97,8 +97,7 @@ fn header(stage: Stage) -> String {
 
 /// Earlier stages' reports from this iteration, each fenced so its
 /// agent-authored text cannot break out of its block. `None` when the
-/// handoff is empty — the kernel hands every plan stage an empty one —
-/// so no empty section is added.
+/// handoff is empty, so no empty section is added.
 fn handoff_section(handoff: &[StageReport]) -> Option<String> {
     if handoff.is_empty() {
         return None;
