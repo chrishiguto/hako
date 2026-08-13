@@ -11,6 +11,12 @@ use serde_json::Value;
 
 const DAEMON_TOKEN: &str = "hako-e2e-local-token";
 const RESULT: &str = "hako end-to-end smoke passed\n";
+// One source for the flow's verify checks and the assertion that every
+// one of them gated the done claim.
+const CHECKS: [&str; 2] = [
+    r"printf 'hako end-to-end smoke passed\n' | cmp -s - SMOKE_RESULT.txt",
+    "git diff --check",
+];
 
 pub fn run() {
     let image = required("HAKO_E2E_IMAGE");
@@ -102,6 +108,9 @@ fn seed_repo(root: &Path) -> PathBuf {
 }
 
 fn flow_for(repo: &Path) -> String {
+    // Rust's debug escaping (`\\`, `\"`) is valid TOML basic-string
+    // escaping for these commands.
+    let checks = CHECKS.map(|check| format!("  {check:?},")).join("\n");
     format!(
         r#"[loop]
 kernel = "pipeline"
@@ -119,8 +128,7 @@ iteration_timeout = "15m"
 
 [verify]
 checks = [
-  "printf 'hako end-to-end smoke passed\\n' | cmp -s - SMOKE_RESULT.txt",
-  "git diff --check",
+{checks}
 ]
 on_fail = {{ retries = 0, then = "fail" }}
 
@@ -175,19 +183,27 @@ fn assert_verified_done(events: &[Value], workspace: &Path) {
         );
     }
 
+    // The kernel verifies every mutating stage and every done claim, so
+    // the number of check events depends on which path the run took.
+    // The invariant is that no check ever went red and each configured
+    // check gated the run at least once.
     let checks: Vec<&Value> = events
         .iter()
         .filter(|event| event["type"] == "verify_check_finished")
         .collect();
-    assert_eq!(
-        checks.len(),
-        2,
-        "missing Verify Check:\n{}",
-        event_trace(events)
-    );
     assert!(
         checks.iter().all(|event| event["passed"] == true),
         "a Verify Check failed:\n{}",
+        event_trace(events)
+    );
+    let commands: BTreeSet<&str> = checks
+        .iter()
+        .filter_map(|event| event["command"].as_str())
+        .collect();
+    assert_eq!(
+        commands,
+        BTreeSet::from(CHECKS),
+        "a configured Verify Check never ran:\n{}",
         event_trace(events)
     );
     assert!(
