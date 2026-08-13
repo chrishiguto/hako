@@ -1,11 +1,15 @@
 //! Pipeline-owned replay of the dialect-free Event Log into the exact
 //! stage, typed reports, and human input needed to resume in place.
+//! One forward fold reduces the whole history — the same shape as the
+//! shared [`RunProjection`](crate::projection::RunProjection), applied
+//! to this kernel's dialect.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use proto::event::{EventEnvelope, RunEvent};
 use proto::pipeline::{Stage, StageReport};
-use proto::report::{Answer, Question};
+use proto::report::Answer;
 
 use crate::preamble::HumanInput;
 
@@ -25,51 +29,127 @@ pub(super) enum Position {
 
 impl ResumePoint {
     pub fn from_events(events: &[EventEnvelope]) -> Result<Self, ResumeError> {
-        let resumed_at = events
-            .iter()
-            .rposition(|envelope| matches!(envelope.event, RunEvent::RunResumed { .. }))
-            .ok_or(ResumeError::MissingResume)?;
-        let paused_at = events[..resumed_at]
-            .iter()
-            .rposition(|envelope| {
-                matches!(
-                    envelope.event,
-                    RunEvent::StateChanged {
-                        state: proto::run::RunState::Paused { .. }
-                    }
-                )
-            })
-            .ok_or(ResumeError::MissingPause)?;
-        let started_at = events[..paused_at]
-            .iter()
-            .rposition(|envelope| matches!(envelope.event, RunEvent::IterationStarted { .. }))
-            .ok_or(ResumeError::MissingIteration)?;
-        let RunEvent::IterationStarted { iteration } = events[started_at].event else {
-            unreachable!("the search selected an iteration_started event")
-        };
+        let mut replay = Replay::default();
+        let mut resumed = None;
+        for envelope in events {
+            replay.apply(envelope)?;
+            // The point is read at the last resume command; whatever a
+            // log carries after it never rewrites what the command saw.
+            if matches!(envelope.event, RunEvent::RunResumed { .. }) {
+                resumed = Some(replay.clone());
+            }
+        }
+        resumed.ok_or(ResumeError::MissingResume)?.into_point()
+    }
+}
 
-        let iteration_finished = events[started_at + 1..=paused_at].iter().any(|envelope| {
-            matches!(
-                envelope.event,
-                RunEvent::IterationFinished {
-                    iteration: finished,
-                    ..
-                } if finished == iteration
-            )
-        });
-        let (iteration, position, questions) = if iteration_finished {
+/// The fold's state: what one pass over the log knows at each event.
+/// Reports stay raw here — only the window the final resume actually
+/// reads is parsed, so an old iteration's corrupt report cannot fail a
+/// resume that never touches it.
+#[derive(Default, Clone)]
+struct Replay<'a> {
+    /// The last announced iteration, and whether an
+    /// `iteration_finished` closed it.
+    iteration: Option<u32>,
+    finished: bool,
+    /// The last stage the current iteration started.
+    interrupted: Option<Stage>,
+    /// The latest report each stage of the current iteration emitted —
+    /// a verify retry's report supersedes its predecessor's.
+    reports: BTreeMap<Stage, (u64, &'a serde_json::Value)>,
+    /// Human input no stage has read yet. An answer or note is
+    /// delivered by the first stage that starts after it, so whatever
+    /// is still pending at the resume belongs to the stage that
+    /// re-runs — across as many back-to-back pauses as it takes.
+    answers: BTreeMap<String, String>,
+    note: Option<String>,
+    /// Whether any pause preceded the resume — a log without one has
+    /// nothing to resume from.
+    paused: bool,
+}
+
+impl<'a> Replay<'a> {
+    fn apply(&mut self, envelope: &'a EventEnvelope) -> Result<(), ResumeError> {
+        match &envelope.event {
+            RunEvent::IterationStarted { iteration } => {
+                self.iteration = Some(*iteration);
+                self.finished = false;
+                self.interrupted = None;
+                self.reports.clear();
+            }
+            RunEvent::IterationFinished { iteration, .. } if self.iteration == Some(*iteration) => {
+                self.finished = true;
+            }
+            RunEvent::StageStarted { iteration, stage } if self.iteration == Some(*iteration) => {
+                self.interrupted = Some(stage_named(envelope.seq, stage)?);
+                // The stage that just started read every pending
+                // answer and note; nothing stays pending behind it.
+                self.answers.clear();
+                self.note = None;
+            }
+            RunEvent::StageReported {
+                iteration,
+                stage,
+                report,
+            } if self.iteration == Some(*iteration) => {
+                self.reports
+                    .insert(stage_named(envelope.seq, stage)?, (envelope.seq, report));
+            }
+            RunEvent::StateChanged {
+                state: proto::run::RunState::Paused { .. },
+            } => self.paused = true,
+            RunEvent::QuestionAnswered {
+                question_id,
+                answer,
+            } => {
+                self.answers.insert(question_id.clone(), answer.clone());
+            }
+            // The latest words win, but a silent resume does not erase
+            // an earlier note still awaiting its stage.
+            RunEvent::RunResumed {
+                note: Some(note), ..
+            } => self.note = Some(note.clone()),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn into_point(self) -> Result<ResumePoint, ResumeError> {
+        if !self.paused {
+            return Err(ResumeError::MissingPause);
+        }
+        let Some(iteration) = self.iteration else {
+            return Err(ResumeError::MissingIteration);
+        };
+        let (iteration, position, questions) = if self.finished {
             (
                 iteration.saturating_add(1),
                 Position::NewIteration,
                 Vec::new(),
             )
         } else {
-            let interrupted = last_started_stage(&events[started_at + 1..=paused_at], iteration)?
-                .unwrap_or(Stage::Plan);
-            let completed =
-                completed_reports(&events[started_at + 1..=paused_at], iteration, interrupted)?;
-            let questions =
-                interrupted_questions(&events[started_at + 1..=paused_at], iteration, interrupted)?;
+            // Every mid-pipeline pause lands after its stage started;
+            // plan is the can't-happen fallback that keeps the pass
+            // whole rather than a panic.
+            let interrupted = self.interrupted.unwrap_or(Stage::Plan);
+            let mut completed = Vec::new();
+            let mut questions = Vec::new();
+            for (&stage, &(seq, report)) in &self.reports {
+                match stage.cmp(&interrupted) {
+                    Ordering::Less => completed.push(parse_report(seq, stage, report)?),
+                    // The interrupted stage's own report is not part of
+                    // the hand-off — the stage re-runs — but its
+                    // questions are what the answers attribute to.
+                    Ordering::Equal => {
+                        questions = parse_report(seq, stage, report)?.questions().to_vec();
+                    }
+                    // A stage past the interrupted one cannot have
+                    // reported in a well-formed log; a stray is noise,
+                    // not hand-off material.
+                    Ordering::Greater => {}
+                }
+            }
             (
                 iteration,
                 Position::Interrupted {
@@ -79,118 +159,24 @@ impl ResumePoint {
                 questions,
             )
         };
-        let human = human_input(&events[paused_at + 1..=resumed_at], questions);
-
-        Ok(Self {
+        let human = (!self.answers.is_empty() || self.note.is_some()).then(|| HumanInput {
+            answers: self
+                .answers
+                .into_iter()
+                .map(|(question_id, answer)| Answer {
+                    question_id,
+                    answer,
+                })
+                .collect(),
+            questions,
+            note: self.note,
+        });
+        Ok(ResumePoint {
             iteration,
             position,
             human,
         })
     }
-}
-
-fn last_started_stage(
-    events: &[EventEnvelope],
-    iteration: u32,
-) -> Result<Option<Stage>, ResumeError> {
-    events
-        .iter()
-        .rev()
-        .find_map(|envelope| match &envelope.event {
-            RunEvent::StageStarted {
-                iteration: event_iteration,
-                stage,
-            } if *event_iteration == iteration => Some(stage_named(envelope.seq, stage)),
-            _ => None,
-        })
-        .transpose()
-}
-
-fn completed_reports(
-    events: &[EventEnvelope],
-    iteration: u32,
-    interrupted: Stage,
-) -> Result<Vec<StageReport>, ResumeError> {
-    let interrupted_position = stage_position(interrupted);
-    let mut reports = BTreeMap::new();
-    for envelope in events {
-        let RunEvent::StageReported {
-            iteration: event_iteration,
-            stage,
-            report,
-        } = &envelope.event
-        else {
-            continue;
-        };
-        if *event_iteration != iteration {
-            continue;
-        }
-        let stage = stage_named(envelope.seq, stage)?;
-        if stage_position(stage) >= interrupted_position {
-            continue;
-        }
-        reports.insert(
-            stage_position(stage),
-            parse_report(envelope.seq, stage, report)?,
-        );
-    }
-    Ok(reports.into_values().collect())
-}
-
-fn interrupted_questions(
-    events: &[EventEnvelope],
-    iteration: u32,
-    interrupted: Stage,
-) -> Result<Vec<Question>, ResumeError> {
-    for envelope in events.iter().rev() {
-        let RunEvent::StageReported {
-            iteration: event_iteration,
-            stage,
-            report,
-        } = &envelope.event
-        else {
-            continue;
-        };
-        if *event_iteration == iteration && stage_named(envelope.seq, stage)? == interrupted {
-            return Ok(parse_report(envelope.seq, interrupted, report)?
-                .questions()
-                .to_vec());
-        }
-    }
-    Ok(Vec::new())
-}
-
-fn human_input(events: &[EventEnvelope], questions: Vec<Question>) -> Option<HumanInput> {
-    let mut answers = BTreeMap::new();
-    let mut note = None;
-    for envelope in events {
-        match &envelope.event {
-            RunEvent::QuestionAnswered {
-                question_id,
-                answer,
-            } => {
-                answers.insert(question_id.clone(), answer.clone());
-            }
-            RunEvent::RunResumed {
-                note: resumed_note, ..
-            } => note.clone_from(resumed_note),
-            _ => {}
-        }
-    }
-    if answers.is_empty() && note.is_none() {
-        return None;
-    }
-    Some(HumanInput {
-        answers: answers
-            .into_iter()
-            .map(|(question_id, answer)| Answer {
-                question_id,
-                answer,
-            })
-            .collect(),
-        questions,
-        note,
-    })
 }
 
 fn parse_report(
@@ -207,20 +193,10 @@ fn parse_report(
 }
 
 fn stage_named(seq: u64, name: &str) -> Result<Stage, ResumeError> {
-    Stage::ALL
-        .into_iter()
-        .find(|stage| stage.as_str() == name)
-        .ok_or_else(|| ResumeError::UnknownStage {
-            seq,
-            name: name.to_owned(),
-        })
-}
-
-fn stage_position(stage: Stage) -> usize {
-    Stage::ALL
-        .iter()
-        .position(|candidate| *candidate == stage)
-        .expect("every stage is in Stage::ALL")
+    Stage::from_wire(name).ok_or_else(|| ResumeError::UnknownStage {
+        seq,
+        name: name.to_owned(),
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -235,4 +211,265 @@ pub(super) enum ResumeError {
     UnknownStage { seq: u64, name: String },
     #[error("stage report at seq {seq} is invalid: {detail}")]
     InvalidReport { seq: u64, detail: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::run::{PauseReason, RunState};
+    use crate::testkit::event_log;
+
+    fn started(iteration: u32, stage: &str) -> RunEvent {
+        RunEvent::StageStarted {
+            iteration,
+            stage: stage.into(),
+        }
+    }
+
+    fn reported(iteration: u32, stage: &str, report: serde_json::Value) -> RunEvent {
+        RunEvent::StageReported {
+            iteration,
+            stage: stage.into(),
+            report,
+        }
+    }
+
+    fn paused(reason: PauseReason) -> RunEvent {
+        RunEvent::StateChanged {
+            state: RunState::Paused { reason },
+        }
+    }
+
+    fn answered(question_id: &str, answer: &str) -> RunEvent {
+        RunEvent::QuestionAnswered {
+            question_id: question_id.into(),
+            answer: answer.into(),
+        }
+    }
+
+    fn resumed(note: Option<&str>) -> RunEvent {
+        RunEvent::RunResumed {
+            note: note.map(str::to_owned),
+            extend: None,
+        }
+    }
+
+    /// One iteration interrupted at implement: plan's report done, a
+    /// question asked, the human's words on the log.
+    fn interrupted_at_implement() -> Vec<RunEvent> {
+        vec![
+            RunEvent::IterationStarted { iteration: 7 },
+            started(7, "plan"),
+            reported(
+                7,
+                "plan",
+                json!({"status": "continue", "summary": "planned", "work_unit": "issue #28"}),
+            ),
+            started(7, "implement"),
+            reported(
+                7,
+                "implement",
+                json!({
+                    "status": "needs_input",
+                    "summary": "need a storage choice",
+                    "questions": [{"id": "q1", "text": "sqlite or files?"}]
+                }),
+            ),
+            paused(PauseReason::AwaitingHuman),
+        ]
+    }
+
+    #[track_caller]
+    fn point(events: Vec<RunEvent>) -> ResumePoint {
+        ResumePoint::from_events(&event_log(events)).unwrap()
+    }
+
+    /// The acceptance shape: answers and the note reach the
+    /// interrupted stage, attributed to its questions, with the
+    /// completed reports carried in kernel order.
+    #[test]
+    fn an_interrupted_pause_carries_reports_answers_and_note() {
+        let mut events = interrupted_at_implement();
+        events.extend([answered("q1", "sqlite"), resumed(Some("keep it narrow"))]);
+        let point = point(events);
+        assert_eq!(point.iteration, 7);
+        let Position::Interrupted { stage, completed } = &point.position else {
+            panic!("expected an interrupted position");
+        };
+        assert_eq!(*stage, Stage::Implement);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].stage(), Stage::Plan);
+        let human = point.human.unwrap();
+        assert_eq!(human.answers.len(), 1);
+        assert_eq!(human.answers[0].question_id, "q1");
+        assert_eq!(human.questions.len(), 1);
+        assert_eq!(human.note.as_deref(), Some("keep it narrow"));
+    }
+
+    /// A resume that never reached its stage — an exhausted budget
+    /// pausing the run again at the loop top — must not swallow the
+    /// answers or the note; they are still pending for the stage that
+    /// finally re-runs.
+    #[test]
+    fn answers_survive_a_pause_that_lands_before_the_stage_reruns() {
+        let mut events = interrupted_at_implement();
+        events.extend([
+            answered("q1", "sqlite"),
+            resumed(Some("keep it narrow")),
+            paused(PauseReason::Budget),
+            resumed(None),
+        ]);
+        let point = point(events);
+        let Position::Interrupted { stage, .. } = &point.position else {
+            panic!("expected an interrupted position");
+        };
+        assert_eq!(*stage, Stage::Implement);
+        let human = point.human.unwrap();
+        assert_eq!(human.answers[0].answer, "sqlite");
+        assert_eq!(human.note.as_deref(), Some("keep it narrow"));
+    }
+
+    /// Answers a stage already read are history: only input given
+    /// since that stage started rides the next resume.
+    #[test]
+    fn a_stage_that_ran_consumes_the_answers_behind_it() {
+        let mut events = interrupted_at_implement();
+        events.extend([
+            answered("q1", "sqlite"),
+            resumed(None),
+            // The interrupted stage re-ran with q1's answer and asked
+            // something new.
+            started(7, "implement"),
+            reported(
+                7,
+                "implement",
+                json!({
+                    "status": "needs_input",
+                    "summary": "need a branch name",
+                    "questions": [{"id": "q2", "text": "branch?"}]
+                }),
+            ),
+            paused(PauseReason::AwaitingHuman),
+            answered("q2", "run/7"),
+            resumed(None),
+        ]);
+        let human = point(events).human.unwrap();
+        assert_eq!(human.answers.len(), 1);
+        assert_eq!(human.answers[0].question_id, "q2");
+        assert_eq!(human.questions.len(), 1);
+        assert_eq!(human.questions[0].id, "q2");
+    }
+
+    /// Re-answering before the resume is a correction: the latest
+    /// answer wins and the question rides exactly once.
+    #[test]
+    fn the_latest_answer_to_a_question_wins() {
+        let mut events = interrupted_at_implement();
+        events.extend([
+            answered("q1", "sqlite"),
+            answered("q1", "plain files"),
+            resumed(None),
+        ]);
+        let human = point(events).human.unwrap();
+        assert_eq!(human.answers.len(), 1);
+        assert_eq!(human.answers[0].answer, "plain files");
+    }
+
+    /// A verify retry's report supersedes its predecessor's, so the
+    /// hand-off carries each completed stage exactly once, latest
+    /// words first-class.
+    #[test]
+    fn the_latest_report_per_stage_rides_the_handoff() {
+        let events = vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            started(1, "plan"),
+            reported(1, "plan", json!({"status": "continue", "summary": "first"})),
+            started(1, "plan"),
+            reported(
+                1,
+                "plan",
+                json!({"status": "continue", "summary": "second"}),
+            ),
+            started(1, "implement"),
+            paused(PauseReason::VerifyFailed),
+            resumed(None),
+        ];
+        let Position::Interrupted { completed, .. } = point(events).position else {
+            panic!("expected an interrupted position");
+        };
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].summary(), "second");
+    }
+
+    /// A pause after `iteration_finished` resumes at the next
+    /// iteration's top, nothing completed and nothing interrupted.
+    #[test]
+    fn a_finished_iteration_resumes_at_the_next_one() {
+        let events = vec![
+            RunEvent::IterationStarted { iteration: 3 },
+            RunEvent::IterationFinished {
+                iteration: 3,
+                outcome: proto::event::IterationOutcome::Completed,
+            },
+            paused(PauseReason::Budget),
+            resumed(Some("one more")),
+        ];
+        let point = point(events);
+        assert_eq!(point.iteration, 4);
+        assert!(matches!(point.position, Position::NewIteration));
+        assert_eq!(point.human.unwrap().note.as_deref(), Some("one more"));
+    }
+
+    #[test]
+    fn a_log_without_a_resume_or_pause_or_iteration_cannot_seed_a_point() {
+        let no_resume = event_log(interrupted_at_implement());
+        assert!(matches!(
+            ResumePoint::from_events(&no_resume),
+            Err(ResumeError::MissingResume)
+        ));
+        let no_pause = event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            resumed(None),
+        ]);
+        assert!(matches!(
+            ResumePoint::from_events(&no_pause),
+            Err(ResumeError::MissingPause)
+        ));
+        let no_iteration = event_log(vec![paused(PauseReason::Budget), resumed(None)]);
+        assert!(matches!(
+            ResumePoint::from_events(&no_iteration),
+            Err(ResumeError::MissingIteration)
+        ));
+    }
+
+    /// The fold fails loudly, naming the offending line: an unknown
+    /// stage or an unparsable report in the resumed window is
+    /// corruption, not something to guess around.
+    #[test]
+    fn a_corrupt_window_fails_naming_its_seq() {
+        let unknown = event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            started(1, "ship"),
+            paused(PauseReason::AwaitingHuman),
+            resumed(None),
+        ]);
+        assert!(matches!(
+            ResumePoint::from_events(&unknown),
+            Err(ResumeError::UnknownStage { seq: 1, .. })
+        ));
+        let invalid = event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            started(1, "plan"),
+            reported(1, "plan", json!({"weird": true})),
+            started(1, "implement"),
+            paused(PauseReason::AwaitingHuman),
+            resumed(None),
+        ]);
+        assert!(matches!(
+            ResumePoint::from_events(&invalid),
+            Err(ResumeError::InvalidReport { seq: 2, .. })
+        ));
+    }
 }
