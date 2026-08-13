@@ -131,10 +131,12 @@ impl Kernel for OneIterationKernel {
             .notify(&Notification {
                 run_id: ctx.run_id.clone(),
                 reason: PauseReason::AwaitingHuman,
-                summary: report["summary"]
-                    .as_str()
-                    .expect("the test's report carries a summary")
-                    .to_owned(),
+                summary: Some(
+                    report["summary"]
+                        .as_str()
+                        .expect("the test's report carries a summary")
+                        .to_owned(),
+                ),
             })
             .await?;
         Ok(RunOutcome::Paused(PauseReason::AwaitingHuman))

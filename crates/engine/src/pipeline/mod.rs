@@ -24,7 +24,7 @@ pub(crate) mod skeptic;
 
 use async_trait::async_trait;
 
-use crate::ending::{conclude, pause_for_budget};
+use crate::ending::{Ending, conclude, pause_for_budget};
 use crate::event::{IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
@@ -113,9 +113,7 @@ impl Kernel for PipelineKernel {
                     &ctx,
                     announced,
                     budget,
-                    last_completed_summary
-                        .as_deref()
-                        .unwrap_or("budget exhausted"),
+                    last_completed_summary.as_deref(),
                 )
                 .await;
             }
@@ -151,14 +149,16 @@ impl Kernel for PipelineKernel {
                     };
                     head = new_head;
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
-                        return pause_for_budget(&ctx, iteration, budget, &summary).await;
+                        return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
                     }
                     if no_commit_iterations >= DRIFT_LIMIT {
                         return conclude(
                             &ctx,
                             iteration,
-                            RunOutcome::Paused(PauseReason::Drift),
-                            Some(&summary),
+                            Ending::Paused {
+                                reason: PauseReason::Drift,
+                                summary: Some(&summary),
+                            },
                         )
                         .await;
                     }
@@ -171,11 +171,18 @@ impl Kernel for PipelineKernel {
                 // finished. Only a full pass or a hard failure emits
                 // one.
                 IterationEnd::Done => {
-                    return conclude(&ctx, iteration, RunOutcome::Done, None).await;
+                    return conclude(&ctx, iteration, Ending::Done).await;
                 }
                 IterationEnd::Pause { reason, summary } => {
-                    return conclude(&ctx, iteration, RunOutcome::Paused(reason), Some(&summary))
-                        .await;
+                    return conclude(
+                        &ctx,
+                        iteration,
+                        Ending::Paused {
+                            reason,
+                            summary: Some(&summary),
+                        },
+                    )
+                    .await;
                 }
                 IterationEnd::Fail => {
                     ctx.events
@@ -184,7 +191,7 @@ impl Kernel for PipelineKernel {
                             outcome: IterationOutcome::Failed,
                         })
                         .await?;
-                    return conclude(&ctx, iteration, RunOutcome::Failed, None).await;
+                    return conclude(&ctx, iteration, Ending::Failed).await;
                 }
                 IterationEnd::TimedOut => {
                     ctx.events
@@ -204,11 +211,14 @@ impl Kernel for PipelineKernel {
                     // the human reading the pause must see a timeout,
                     // not a failed check.
                     if timeout_failures > ctx.verify.on_fail.retries {
-                        let outcome = match ctx.verify.on_fail.then {
-                            FailAction::Pause => RunOutcome::Paused(PauseReason::Timeout),
-                            FailAction::Fail => RunOutcome::Failed,
+                        let ending = match ctx.verify.on_fail.then {
+                            FailAction::Pause => Ending::Paused {
+                                reason: PauseReason::Timeout,
+                                summary: Some(&summary),
+                            },
+                            FailAction::Fail => Ending::Failed,
                         };
-                        return conclude(&ctx, iteration, outcome, Some(&summary)).await;
+                        return conclude(&ctx, iteration, ending).await;
                     }
                     iteration += 1;
                     plan_feedback = vec![Feedback::IterationTimedOut {
@@ -216,7 +226,7 @@ impl Kernel for PipelineKernel {
                     }];
                 }
                 IterationEnd::Cancelled => {
-                    return conclude(&ctx, iteration, RunOutcome::Cancelled, None).await;
+                    return conclude(&ctx, iteration, Ending::Cancelled).await;
                 }
             }
         }

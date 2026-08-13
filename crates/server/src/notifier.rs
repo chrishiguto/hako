@@ -62,10 +62,13 @@ struct SlackPayload<'a> {
 impl Notifier for WebhookNotifier {
     async fn notify(&self, notification: &Notification) -> Result<(), NotifierError> {
         let reason = notification.reason.as_str();
-        let message = format!(
-            "hako run {} paused ({reason}): {}",
-            notification.run_id, notification.summary
-        );
+        let message = match &notification.summary {
+            Some(summary) => format!(
+                "hako run {} paused ({reason}): {summary}",
+                notification.run_id
+            ),
+            None => format!("hako run {} paused ({reason})", notification.run_id),
+        };
         let request = self.client.post(self.target.clone());
         let request = match self.format {
             NotifyFormat::Text => request

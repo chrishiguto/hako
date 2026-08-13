@@ -12,7 +12,7 @@ use proto::flow::KernelName;
 use proto::report::ReportStatus;
 
 use crate::budget::TokenUsage;
-use crate::ending::{conclude, pause_for_budget};
+use crate::ending::{Ending, conclude, pause_for_budget};
 use crate::event::{EventEnvelope, IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
@@ -45,13 +45,7 @@ impl Kernel for FanoutKernel {
         let mut feedback = Vec::new();
         loop {
             if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations) {
-                return pause_for_budget(
-                    &ctx,
-                    iteration.saturating_sub(1),
-                    budget,
-                    "fanout budget exhausted",
-                )
-                .await;
+                return pause_for_budget(&ctx, iteration.saturating_sub(1), budget, None).await;
             }
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
@@ -67,7 +61,7 @@ impl Kernel for FanoutKernel {
                     child_iterations += children;
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations)
                     {
-                        return pause_for_budget(&ctx, iteration, budget, &summary).await;
+                        return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
                     }
                     feedback.clear();
                     iteration += 1;
@@ -82,12 +76,19 @@ impl Kernel for FanoutKernel {
                     feedback = findings;
                     iteration += 1;
                 }
-                IterationEnd::Done { summary } => {
-                    return conclude(&ctx, iteration, RunOutcome::Done, Some(&summary)).await;
+                IterationEnd::Done => {
+                    return conclude(&ctx, iteration, Ending::Done).await;
                 }
                 IterationEnd::Pause { reason, summary } => {
-                    return conclude(&ctx, iteration, RunOutcome::Paused(reason), Some(&summary))
-                        .await;
+                    return conclude(
+                        &ctx,
+                        iteration,
+                        Ending::Paused {
+                            reason,
+                            summary: Some(&summary),
+                        },
+                    )
+                    .await;
                 }
                 IterationEnd::Fail => {
                     ctx.events
@@ -96,7 +97,7 @@ impl Kernel for FanoutKernel {
                             outcome: IterationOutcome::Failed,
                         })
                         .await?;
-                    return conclude(&ctx, iteration, RunOutcome::Failed, None).await;
+                    return conclude(&ctx, iteration, Ending::Failed).await;
                 }
                 IterationEnd::PlanTimedOut => {
                     ctx.events
@@ -108,13 +109,15 @@ impl Kernel for FanoutKernel {
                     return conclude(
                         &ctx,
                         iteration,
-                        RunOutcome::Paused(PauseReason::Timeout),
-                        Some("fanout plan timed out"),
+                        Ending::Paused {
+                            reason: PauseReason::Timeout,
+                            summary: Some("fanout plan timed out"),
+                        },
                     )
                     .await;
                 }
                 IterationEnd::Cancelled => {
-                    return conclude(&ctx, iteration, RunOutcome::Cancelled, None).await;
+                    return conclude(&ctx, iteration, Ending::Cancelled).await;
                 }
             }
         }
@@ -135,7 +138,7 @@ enum IterationEnd {
     Refuted { findings: Vec<String> },
     /// A `done` claim cleared its verify gate and survived the
     /// skeptic — the run is complete.
-    Done { summary: String },
+    Done,
     /// The run pauses now — a pausing status, a failed verify gate on
     /// a claim, or a timed-out skeptic.
     Pause {
@@ -176,9 +179,7 @@ async fn run_iteration(
                 });
             }
             Ok(match judge_done(ctx, iteration, &report, deadline).await? {
-                Bracketed::Finished(SkepticEnd::Unrefuted) => IterationEnd::Done {
-                    summary: report.summary,
-                },
+                Bracketed::Finished(SkepticEnd::Unrefuted) => IterationEnd::Done,
                 Bracketed::Finished(SkepticEnd::Refuted(findings)) => {
                     IterationEnd::Refuted { findings }
                 }
