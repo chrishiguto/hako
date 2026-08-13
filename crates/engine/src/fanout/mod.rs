@@ -43,7 +43,7 @@ impl Kernel for FanoutKernel {
                         agent: ctx.agent.name().into(),
                     })
                     .await?;
-                ResumeState::default()
+                ResumeState::fresh()
             }
         };
         let mut feedback = Vec::new();
@@ -69,11 +69,17 @@ impl Kernel for FanoutKernel {
                         })
                         .await?;
                     child_iterations += children;
+                    notification_summary = Some(summary);
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations)
                     {
-                        return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
+                        return pause_for_budget(
+                            &ctx,
+                            iteration,
+                            budget,
+                            notification_summary.as_deref(),
+                        )
+                        .await;
                     }
-                    notification_summary = Some(summary);
                     feedback.clear();
                     iteration += 1;
                 }
@@ -373,7 +379,7 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
 struct ResumeState {
     iteration: u32,
     child_iterations: u32,
@@ -382,8 +388,9 @@ struct ResumeState {
     notification_summary: Option<String>,
 }
 
-impl Default for ResumeState {
-    fn default() -> Self {
+impl ResumeState {
+    /// Where a run with nothing to replay begins.
+    fn fresh() -> Self {
         Self {
             iteration: 1,
             child_iterations: 0,
@@ -392,25 +399,36 @@ impl Default for ResumeState {
     }
 }
 
-/// Rebuilds Fanout's resume state in one forward fold. Only settled
-/// children are counted, which is sound
-/// because every pause this kernel can reach happens after
-/// `watch_batch` drained its batch: a cleanly paused log never holds
-/// a `child_run_started` without its `child_run_finished`. A log
-/// torn by a crash can — but a detached record refuses resume today,
-/// so such a log never replays; the day detached resume lands, this
-/// must learn to re-watch those orphans instead of replanning over
-/// them.
+/// The fold's tally at each event. The eligible Report stays raw so
+/// superseded or refuted history need not be parsed; only the Report
+/// the final snapshot still holds is decoded.
+#[derive(Clone, Copy, Default)]
+struct Fold<'a> {
+    /// The highest finished iteration; the resume re-enters at the
+    /// next.
+    last_finished: u32,
+    child_iterations: u32,
+    eligible_report: Option<(u64, &'a serde_json::Value)>,
+}
+
+/// Rebuilds Fanout's resume state in one forward fold, read at the
+/// last resume command. Only settled children are counted, which is
+/// sound because every pause this kernel can reach happens after
+/// `watch_batch` drained its batch: a cleanly paused log never holds a
+/// `child_run_started` without its `child_run_finished`. A log torn by
+/// a crash can — but a detached record refuses resume today, so such a
+/// log never replays; the day detached resume lands, this must learn
+/// to re-watch those orphans instead of replanning over them.
 fn resume_progress(events: &[EventEnvelope]) -> Result<ResumeState, KernelError> {
-    let mut state = ResumeState::default();
+    let mut fold = Fold::default();
     let mut resumed = None;
     for envelope in events {
         match &envelope.event {
             RunEvent::IterationFinished { iteration, .. } => {
-                state.iteration = state.iteration.max(iteration.saturating_add(1));
+                fold.last_finished = fold.last_finished.max(*iteration);
             }
             RunEvent::ChildRunFinished { iterations, .. } => {
-                state.child_iterations = state.child_iterations.saturating_add(*iterations);
+                fold.child_iterations = fold.child_iterations.saturating_add(*iterations);
             }
             RunEvent::StageReported { stage, report, .. } => {
                 if stage != "plan" {
@@ -419,21 +437,116 @@ fn resume_progress(events: &[EventEnvelope]) -> Result<ResumeState, KernelError>
                         envelope.seq
                     )));
                 }
-                let report: PlanReport =
-                    serde_json::from_value(report.clone()).map_err(|error| {
-                        KernelError::Resume(format!(
-                            "fanout report at seq {} is invalid: {error}",
-                            envelope.seq
-                        ))
-                    })?;
-                state.notification_summary = Some(report.summary);
+                fold.eligible_report = Some((envelope.seq, report));
             }
-            RunEvent::SkepticVerdict { refuted: true, .. } => {
-                state.notification_summary = None;
-            }
-            RunEvent::RunResumed { .. } => resumed = Some(state.clone()),
+            RunEvent::SkepticVerdict { refuted: true, .. } => fold.eligible_report = None,
+            RunEvent::RunResumed { .. } => resumed = Some(fold),
             _ => {}
         }
     }
-    resumed.ok_or_else(|| KernelError::Resume("fanout replay has no resume command".into()))
+    let fold =
+        resumed.ok_or_else(|| KernelError::Resume("fanout replay has no resume command".into()))?;
+    let notification_summary = fold
+        .eligible_report
+        .map(|(seq, report)| {
+            serde_json::from_value::<PlanReport>(report.clone())
+                .map(|report| report.summary)
+                .map_err(|error| {
+                    KernelError::Resume(format!("fanout report at seq {seq} is invalid: {error}"))
+                })
+        })
+        .transpose()?;
+    Ok(ResumeState {
+        iteration: fold.last_finished.saturating_add(1),
+        child_iterations: fold.child_iterations,
+        notification_summary,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::testkit::event_log;
+
+    fn reported(iteration: u32, report: serde_json::Value) -> RunEvent {
+        RunEvent::StageReported {
+            iteration,
+            stage: "plan".into(),
+            report,
+        }
+    }
+
+    fn finished(iteration: u32) -> RunEvent {
+        RunEvent::IterationFinished {
+            iteration,
+            outcome: IterationOutcome::Completed,
+        }
+    }
+
+    fn resumed() -> RunEvent {
+        RunEvent::RunResumed {
+            note: None,
+            extend: None,
+        }
+    }
+
+    /// Only the snapshot's Report is decoded, so history the resume
+    /// never surfaces — however mangled — cannot block it.
+    #[test]
+    fn a_superseded_report_never_blocks_a_resume() {
+        let state = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            finished(1),
+            RunEvent::IterationStarted { iteration: 2 },
+            reported(
+                2,
+                json!({"status": "continue", "summary": "second batch", "units": ["a"]}),
+            ),
+            finished(2),
+            resumed(),
+        ]))
+        .unwrap();
+        assert_eq!(state.iteration, 3);
+        assert_eq!(state.notification_summary.as_deref(), Some("second batch"));
+    }
+
+    /// A refuting verdict retires its Report before any decode, so a
+    /// mangled refuted claim resumes clean rather than failing.
+    #[test]
+    fn a_refuted_report_is_never_decoded() {
+        let state = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            RunEvent::SkepticVerdict {
+                iteration: 1,
+                refuted: true,
+                findings: vec!["issue remains".into()],
+            },
+            finished(1),
+            resumed(),
+        ]))
+        .unwrap();
+        assert_eq!(state.iteration, 2);
+        assert_eq!(state.notification_summary, None);
+    }
+
+    /// The one Report the resume does surface fails loudly, naming
+    /// the offending line: that is corruption, not something to guess
+    /// around.
+    #[test]
+    fn a_corrupt_eligible_report_fails_naming_its_seq() {
+        let error = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            resumed(),
+        ]))
+        .unwrap_err();
+        assert!(
+            matches!(&error, KernelError::Resume(detail) if detail.contains("seq 1")),
+            "unexpected error: {error}"
+        );
+    }
 }
