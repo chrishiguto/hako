@@ -51,8 +51,9 @@ fn a_smolvm_pin_mismatch_refuses_before_the_listener_binds() {
     let output = daemon.wait_with_output().unwrap();
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("smolvm 0.0.0 does not match the pinned 1.6.3"),
-        "{stderr}"
+    let refusal = format!(
+        "smolvm 0.0.0 does not match the pinned {}",
+        sandbox::PINNED_SMOLVM_VERSION
     );
+    assert!(stderr.contains(&refusal), "{stderr}");
 }
