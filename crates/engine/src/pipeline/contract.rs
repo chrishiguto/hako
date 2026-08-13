@@ -1,5 +1,5 @@
 //! The pipeline kernel's report contract and shipped assets: a
-//! default prompt for every active stage, the report schema each
+//! default prompt for every core stage, the report schema each
 //! dialect stage quotes, and the [`ReportContract`] impl the engine's
 //! parse-and-repair loop reads a stage's report through.
 //!
@@ -8,11 +8,10 @@
 //! `deliver` has a schema but no default prompt because publishing
 //! policy is project-specific and the prompt explicitly enables it.
 //! The schemas are the committed artifacts under
-//! `schemas/report/pipeline/` — generated from proto's report types
-//! and drift-checked in CI — so
-//! quoting them here cannot disagree with what the strict parse
-//! enforces, and the engine reads the published contract without
-//! carrying schemars (a product crate never does).
+//! `schemas/report/pipeline/` — generated from proto's report types and
+//! drift-checked in CI — so quoting them here cannot disagree with what
+//! the strict parse enforces, and the engine reads the published
+//! contract without carrying schemars (a product crate never does).
 
 use proto::pipeline::{Stage, StageReport};
 
@@ -67,8 +66,6 @@ pub fn report_schema(stage: Stage) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Core stages have defaults; every dialect stage has its own
-    /// report schema, including optional delivery.
     #[test]
     fn core_stages_ship_defaults_and_every_stage_ships_a_schema() {
         for stage in Stage::ALL {

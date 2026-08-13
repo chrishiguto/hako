@@ -557,8 +557,6 @@ mod tests {
         assert_eq!(KernelName::Pipeline.as_str(), "pipeline");
     }
 
-    /// Plan and deliver do not change the workspace; the three editing
-    /// stages do.
     #[test]
     fn only_the_workspace_editing_stages_mutate() {
         assert!(!is_mutating(Stage::Plan));

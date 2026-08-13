@@ -14,8 +14,6 @@ use engine::{
     Budgets, Kernel, PauseReason, PipelineKernel, PromptsConfig, RunOutcome, VerifyConfig,
 };
 
-/// Runs the kernel with the deliver slot configured and its prompt
-/// seeded in the guest workspace.
 async fn run_with_delivery(agent_steps: Vec<AgentStep>) -> Ran {
     let workspace = seeded_repo();
     let sandbox = Arc::new(StagedSandbox::new(
