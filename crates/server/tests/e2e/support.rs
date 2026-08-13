@@ -197,9 +197,8 @@ fn assert_verified_done(events: &[EventEnvelope], workspace: &Path) {
     }
 
     // The kernel verifies every mutating stage and every done claim, so
-    // the number of check events depends on which path the run took.
-    // The invariant is that no check ever went red and each configured
-    // check gated the run at least once.
+    // the number of check events depends on which path the run took;
+    // only the set of commands and their outcomes is stable.
     let checks: Vec<(&str, bool)> = events
         .iter()
         .filter_map(|envelope| match &envelope.event {
