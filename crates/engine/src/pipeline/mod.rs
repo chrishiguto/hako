@@ -146,8 +146,15 @@ impl Kernel for PipelineKernel {
                         0
                     };
                     head = new_head;
+                    notification_summary = summary;
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
-                        return pause_for_budget(&ctx, iteration, budget, summary.as_deref()).await;
+                        return pause_for_budget(
+                            &ctx,
+                            iteration,
+                            budget,
+                            notification_summary.as_deref(),
+                        )
+                        .await;
                     }
                     if no_commit_iterations >= DRIFT_LIMIT {
                         return conclude(
@@ -155,12 +162,11 @@ impl Kernel for PipelineKernel {
                             Ending::Paused {
                                 iteration,
                                 reason: PauseReason::Drift,
-                                summary: summary.as_deref(),
+                                summary: notification_summary.as_deref(),
                             },
                         )
                         .await;
                     }
-                    notification_summary = summary;
                     plan_feedback = feedback;
                     iteration += 1;
                 }
@@ -329,8 +335,8 @@ async fn run_iteration(
             StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
         }
     }
-    // This shares its shape with a refuted claim, which intentionally
-    // carries `None`; a full pass itself always has a last Report.
+    // `None` is the refuted-claim case above; on this path every stage
+    // advanced, so `completed` always holds a last report.
     Ok(IterationEnd::Continue {
         notification_summary: completed.last().map(|report| report.summary().to_owned()),
         feedback: Vec::new(),
