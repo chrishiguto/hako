@@ -137,9 +137,32 @@ async fn iteration_budget_finishes_the_pass_then_pauses_and_notifies() {
         [engine::Notification {
             run_id: engine::RunId::new("r1"),
             reason: PauseReason::Budget,
-            summary: "simplified the work".into(),
+            summary: Some("simplified the work".into()),
         }]
     );
+}
+
+#[tokio::test]
+async fn a_budget_pause_before_any_report_notifies_without_a_summary() {
+    let workspace = seeded_repo();
+    let sandbox = Arc::new(ScriptedSandbox::repeating(exec("unused\n", 0)));
+    let budgets = Budgets {
+        max_iterations: Some(0),
+        ..Budgets::default()
+    };
+    let (ctx, _, notifier) = context(
+        workspace.path(),
+        sandbox.clone(),
+        Arc::new(ScriptedAgent::new()),
+        budgets,
+        VerifyConfig::default(),
+    );
+
+    let outcome = PipelineKernel.run(ctx).await.unwrap();
+
+    assert_eq!(outcome, RunOutcome::Paused(PauseReason::Budget));
+    assert_eq!(sandbox.created(), 0);
+    assert_eq!(notifier.notifications()[0].summary, None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -611,5 +634,8 @@ async fn three_no_commit_iterations_pause_for_drift() {
             .count(),
         3
     );
-    assert_eq!(notifier.notifications()[0].summary, "no change");
+    assert_eq!(
+        notifier.notifications()[0].summary.as_deref(),
+        Some("no change")
+    );
 }

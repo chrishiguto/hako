@@ -14,12 +14,12 @@ pub trait Notifier: Send + Sync {
 }
 
 /// What a phone needs to show for a human to decide whether to look:
-/// which run paused, why, and what it last did.
+/// which run paused, why, and the last Report summary when one exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub run_id: RunId,
     pub reason: PauseReason,
-    pub summary: String,
+    pub summary: Option<String>,
 }
 
 /// A notification that could not be delivered.

@@ -261,7 +261,11 @@ mod tests {
         (address, received, server)
     }
 
-    async fn notify_via(notify_section: &str) -> serde_json::Value {
+    async fn notify_via(
+        notify_section: &str,
+        reason: engine::PauseReason,
+        summary: Option<&str>,
+    ) -> serde_json::Value {
         let (address, mut received, server) = webhook_server().await;
         let flow = FlowConfig::from_toml(&format!(
             r#"[loop]
@@ -286,8 +290,8 @@ webhook = "http://{address}/hook"
             .notifier
             .notify(&Notification {
                 run_id: engine::RunId::new("run-8"),
-                reason: engine::PauseReason::Drift,
-                summary: "three passes produced no commits".into(),
+                reason,
+                summary: summary.map(str::to_owned),
             })
             .await
             .unwrap();
@@ -304,7 +308,12 @@ webhook = "http://{address}/hook"
     #[tokio::test]
     async fn a_flow_webhook_posts_the_pause_as_plain_text_by_default() {
         assert_eq!(
-            notify_via("").await,
+            notify_via(
+                "",
+                engine::PauseReason::Drift,
+                Some("three passes produced no commits"),
+            )
+            .await,
             json!({
                 "content_type": "text/plain; charset=utf-8",
                 "body": "hako run run-8 paused (drift): three passes produced no commits",
@@ -315,12 +324,28 @@ webhook = "http://{address}/hook"
     #[tokio::test]
     async fn a_slack_format_flow_posts_the_pause_as_json_text() {
         assert_eq!(
-            notify_via("format = \"slack\"").await,
+            notify_via(
+                "format = \"slack\"",
+                engine::PauseReason::Drift,
+                Some("three passes produced no commits"),
+            )
+            .await,
             json!({
                 "content_type": "application/json",
                 "body": serde_json::to_string(&json!({
                     "text": "hako run run-8 paused (drift): three passes produced no commits",
                 })).unwrap(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flow_webhook_omits_a_missing_summary() {
+        assert_eq!(
+            notify_via("", engine::PauseReason::Budget, None).await,
+            json!({
+                "content_type": "text/plain; charset=utf-8",
+                "body": "hako run run-8 paused (budget)",
             })
         );
     }

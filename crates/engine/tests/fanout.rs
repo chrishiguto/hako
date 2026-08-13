@@ -128,6 +128,8 @@ async fn a_plan_spawns_one_scoped_child_per_unit_and_records_each_ending() {
     let outcome = FanoutKernel.run(ctx).await.unwrap();
 
     assert_eq!(outcome, RunOutcome::Done);
+    let projection = engine::RunProjection::of(&event_log(events.events())).unwrap();
+    assert_eq!(projection.last_report.unwrap().summary, "frontier drained");
     assert!(
         events
             .events()
@@ -288,8 +290,8 @@ async fn an_empty_blocked_frontier_pauses_and_notifies() {
     assert_eq!(outcome, RunOutcome::Paused(engine::PauseReason::Blocked));
     assert_eq!(notifier.notifications().len(), 1);
     assert_eq!(
-        notifier.notifications()[0].summary,
-        "children still running"
+        notifier.notifications()[0].summary.as_deref(),
+        Some("children still running")
     );
 }
 
