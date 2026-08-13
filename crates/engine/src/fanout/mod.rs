@@ -11,16 +11,17 @@ use proto::fanout::PlanReport;
 use proto::flow::KernelName;
 use proto::report::ReportStatus;
 
+use crate::budget::TokenUsage;
 use crate::ending::{conclude, pause_for_budget};
-use crate::event::{IterationOutcome, RunEvent};
+use crate::event::{EventEnvelope, IterationOutcome, RunEvent};
 use crate::invocation::{self, Bracketed};
 use crate::kernel::{Kernel, KernelContext, KernelError};
-use crate::run::{PauseReason, RunOutcome, RunState};
-use crate::run_spawner::ChildRunSpec;
+use crate::report::{self, Disposition};
+use crate::run::{PauseReason, RunId, RunOutcome, RunState};
+use crate::run_spawner::{ChildRunSpec, RunSpawnerError};
 use crate::sandbox::SandboxHandle;
 use crate::skeptic::{self, SkepticEnd};
 use crate::verify::{self, VerifyOutcome};
-use crate::workspace::WorkspaceError;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FanoutKernel;
@@ -88,8 +89,8 @@ impl Kernel for FanoutKernel {
             };
             let Planned { report, verify } = planned;
 
-            match report.status {
-                ReportStatus::Done => {
+            match report::disposition(report.status) {
+                Disposition::Claimed => {
                     if matches!(verify, VerifyOutcome::Failed { .. }) {
                         return conclude(
                             &ctx,
@@ -143,25 +144,16 @@ impl Kernel for FanoutKernel {
                         }
                     }
                 }
-                ReportStatus::Blocked => {
+                Disposition::Pause(reason) => {
                     return conclude(
                         &ctx,
                         iteration,
-                        RunOutcome::Paused(PauseReason::Blocked),
+                        RunOutcome::Paused(reason),
                         Some(&report.summary),
                     )
                     .await;
                 }
-                ReportStatus::NeedsInput => {
-                    return conclude(
-                        &ctx,
-                        iteration,
-                        RunOutcome::Paused(PauseReason::AwaitingHuman),
-                        Some(&report.summary),
-                    )
-                    .await;
-                }
-                ReportStatus::Continue => {}
+                Disposition::Advance => {}
             }
 
             let children = spawn_batch(&ctx, report.units).await?;
@@ -224,22 +216,15 @@ struct Planned {
     verify: VerifyOutcome,
 }
 
+/// The domain prompt: the flow's `plan` override, or the shipped
+/// default.
 async fn resolve_prompt(
     ctx: &KernelContext,
     sandbox: &SandboxHandle,
 ) -> Result<String, KernelError> {
-    match ctx.prompts.get("plan") {
-        Some(path) => {
-            let guest_path = ctx.workspace.guest_path(path)?;
-            let raw = ctx.sandbox.get_file(sandbox, &guest_path).await?;
-            String::from_utf8(raw).map_err(|error| {
-                KernelError::Workspace(WorkspaceError(format!(
-                    "prompt `{path}` is not UTF-8: {error}"
-                )))
-            })
-        }
-        None => Ok(contract::default_prompt().to_owned()),
-    }
+    Ok(invocation::read_prompt_override(ctx, sandbox, "plan")
+        .await?
+        .unwrap_or_else(|| contract::default_prompt().to_owned()))
 }
 
 async fn judge_done(
@@ -256,10 +241,7 @@ async fn judge_done(
     .await
 }
 
-async fn spawn_batch(
-    ctx: &KernelContext,
-    units: Vec<String>,
-) -> Result<Vec<crate::run::RunId>, KernelError> {
+async fn spawn_batch(ctx: &KernelContext, units: Vec<String>) -> Result<Vec<RunId>, KernelError> {
     let mut children = Vec::with_capacity(units.len());
     for scope in units {
         let run_id = ctx
@@ -279,16 +261,13 @@ async fn spawn_batch(
     Ok(children)
 }
 
-async fn watch_batch(
-    ctx: &KernelContext,
-    children: Vec<crate::run::RunId>,
-) -> Result<u32, KernelError> {
+async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, KernelError> {
     let mut watches = FuturesUnordered::new();
     for run_id in children {
         let spawner = ctx.run_spawner.clone();
         watches.push(async move {
             let history = spawner.watch(&run_id).await?;
-            Ok::<_, crate::run_spawner::RunSpawnerError>((run_id, history))
+            Ok::<_, RunSpawnerError>((run_id, history))
         });
     }
 
@@ -301,9 +280,7 @@ async fn watch_batch(
             match envelope.event {
                 RunEvent::TokensUsed { usage, .. } => {
                     ctx.budget_usage.record_tokens(usage);
-                    let total = child_usage.get_or_insert_with(crate::budget::TokenUsage::default);
-                    total.input = total.input.saturating_add(usage.input);
-                    total.output = total.output.saturating_add(usage.output);
+                    *child_usage.get_or_insert_with(TokenUsage::default) += usage;
                 }
                 RunEvent::IterationFinished { .. } => {
                     child_iterations = child_iterations.saturating_add(1);
@@ -320,9 +297,7 @@ async fn watch_batch(
                 _ => None,
             })
             .ok_or_else(|| {
-                crate::run_spawner::RunSpawnerError(format!(
-                    "child {run_id} settled without a state event"
-                ))
+                RunSpawnerError(format!("child {run_id} settled without a state event"))
             })?;
         ctx.events
             .emit(RunEvent::ChildRunFinished {
@@ -336,7 +311,7 @@ async fn watch_batch(
     Ok(completed_iterations)
 }
 
-fn resume_progress(events: &[crate::event::EventEnvelope]) -> Result<(u32, u32), KernelError> {
+fn resume_progress(events: &[EventEnvelope]) -> Result<(u32, u32), KernelError> {
     if !events
         .iter()
         .any(|envelope| matches!(envelope.event, RunEvent::RunResumed { .. }))

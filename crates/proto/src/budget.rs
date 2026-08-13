@@ -33,6 +33,14 @@ pub struct TokenUsage {
     pub output: u64,
 }
 
+impl std::ops::AddAssign for TokenUsage {
+    /// Saturating on both counters: budget arithmetic never wraps.
+    fn add_assign(&mut self, other: Self) {
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

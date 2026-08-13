@@ -193,6 +193,25 @@ async fn emit_output(
 /// boundary. The one exception is cancellation, which drops this
 /// future whole: output still in flight is abandoned with the VM,
 /// deliberately (see [`in_fresh_sandbox`]).
+/// The flow's override for a prompt slot, read fresh from the live
+/// workspace through the sandbox — an agent's edit to the file takes
+/// effect on the next read — or `None` when the slot is unset. What
+/// fills the gap, a shipped default or an error, is kernel policy.
+pub async fn read_prompt_override(
+    ctx: &KernelContext,
+    sandbox: &SandboxHandle,
+    slot: &str,
+) -> Result<Option<String>, KernelError> {
+    let Some(path) = ctx.prompts.get(slot) else {
+        return Ok(None);
+    };
+    let guest_path = ctx.workspace.guest_path(path)?;
+    let raw = ctx.sandbox.get_file(sandbox, &guest_path).await?;
+    String::from_utf8(raw).map(Some).map_err(|error| {
+        crate::workspace::WorkspaceError(format!("prompt `{path}` is not UTF-8: {error}")).into()
+    })
+}
+
 pub async fn invoke(
     ctx: &KernelContext,
     iteration: u32,
