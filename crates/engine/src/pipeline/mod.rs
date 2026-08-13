@@ -38,13 +38,6 @@ use proto::flow::{FailAction, KernelName, PromptsConfig};
 use proto::pipeline::{Stage, StageReport};
 use proto::report::ReportStatus;
 
-/// The words a budget pause reports: the last report of the pass, or
-/// the plain fact when the budget fell before any report landed.
-fn last_summary(pass: &[StageReport]) -> &str {
-    pass.last()
-        .map_or("budget exhausted", |report| report.summary())
-}
-
 /// A shipped default makes a stage part of every flow; a configured
 /// prompt opts into stages whose policy is too project-specific for a
 /// default, such as delivery.
@@ -304,9 +297,6 @@ async fn run_iteration(
         mut human,
     } = start;
     for stage in active_stages(&ctx.prompts).skip_while(|stage| *stage != interrupted) {
-        // Reports are hand-off state for this iteration only. Plan
-        // starts with none; every later stage reads this pass.
-        let handoff = completed.as_slice();
         let feedback = if stage == Stage::Plan {
             std::mem::take(&mut plan_feedback)
         } else {
@@ -317,7 +307,7 @@ async fn run_iteration(
             ctx,
             iteration,
             stage,
-            handoff,
+            &completed,
             feedback,
             stage_human.as_ref(),
             deadline,
@@ -330,12 +320,11 @@ async fn run_iteration(
                     match skeptic::judge(ctx, iteration, &claim, deadline).await? {
                         Bracketed::Finished(skeptic::SkepticEnd::Unrefuted) => IterationEnd::Done,
                         Bracketed::Finished(skeptic::SkepticEnd::Refuted(findings)) => {
-                            // The claim becomes history with the rest of
-                            // the pass; only the skeptic's findings have
-                            // an explicit lifetime in the next plan.
-                            completed.push(claim);
+                            // The claim is already on the log with the
+                            // rest of the pass; only the skeptic's
+                            // findings reach the next plan.
                             IterationEnd::Continue {
-                                summary: last_summary(&completed).to_owned(),
+                                summary: claim.summary().to_owned(),
                                 feedback: vec![Feedback::SkepticRefuted { findings }],
                             }
                         }
@@ -353,8 +342,12 @@ async fn run_iteration(
             StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
         }
     }
+    // A pass runs at least plan, so a last report always exists; the
+    // empty fallback is a can't-happen guard rather than a panic.
     Ok(IterationEnd::Continue {
-        summary: last_summary(&completed).to_owned(),
+        summary: completed
+            .last()
+            .map_or_else(String::new, |report| report.summary().to_owned()),
         feedback: Vec::new(),
     })
 }
