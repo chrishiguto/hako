@@ -1,9 +1,10 @@
 //! The pipeline kernel — a staged loop. One iteration drives one work
 //! unit through a fixed sequence of stages: plan → implement → review →
-//! simplify. The kernel owns the order and the gating in Rust; a flow
-//! customizes each stage only through its prompt (the `[prompts]`
-//! table, or the shipped default). Stages hand off solely through
-//! schema-validated reports, the same pattern as the flow format:
+//! simplify, then deliver when the flow enables it. The kernel owns the
+//! order and gating; a flow customizes each stage only through its
+//! prompt (the `[prompts]` table, or the shipped default). Stages hand
+//! off solely through schema-validated reports, the same pattern as
+//! the flow format:
 //! strict parse, one repair re-prompt, the report quoted back to the
 //! next stage.
 //!
@@ -12,7 +13,8 @@
 //! stages (implement, review, simplify) are checkpointed and then
 //! verified; a red check re-runs that stage with the failure in its
 //! preamble, and exhausted retries pause the run. A `done` claim starts
-//! a fresh skeptic invocation; only an unrefuted claim ends the run.
+//! a fresh skeptic invocation; only an unrefuted claim ends the run —
+//! mid-pass, so no later stage runs, a configured deliver included.
 //! `blocked`/`needs_input` pause it immediately, mid-pipeline.
 
 mod contract;
@@ -31,20 +33,18 @@ use crate::sandbox::SandboxHandle;
 use crate::verify::{self, VerifyOutcome};
 use crate::workspace::WorkspaceError;
 use proto::BudgetKind;
-use proto::flow::{FailAction, KernelName};
+use proto::flow::{FailAction, KernelName, PromptsConfig};
 use proto::pipeline::{Stage, StageReport};
 use proto::report::ReportStatus;
 
-/// The stages one iteration drives a work unit through, in order.
-/// Forward-only — a stage never bounces back; what it cannot patch it
-/// reports for the next iteration's plan. Deliver is absent until #29
-/// wires it in.
-const STAGES: [Stage; 4] = [
-    Stage::Plan,
-    Stage::Implement,
-    Stage::Review,
-    Stage::Simplify,
-];
+/// A shipped default makes a stage part of every flow; a configured
+/// prompt opts into stages whose policy is too project-specific for a
+/// default, such as delivery.
+fn active_stages(prompts: &PromptsConfig) -> impl Iterator<Item = Stage> + '_ {
+    Stage::ALL.into_iter().filter(|stage| {
+        contract::default_prompt(*stage).is_some() || prompts.get(stage.as_str()).is_some()
+    })
+}
 
 /// The `K` in "K consecutive no-commit iterations pause as drift".
 /// Fixed rather than a flow knob for v1: forgiving enough that one
@@ -247,7 +247,7 @@ async fn run_iteration(
     deadline: tokio::time::Instant,
 ) -> Result<IterationEnd, KernelError> {
     let mut pass: Vec<StageReport> = Vec::new();
-    for (index, &stage) in STAGES.iter().enumerate() {
+    for (index, stage) in active_stages(&ctx.prompts).enumerate() {
         let handoff = if index == 0 { prior } else { pass.as_slice() };
         let feedback = if index == 0 {
             std::mem::take(&mut plan_feedback)
@@ -496,7 +496,7 @@ async fn resolve_prompt(
 
 /// The stages that change the workspace — implement, review, simplify.
 /// Only these are checkpointed and verified. Plan selects the unit and
-/// deliver publishes (once #29 wires it); neither is gated here.
+/// deliver publishes; neither mutates the workspace by kernel policy.
 fn is_mutating(stage: Stage) -> bool {
     matches!(stage, Stage::Implement | Stage::Review | Stage::Simplify)
 }
@@ -557,8 +557,6 @@ mod tests {
         assert_eq!(KernelName::Pipeline.as_str(), "pipeline");
     }
 
-    /// Plan and deliver are not checkpointed or verified; the three
-    /// stages that edit the workspace are.
     #[test]
     fn only_the_workspace_editing_stages_mutate() {
         assert!(!is_mutating(Stage::Plan));

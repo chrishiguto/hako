@@ -73,11 +73,11 @@ pub struct KernelContext {
     /// lowering, unlike [`Budgets`], because nothing here needs
     /// resolving.
     pub verify: VerifyConfig,
-    /// The flow's per-slot prompt overrides — slot name → workspace-
-    /// relative file. A staged kernel resolves each stage's prompt
-    /// through this, falling back to its kernel-shipped default when a
-    /// slot is absent. Lifted straight from the flow, like [`verify`]:
-    /// which slots are legal is the kernel's, checked at validation.
+    /// The flow's configured prompt slots — slot name → workspace-
+    /// relative file. Core slots override shipped defaults; optional
+    /// slots enable their stage. Lifted straight from the flow, like
+    /// [`verify`]: which slots are legal is the kernel's, checked at
+    /// validation.
     pub prompts: PromptsConfig,
     /// Prepared before the kernel starts; the kernel mounts it and
     /// checkpoints it.

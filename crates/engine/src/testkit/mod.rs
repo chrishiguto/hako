@@ -1,5 +1,6 @@
 //! In-process fakes for the six seams, a defaulted [`KernelContext`],
-//! and real-git fixtures — the payoff of the seam design, paid once.
+//! real-git fixtures, and the pipeline run harness — the payoff of the
+//! seam design, paid once.
 //!
 //! Feature-gated behind `testkit` so product builds never carry it:
 //! the engine's own tests switch it on through a dev-dependency on
@@ -10,6 +11,7 @@
 //! patterns.
 
 mod fakes;
+mod harness;
 mod prompt;
 mod repo;
 mod sandbox;
@@ -18,6 +20,7 @@ pub use fakes::{
     AGENT_BIN, MapSecrets, NoAgent, NoSecrets, RecordingNotifier, RecordingSink, ScriptedAgent,
     StubNotifier, Transcript, exec, secret_env,
 };
+pub use harness::{Ran, drive_pipeline, pipeline_context, stage_events};
 pub use prompt::{
     SKEPTIC_PROMPT_HEADING, carries_handoff, carries_human_input, carries_report_from,
     carries_verify_feedback,
@@ -25,7 +28,7 @@ pub use prompt::{
 pub use repo::{SEED_FILE, commit, git, git_stdout, head, seeded_repo, tracked_files};
 pub use sandbox::{
     AgentStep, NoSandbox, ScriptedSandbox, StagedSandbox, UNREFUTED_SKEPTIC_REPORT, crashes,
-    malformed, omits_report, reports,
+    malformed, omits_report, reports, skeptic, unrefuted,
 };
 
 use std::sync::Arc;

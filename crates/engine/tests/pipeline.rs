@@ -4,67 +4,26 @@
 //! git effects, never internal call patterns.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::sync::Arc;
 
 use engine::testkit::{
-    self, AgentStep, RecordingSink, ScriptedAgent, StagedSandbox, carries_handoff,
-    carries_report_from, carries_verify_feedback, crashes, kinds, malformed, omits_report, reports,
-    seeded_repo, tracked_files,
+    AgentStep, Ran, StagedSandbox, carries_handoff, carries_report_from, carries_verify_feedback,
+    crashes, drive_pipeline, kinds, malformed, omits_report, pipeline_context, reports,
+    seeded_repo, skeptic, stage_events, tracked_files, unrefuted,
 };
 use engine::{
-    FailAction, IterationOutcome, Kernel, KernelContext, OnFail, PauseReason, PipelineKernel,
-    PromptsConfig, RunEvent, RunOutcome, RunState, VerifyConfig, Workspace,
+    FailAction, IterationOutcome, Kernel, OnFail, PauseReason, PipelineKernel, PromptsConfig,
+    RunEvent, RunOutcome, RunState, VerifyConfig,
 };
 use proto::pipeline::Stage;
 
 // ---------- the harness ----------
-
-/// What one pipeline run left behind for the assertions.
-struct Ran {
-    outcome: RunOutcome,
-    events: Vec<RunEvent>,
-    prompts: Vec<String>,
-    sandbox: Arc<StagedSandbox>,
-    workspace: tempfile::TempDir,
-}
 
 fn verifying(checks: &[&str], retries: u32, then: FailAction) -> VerifyConfig {
     VerifyConfig {
         checks: checks.iter().map(|c| (*c).to_string()).collect(),
         on_fail: OnFail { retries, then },
     }
-}
-
-fn skeptic(refuted: bool, findings: &[&str]) -> AgentStep {
-    AgentStep {
-        stdout: "checking the claim\n".into(),
-        code: 0,
-        report: Some(serde_json::json!({"refuted": refuted, "findings": findings}).to_string()),
-    }
-}
-
-fn unrefuted() -> AgentStep {
-    skeptic(false, &[])
-}
-
-fn context(
-    workspace: &Path,
-    sandbox: Arc<StagedSandbox>,
-    verify: VerifyConfig,
-    prompts: PromptsConfig,
-) -> (KernelContext, Arc<RecordingSink>) {
-    let sink = Arc::new(RecordingSink::default());
-    let ctx = KernelContext {
-        verify,
-        prompts,
-        workspace: Workspace::at(workspace),
-        sandbox,
-        agent: Arc::new(ScriptedAgent::new()),
-        events: sink.clone(),
-        ..testkit::context()
-    };
-    (ctx, sink)
 }
 
 /// Runs the pipeline kernel over a fresh seeded repo with the given
@@ -80,15 +39,7 @@ async fn run_pipeline(
     let sandbox = Arc::new(
         StagedSandbox::new(workspace.path().to_path_buf(), agent_steps).with_checks(checks),
     );
-    let (ctx, sink) = context(workspace.path(), sandbox.clone(), verify, prompts);
-    let outcome = PipelineKernel.run(ctx).await.unwrap();
-    Ran {
-        outcome,
-        events: sink.events(),
-        prompts: sandbox.agent_prompts(),
-        sandbox,
-        workspace,
-    }
+    drive_pipeline(workspace, sandbox, verify, prompts).await
 }
 
 /// The default flow: one verify check, pause on exhausted retries, no
@@ -101,18 +52,6 @@ async fn run_default(agent_steps: Vec<AgentStep>, checks: Vec<i32>) -> Ran {
         checks,
     )
     .await
-}
-
-/// The stage-scoped events in order, as `(kind, stage)` pairs.
-fn stage_events(events: &[RunEvent]) -> Vec<(String, String)> {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            RunEvent::StageStarted { stage, .. } => Some(("stage_started".into(), stage.clone())),
-            RunEvent::StageReported { stage, .. } => Some(("stage_reported".into(), stage.clone())),
-            _ => None,
-        })
-        .collect()
 }
 
 // ---------- AC 1: the stage event sequence and fresh sandboxes ----------
@@ -239,7 +178,7 @@ async fn a_prompt_override_replaces_the_shipped_default() {
     ));
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
-    let (ctx, _) = context(
+    let (ctx, _) = pipeline_context(
         workspace.path(),
         sandbox.clone(),
         VerifyConfig::default(),
@@ -276,7 +215,7 @@ async fn a_prompt_symlink_is_dereferenced_inside_the_sandbox() {
     );
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
-    let (ctx, _) = context(
+    let (ctx, _) = pipeline_context(
         workspace.path(),
         sandbox.clone(),
         VerifyConfig::default(),
@@ -296,7 +235,7 @@ async fn a_non_utf8_override_prompt_is_run_fatal() {
     sandbox.seed_guest_file("/workspace/prompts/plan.md", vec![0xff]);
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/plan.md"})).unwrap();
-    let (ctx, _) = context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
+    let (ctx, _) = pipeline_context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
 
     let error = PipelineKernel.run(ctx).await.unwrap_err();
     assert!(error.to_string().contains("not UTF-8"), "{error}");
@@ -311,7 +250,7 @@ async fn a_missing_override_prompt_is_run_fatal() {
     ));
     let prompts: PromptsConfig =
         serde_json::from_value(serde_json::json!({"plan": "prompts/absent.md"})).unwrap();
-    let (ctx, _) = context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
+    let (ctx, _) = pipeline_context(workspace.path(), sandbox, VerifyConfig::default(), prompts);
     let error = PipelineKernel.run(ctx).await.unwrap_err();
     assert!(error.to_string().contains("absent.md"), "{error}");
 }

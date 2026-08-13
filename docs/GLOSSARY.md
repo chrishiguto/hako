@@ -16,7 +16,7 @@ The vocabulary one kernel adds to the published language — its report shapes a
 _Avoid_: kernel types, kernel schema
 
 **Pipeline** (v1, specced):
-The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize executable stages' prompts; stages communicate only through schema-validated stage reports. The current implementation executes the four core stages; optional delivery remains deferred to #29 and its prompt slot is not yet published.
+The staged kernel: one iteration drives one work unit through plan → implement → review → simplify → deliver (optional). Stage order and gating live in Rust; flows customize executable stages' prompts; stages communicate only through schema-validated stage reports. The four core stages always run; delivery has no generic default and runs only when its prompt slot is configured. An unrefuted `done` from any stage ends the run mid-pass — later stages, configured delivery included, do not run.
 
 **Fanout** (post-v1):
 The dispatcher kernel: its plan stage decomposes ready work into independent units and spawns one child Pipeline run per unit — one child, one branch, one PR. Parallelism composes at the run level, never inside a run.
@@ -34,7 +34,7 @@ One pass of a kernel's loop over its work. For the pipeline, one work unit drive
 _Avoid_: step, turn, cycle
 
 **Stage**:
-One step of a staged kernel's iteration — for the pipeline today, plan, implement, review, or simplify; the optional deliver stage is reserved for #29. The kernel owns their order and gating in Rust; a flow customizes only executable stages' prompts. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
+One step of a staged kernel's iteration — for the pipeline, plan, implement, review, simplify, or optional deliver. The kernel owns their order and gating in Rust; a flow customizes only executable stages' prompts. Each runs in its own fresh sandbox and hands off solely through its schema-validated report. Which stages change the workspace — and so are checkpointed and verified — is kernel policy.
 _Avoid_: phase, step
 
 ## Isolation & state
@@ -77,7 +77,7 @@ A user-authored prompt carrying the objective and the domain rules, never loop m
 _Avoid_: system prompt
 
 **Prompt Slot**:
-A named point where a kernel accepts a domain prompt — part of the kernel's dialect. A flow's `[prompts]` table maps slot name → workspace-relative file; naming a slot the selected kernel doesn't publish fails validation, and an absent slot falls back to the kernel-shipped default prompt. A slot overrides a stage's domain rules only, never the report contract the kernel wraps around it.
+A named point where a kernel accepts a domain prompt — part of the kernel's dialect. A flow's `[prompts]` table maps slot name → workspace-relative file; naming a slot the selected kernel doesn't publish fails validation. An absent core slot falls back to the kernel-shipped default; an absent optional slot skips its stage. A slot customizes a stage's domain rules only, never the report contract the kernel wraps around it.
 _Avoid_: prompt key, prompt variable
 
 **Preamble**:

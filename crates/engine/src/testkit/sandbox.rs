@@ -354,6 +354,21 @@ pub fn reports(status: &str, summary: &str) -> AgentStep {
     }
 }
 
+/// A scripted skeptic verdict: the claim refuted with these findings,
+/// or left standing.
+pub fn skeptic(refuted: bool, findings: &[&str]) -> AgentStep {
+    AgentStep {
+        stdout: "checking the claim\n".into(),
+        code: 0,
+        report: Some(serde_json::json!({"refuted": refuted, "findings": findings}).to_string()),
+    }
+}
+
+/// The skeptic step that lets a `done` claim stand.
+pub fn unrefuted() -> AgentStep {
+    skeptic(false, &[])
+}
+
 /// An attempt that leaves a report serde will reject — an unknown field
 /// — so the kernel offers its one repair.
 pub fn malformed() -> AgentStep {

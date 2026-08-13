@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use crate::report::{Question, ReportStatus};
 
 /// The pipeline kernel's report-stage vocabulary, in intended order.
-/// The four core stages execute today; `deliver` is reserved in the
-/// published report dialect for the optional stage tracked by #29.
+/// The four core stages always execute; `deliver` executes only when
+/// its prompt is configured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
@@ -59,17 +59,21 @@ impl Stage {
     }
 }
 
-/// The prompt slots the pipeline kernel currently executes — the
-/// legal `[prompts]` keys for a pipeline flow. `deliver` deliberately
-/// remains unpublished until #29 adds the stage's control flow; this
-/// prevents a valid-looking configuration from being silently ignored.
-/// An absent published slot falls back to its kernel-shipped default.
-pub const PROMPT_SLOTS: [&str; 4] = [
-    Stage::Plan.as_str(),
-    Stage::Implement.as_str(),
-    Stage::Review.as_str(),
-    Stage::Simplify.as_str(),
-];
+/// The legal `[prompts]` keys for a pipeline flow — every stage, in
+/// kernel order, derived from [`Stage::ALL`] so the two sets cannot
+/// drift: a stage cannot execute without a slot the flow may name, and
+/// no slot survives its stage. The four core slots fall back to
+/// kernel-shipped defaults; `deliver` is optional and runs only when
+/// the flow names its prompt.
+pub const PROMPT_SLOTS: [&str; Stage::ALL.len()] = {
+    let mut slots = [""; Stage::ALL.len()];
+    let mut index = 0;
+    while index < slots.len() {
+        slots[index] = Stage::ALL[index].as_str();
+        index += 1;
+    }
+    slots
+};
 
 /// What the plan stage leaves behind: the work unit this iteration
 /// drives and the intended route through it.

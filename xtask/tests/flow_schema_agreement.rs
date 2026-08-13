@@ -119,9 +119,9 @@ fn schema_and_serde_agree_on_the_corpus() {
             false,
         ),
         (
-            "the deferred deliver prompt slot",
+            "the optional deliver prompt slot",
             &format!("{MINIMAL_FLOW}\n[prompts]\ndeliver = \"prompts/deliver.md\"\n"),
-            false,
+            true,
         ),
         (
             "the reserved stages namespace",
