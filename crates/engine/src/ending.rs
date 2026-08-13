@@ -14,6 +14,10 @@ pub(crate) enum Ending<'a> {
     Done,
     Failed,
     Paused {
+        /// The iteration the pause parks — the checkpoint commit is
+        /// recorded against it. Only pauses checkpoint, so only they
+        /// carry one.
+        iteration: u32,
         reason: PauseReason,
         summary: Option<&'a str>,
     },
@@ -42,8 +46,8 @@ pub(crate) async fn pause_for_budget(
         .await?;
     conclude(
         ctx,
-        iteration,
         Ending::Paused {
+            iteration,
             reason: PauseReason::Budget,
             summary,
         },
@@ -53,10 +57,9 @@ pub(crate) async fn pause_for_budget(
 
 pub(crate) async fn conclude(
     ctx: &KernelContext,
-    iteration: u32,
     ending: Ending<'_>,
 ) -> Result<RunOutcome, KernelError> {
-    if matches!(ending, Ending::Paused { .. })
+    if let Ending::Paused { iteration, .. } = ending
         && let Some(commit) = ctx.workspace.checkpoint("hako: pause").await?
     {
         ctx.events
@@ -69,7 +72,10 @@ pub(crate) async fn conclude(
             state: outcome.into(),
         })
         .await?;
-    if let Ending::Paused { reason, summary } = ending {
+    if let Ending::Paused {
+        reason, summary, ..
+    } = ending
+    {
         // Notification delivery cannot invalidate a pause already
         // made durable; losing the ping must never lose the work.
         let _ = ctx

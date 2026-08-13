@@ -45,6 +45,11 @@ impl Kernel for FanoutKernel {
         let mut feedback = Vec::new();
         loop {
             if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations) {
+                // No summary: the only report reachable at loop-top
+                // with prior work is a done-claim the skeptic refuted,
+                // and a refuted claim must not be surfaced as what the
+                // run last did. (`Continue` re-checks the budget with
+                // its summary in hand before looping.)
                 return pause_for_budget(&ctx, iteration.saturating_sub(1), budget, None).await;
             }
             ctx.events
@@ -77,13 +82,13 @@ impl Kernel for FanoutKernel {
                     iteration += 1;
                 }
                 IterationEnd::Done => {
-                    return conclude(&ctx, iteration, Ending::Done).await;
+                    return conclude(&ctx, Ending::Done).await;
                 }
                 IterationEnd::Pause { reason, summary } => {
                     return conclude(
                         &ctx,
-                        iteration,
                         Ending::Paused {
+                            iteration,
                             reason,
                             summary: Some(&summary),
                         },
@@ -97,7 +102,7 @@ impl Kernel for FanoutKernel {
                             outcome: IterationOutcome::Failed,
                         })
                         .await?;
-                    return conclude(&ctx, iteration, Ending::Failed).await;
+                    return conclude(&ctx, Ending::Failed).await;
                 }
                 IterationEnd::PlanTimedOut => {
                     ctx.events
@@ -108,8 +113,8 @@ impl Kernel for FanoutKernel {
                         .await?;
                     return conclude(
                         &ctx,
-                        iteration,
                         Ending::Paused {
+                            iteration,
                             reason: PauseReason::Timeout,
                             summary: Some("fanout plan timed out"),
                         },
@@ -117,7 +122,7 @@ impl Kernel for FanoutKernel {
                     .await;
                 }
                 IterationEnd::Cancelled => {
-                    return conclude(&ctx, iteration, Ending::Cancelled).await;
+                    return conclude(&ctx, Ending::Cancelled).await;
                 }
             }
         }
