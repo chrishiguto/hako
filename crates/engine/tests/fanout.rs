@@ -249,6 +249,33 @@ async fn child_usage_exhausts_the_parent_only_after_all_children_settle() {
 }
 
 #[tokio::test]
+async fn a_failed_watch_still_drains_and_records_its_siblings() {
+    // Two units planned, but the fake only knows child-1: watching
+    // child-2 errors while child-1 settles normally. The settled
+    // sibling's outcome must still land in the parent's log before
+    // the failure surfaces.
+    let spawner = Arc::new(FakeSpawner::with_children([terminal(
+        RunState::Done,
+        TokenUsage::default(),
+    )]));
+    let (ctx, events, _) = fanout_context(
+        &[br#"{"status":"continue","summary":"two ready","units":["a","b"]}"#],
+        spawner.clone(),
+    );
+
+    let error = FanoutKernel.run(ctx).await.unwrap_err();
+
+    assert!(error.to_string().contains("unknown fake child"), "{error}");
+    assert_eq!(spawner.watched().len(), 2, "both children were watched");
+    assert!(events.events().contains(&RunEvent::ChildRunFinished {
+        child_run_id: "child-1".into(),
+        state: RunState::Done,
+        iterations: 1,
+        usage: Some(TokenUsage::default()),
+    }));
+}
+
+#[tokio::test]
 async fn an_empty_blocked_frontier_pauses_and_notifies() {
     let spawner = Arc::new(FakeSpawner::default());
     let (ctx, _, notifier) = fanout_context(

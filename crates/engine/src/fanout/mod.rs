@@ -56,10 +56,40 @@ impl Kernel for FanoutKernel {
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
                 .await?;
-            let deadline = tokio::time::Instant::now() + ctx.budgets.iteration_timeout;
-            let planned = match plan(&ctx, iteration, &feedback, deadline).await? {
-                Bracketed::Finished(Some(planned)) => planned,
-                Bracketed::Finished(None) => {
+            match run_iteration(&ctx, iteration, &feedback).await? {
+                IterationEnd::Continue { summary, children } => {
+                    ctx.events
+                        .emit(RunEvent::IterationFinished {
+                            iteration,
+                            outcome: IterationOutcome::Completed,
+                        })
+                        .await?;
+                    child_iterations += children;
+                    if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations)
+                    {
+                        return pause_for_budget(&ctx, iteration, budget, &summary).await;
+                    }
+                    feedback.clear();
+                    iteration += 1;
+                }
+                IterationEnd::Refuted { findings } => {
+                    ctx.events
+                        .emit(RunEvent::IterationFinished {
+                            iteration,
+                            outcome: IterationOutcome::Completed,
+                        })
+                        .await?;
+                    feedback = findings;
+                    iteration += 1;
+                }
+                IterationEnd::Done { summary } => {
+                    return conclude(&ctx, iteration, RunOutcome::Done, Some(&summary)).await;
+                }
+                IterationEnd::Pause { reason, summary } => {
+                    return conclude(&ctx, iteration, RunOutcome::Paused(reason), Some(&summary))
+                        .await;
+                }
+                IterationEnd::Fail => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
@@ -68,10 +98,7 @@ impl Kernel for FanoutKernel {
                         .await?;
                     return conclude(&ctx, iteration, RunOutcome::Failed, None).await;
                 }
-                Bracketed::Cancelled => {
-                    return conclude(&ctx, iteration, RunOutcome::Cancelled, None).await;
-                }
-                Bracketed::TimedOut => {
+                IterationEnd::PlanTimedOut => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
@@ -86,89 +113,94 @@ impl Kernel for FanoutKernel {
                     )
                     .await;
                 }
-            };
-            let Planned { report, verify } = planned;
-
-            match report::disposition(report.status) {
-                Disposition::Claimed => {
-                    if matches!(verify, VerifyOutcome::Failed { .. }) {
-                        return conclude(
-                            &ctx,
-                            iteration,
-                            RunOutcome::Paused(PauseReason::VerifyFailed),
-                            Some(&report.summary),
-                        )
-                        .await;
-                    }
-                    match judge_done(&ctx, iteration, &report, deadline).await? {
-                        Bracketed::Finished(SkepticEnd::Unrefuted) => {
-                            return conclude(
-                                &ctx,
-                                iteration,
-                                RunOutcome::Done,
-                                Some(&report.summary),
-                            )
-                            .await;
-                        }
-                        Bracketed::Finished(SkepticEnd::Refuted(findings)) => {
-                            feedback = findings;
-                            ctx.events
-                                .emit(RunEvent::IterationFinished {
-                                    iteration,
-                                    outcome: IterationOutcome::Completed,
-                                })
-                                .await?;
-                            iteration += 1;
-                            continue;
-                        }
-                        Bracketed::Finished(SkepticEnd::Failed) => {
-                            ctx.events
-                                .emit(RunEvent::IterationFinished {
-                                    iteration,
-                                    outcome: IterationOutcome::Failed,
-                                })
-                                .await?;
-                            return conclude(&ctx, iteration, RunOutcome::Failed, None).await;
-                        }
-                        Bracketed::Cancelled => {
-                            return conclude(&ctx, iteration, RunOutcome::Cancelled, None).await;
-                        }
-                        Bracketed::TimedOut => {
-                            return conclude(
-                                &ctx,
-                                iteration,
-                                RunOutcome::Paused(PauseReason::Timeout),
-                                Some("fanout skeptic timed out"),
-                            )
-                            .await;
-                        }
-                    }
+                IterationEnd::Cancelled => {
+                    return conclude(&ctx, iteration, RunOutcome::Cancelled, None).await;
                 }
-                Disposition::Pause(reason) => {
-                    return conclude(
-                        &ctx,
-                        iteration,
-                        RunOutcome::Paused(reason),
-                        Some(&report.summary),
-                    )
-                    .await;
-                }
-                Disposition::Advance => {}
             }
+        }
+    }
+}
 
-            let children = spawn_batch(&ctx, report.units).await?;
-            child_iterations += watch_batch(&ctx, children).await?;
-            ctx.events
-                .emit(RunEvent::IterationFinished {
-                    iteration,
-                    outcome: IterationOutcome::Completed,
-                })
-                .await?;
-            if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations) {
-                return pause_for_budget(&ctx, iteration, budget, &report.summary).await;
+/// How one planning iteration ended, as the run loop reads it. Every
+/// ending lands here, so the loop emits each closing event and keeps
+/// its books in exactly one place.
+enum IterationEnd {
+    /// The plan named ready units, every spawned child settled, and
+    /// the run goes on. Carries the batch's completed child
+    /// iterations and the plan's summary for a budget pause landing
+    /// right after.
+    Continue { summary: String, children: u32 },
+    /// A `done` claim the skeptic refuted; its findings feed the next
+    /// plan.
+    Refuted { findings: Vec<String> },
+    /// A `done` claim cleared its verify gate and survived the
+    /// skeptic — the run is complete.
+    Done { summary: String },
+    /// The run pauses now — a pausing status, a failed verify gate on
+    /// a claim, or a timed-out skeptic.
+    Pause {
+        reason: PauseReason,
+        summary: String,
+    },
+    /// The plan or the skeptic produced no trustworthy report; the
+    /// iteration counts as failed.
+    Fail,
+    /// The iteration deadline fired before the plan reported; the
+    /// sandbox has already been destroyed by its bracket.
+    PlanTimedOut,
+    /// The run's cancel token fired; the run ends where it stands.
+    Cancelled,
+}
+
+/// Drives one planning pass: plan in a fresh sandbox, then either
+/// spawn and settle the planned batch or put a completion claim to
+/// the skeptic.
+async fn run_iteration(
+    ctx: &KernelContext,
+    iteration: u32,
+    feedback: &[String],
+) -> Result<IterationEnd, KernelError> {
+    let deadline = tokio::time::Instant::now() + ctx.budgets.iteration_timeout;
+    let Planned { report, verify } = match plan(ctx, iteration, feedback, deadline).await? {
+        Bracketed::Finished(Some(planned)) => planned,
+        Bracketed::Finished(None) => return Ok(IterationEnd::Fail),
+        Bracketed::Cancelled => return Ok(IterationEnd::Cancelled),
+        Bracketed::TimedOut => return Ok(IterationEnd::PlanTimedOut),
+    };
+    match report::disposition(report.status) {
+        Disposition::Claimed => {
+            if matches!(verify, VerifyOutcome::Failed { .. }) {
+                return Ok(IterationEnd::Pause {
+                    reason: PauseReason::VerifyFailed,
+                    summary: report.summary,
+                });
             }
-            feedback.clear();
-            iteration += 1;
+            Ok(match judge_done(ctx, iteration, &report, deadline).await? {
+                Bracketed::Finished(SkepticEnd::Unrefuted) => IterationEnd::Done {
+                    summary: report.summary,
+                },
+                Bracketed::Finished(SkepticEnd::Refuted(findings)) => {
+                    IterationEnd::Refuted { findings }
+                }
+                Bracketed::Finished(SkepticEnd::Failed) => IterationEnd::Fail,
+                Bracketed::Cancelled => IterationEnd::Cancelled,
+                Bracketed::TimedOut => IterationEnd::Pause {
+                    reason: PauseReason::Timeout,
+                    summary: "fanout skeptic timed out".into(),
+                },
+            })
+        }
+        Disposition::Pause(reason) => Ok(IterationEnd::Pause {
+            reason,
+            summary: report.summary,
+        }),
+        Disposition::Advance => {
+            let children = spawn_batch(ctx, report.units).await?;
+            let settled = watch_batch(ctx, children).await?;
+            Ok(IterationEnd::Continue {
+                summary: report.summary,
+                children: settled,
+            })
         }
     }
 }
@@ -271,9 +303,20 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
         });
     }
 
+    // One failed watch must not abandon its siblings: they keep
+    // running either way, and only draining them lands their
+    // outcomes and token usage in the parent's account. The first
+    // failure is kept and raised once the whole batch has settled.
+    let mut failure: Option<RunSpawnerError> = None;
     let mut completed_iterations: u32 = 0;
     while let Some(watched) = watches.next().await {
-        let (run_id, history) = watched?;
+        let (run_id, history) = match watched {
+            Ok(watched) => watched,
+            Err(error) => {
+                failure.get_or_insert(error);
+                continue;
+            }
+        };
         let mut child_usage = None;
         let mut child_iterations: u32 = 0;
         for envelope in &history {
@@ -289,16 +332,19 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
                 _ => {}
             }
         }
-        let state = history
+        let settled_state = history
             .iter()
             .rev()
             .find_map(|envelope| match envelope.event {
                 RunEvent::StateChanged { state } if state != RunState::Running => Some(state),
                 _ => None,
-            })
-            .ok_or_else(|| {
-                RunSpawnerError(format!("child {run_id} settled without a state event"))
-            })?;
+            });
+        let Some(state) = settled_state else {
+            failure.get_or_insert(RunSpawnerError(format!(
+                "child {run_id} settled without a state event"
+            )));
+            continue;
+        };
         ctx.events
             .emit(RunEvent::ChildRunFinished {
                 child_run_id: run_id.to_string(),
@@ -308,9 +354,21 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
             })
             .await?;
     }
-    Ok(completed_iterations)
+    match failure {
+        Some(error) => Err(error.into()),
+        None => Ok(completed_iterations),
+    }
 }
 
+/// Rebuilds `(next iteration, settled child iterations)` from a
+/// replayed log. Only settled children are counted, which is sound
+/// because every pause this kernel can reach happens after
+/// `watch_batch` drained its batch: a cleanly paused log never holds
+/// a `child_run_started` without its `child_run_finished`. A log
+/// torn by a crash can — but a detached record refuses resume today,
+/// so such a log never replays; the day detached resume lands, this
+/// must learn to re-watch those orphans instead of replanning over
+/// them.
 fn resume_progress(events: &[EventEnvelope]) -> Result<(u32, u32), KernelError> {
     if !events
         .iter()
