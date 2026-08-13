@@ -294,5 +294,29 @@ export HAKO_E2E_SECRETS_DIR=/absolute/path/to/owner-only/secret-store
 just e2e
 ```
 
+### Running the tracer by hand
+
+The same path works interactively when the daemon and the Client share one
+development machine. In one terminal, start `hakod` with the environment the
+systemd unit would otherwise provide — an owner-only secret store provisioned
+as in section 3, and the baked image from section 1:
+
+```sh
+export HAKO_ADDR=127.0.0.1:7878
+export HAKO_TOKEN=$(openssl rand -hex 32)
+export HAKO_RUNS_DIR=$HOME/.local/state/hako/runs
+export HAKO_SECRETS_DIR=/absolute/path/to/owner-only/secret-store
+export HAKO_VM_IMAGE=/absolute/path/to/hako-agent.tar
+export HAKO_VM_NET=1
+printf 'daemon token: %s\n' "$HAKO_TOKEN"
+hakod
+```
+
+In a second terminal, follow section 5 unchanged: seed a toy source
+repository anywhere on disk, point the flow's `[workspace]` at it, export
+`HAKO_ADDR=http://127.0.0.1:7878` with the printed token, then `hako run`
+and `hako attach`. The checkpoint inspection commands apply verbatim, minus
+`sudo`, under `$HAKO_RUNS_DIR`.
+
 `just test` compiles but skips the real-infrastructure test, so ordinary
 development and CI require neither KVM nor paid credentials.
