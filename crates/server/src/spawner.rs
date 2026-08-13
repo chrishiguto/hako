@@ -12,20 +12,40 @@ pub(super) fn for_parent(
     resolved: &ResolvedRun,
     runtime: &EngineRuntime,
 ) -> Arc<dyn RunSpawner> {
-    let mut child_flow = flow.clone();
-    child_flow.r#loop.kernel = KernelName::Pipeline;
-    child_flow.prompts = PromptsConfig::default();
-    child_flow.budget = BudgetConfig {
-        iteration_timeout: flow.budget.iteration_timeout,
-        ..BudgetConfig::default()
-    };
-    child_flow.workspace.branch = None;
     Arc::new(RegistryRunSpawner {
         registry,
         runtime: runtime.clone(),
-        flow: child_flow,
+        flow: child_flow(flow),
         resolved: resolved.for_kernel(KernelName::Pipeline),
     })
+}
+
+/// The flow a child pipeline runs under — the parent's flow with each
+/// fanout-specific choice stripped, every line for a reason:
+///
+/// - The kernel becomes `pipeline`: fanout children are pipeline runs
+///   by design, never nested fanouts.
+/// - The prompts table is cleared, not re-keyed: both kernels publish
+///   a `plan` slot, so an inherited table would feed the parent's
+///   fanout planning prompt to every child's plan stage. Children run
+///   the shipped defaults; their objective arrives as the scope.
+/// - Budgets reset to the uncapped defaults, keeping only the
+///   parent's iteration timeout: the parent enforces the aggregate
+///   across the batch, and a local cap would end a child early
+///   without the parent's say.
+/// - The pinned branch is dropped: a child starts from the repo's
+///   default branch, and any branch it works on is its own agent's
+///   workflow.
+fn child_flow(parent: &FlowConfig) -> FlowConfig {
+    let mut flow = parent.clone();
+    flow.r#loop.kernel = KernelName::Pipeline;
+    flow.prompts = PromptsConfig::default();
+    flow.budget = BudgetConfig {
+        iteration_timeout: parent.budget.iteration_timeout,
+        ..BudgetConfig::default()
+    };
+    flow.workspace.branch = None;
+    flow
 }
 
 struct RegistryRunSpawner {
@@ -39,7 +59,7 @@ struct RegistryRunSpawner {
 impl RunSpawner for RegistryRunSpawner {
     async fn spawn(&self, child: ChildRunSpec) -> Result<RunId, RunSpawnerError> {
         self.registry
-            .submit_scoped(
+            .submit(
                 self.flow.clone(),
                 self.resolved.clone(),
                 &self.runtime,

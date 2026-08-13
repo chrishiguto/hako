@@ -243,17 +243,9 @@ impl RunRegistry {
     /// event sink is opened before anything is published so the one
     /// fallible step can still unwind the directory; a failure here
     /// must not leave a run a restarted daemon would misreport as
-    /// running forever.
+    /// running forever. `scope` is a parent fanout's assignment for a
+    /// child run; `None` for a run submitted directly.
     pub(crate) async fn submit(
-        &self,
-        flow: FlowConfig,
-        resolved: ResolvedRun,
-        runtime: &EngineRuntime,
-    ) -> Result<RunId, engine::StoreError> {
-        self.submit_scoped(flow, resolved, runtime, None).await
-    }
-
-    pub(super) async fn submit_scoped(
         &self,
         flow: FlowConfig,
         resolved: ResolvedRun,
@@ -639,7 +631,10 @@ repo = {:?}
 
         let flow = flow_over(repo.path());
         let resolved = runtime.resolve(&flow).await.unwrap();
-        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+        let run_id = registry
+            .submit(flow, resolved, &runtime, None)
+            .await
+            .unwrap();
 
         // Fire the cancel only once the agent exec is provably in
         // flight — the mid-exec case, where an abort would leak.
@@ -691,7 +686,10 @@ repo = {:?}
 
         let flow = flow_over(repo.path());
         let resolved = runtime.resolve(&flow).await.unwrap();
-        let run_id = registry.submit(flow, resolved, &runtime).await.unwrap();
+        let run_id = registry
+            .submit(flow, resolved, &runtime, None)
+            .await
+            .unwrap();
 
         // Let the run reach its own ending before any cancel exists.
         let dir = registry.get(&run_id).await.unwrap();
