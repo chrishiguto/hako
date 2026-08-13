@@ -13,7 +13,8 @@
 //! stages (implement, review, simplify) are checkpointed and then
 //! verified; a red check re-runs that stage with the failure in its
 //! preamble, and exhausted retries pause the run. A `done` claim starts
-//! a fresh skeptic invocation; only an unrefuted claim ends the run.
+//! a fresh skeptic invocation; only an unrefuted claim ends the run —
+//! mid-pass, so no later stage runs, a configured deliver included.
 //! `blocked`/`needs_input` pause it immediately, mid-pipeline.
 
 mod contract;

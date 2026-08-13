@@ -90,6 +90,31 @@ async fn a_configured_deliver_stage_runs_last_with_the_iteration_reports() {
     assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
 }
 
+/// `done` is a claim from any stage and ends the run mid-pass, so a
+/// configured delivery is not a completion epilogue: the pass that
+/// finishes the work is not delivered — the previous full pass was.
+#[tokio::test]
+async fn a_mid_pass_done_claim_ends_the_run_without_reaching_deliver() {
+    let ran = run_with_delivery(vec![
+        reports("continue", "planned"),
+        reports("continue", "built"),
+        reports("continue", "reviewed"),
+        reports("done", "the work is complete"),
+        unrefuted(),
+    ])
+    .await;
+
+    assert_eq!(ran.outcome, RunOutcome::Done);
+    // Four stages plus the skeptic; deliver never booted a sandbox.
+    assert_eq!(ran.sandbox.created(), 5);
+    assert_eq!(ran.sandbox.created(), ran.sandbox.destroyed());
+    assert!(
+        stage_events(&ran.events)
+            .iter()
+            .all(|(_, stage)| stage != "deliver")
+    );
+}
+
 #[tokio::test]
 async fn an_absent_deliver_prompt_skips_the_stage_without_a_sandbox() {
     let workspace = seeded_repo();
