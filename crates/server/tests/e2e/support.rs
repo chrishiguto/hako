@@ -32,14 +32,14 @@ pub fn run() {
 
     let flow = root.path().join("smoke.toml");
     fs::write(&flow, flow_for(&source)).unwrap();
-    let submitted = hako(address, &["run", path(&flow)]);
-    success("hako run", &submitted);
+    let submitted = hako(address, &["run", utf8_path(&flow)]);
+    assert_success("hako run", &submitted);
     let run_id = String::from_utf8(submitted.stdout).unwrap();
     let run_id = run_id.trim();
     assert!(!run_id.is_empty(), "hako run returned no run id");
 
     let attached = hako(address, &["attach", run_id]);
-    success("hako attach", &attached);
+    assert_success("hako attach", &attached);
     let events_text = String::from_utf8(attached.stdout).unwrap();
     let events: Vec<Value> = events_text
         .lines()
@@ -165,7 +165,7 @@ fn hako(address: SocketAddr, args: &[&str]) -> Output {
         .unwrap()
 }
 
-fn success(operation: &str, output: &Output) {
+fn assert_success(operation: &str, output: &Output) {
     assert!(
         output.status.success(),
         "{operation} failed:\n{}",
@@ -319,21 +319,15 @@ fn git(repo: &Path, args: &[&str]) -> String {
         .args(args)
         .output()
         .unwrap();
-    success("git", &output);
+    assert_success("git", &output);
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 fn git_ok(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .unwrap();
-    success("git", &output);
+    git(repo, args);
 }
 
-fn path(path: &Path) -> &str {
+fn utf8_path(path: &Path) -> &str {
     path.to_str().expect("e2e temporary path is not UTF-8")
 }
 
@@ -342,7 +336,7 @@ fn hako_machines() -> BTreeSet<String> {
         .args(["machine", "ls", "--json"])
         .output()
         .unwrap();
-    success("smolvm machine ls", &output);
+    assert_success("smolvm machine ls", &output);
     serde_json::from_slice::<Vec<Value>>(&output.stdout)
         .unwrap()
         .into_iter()
