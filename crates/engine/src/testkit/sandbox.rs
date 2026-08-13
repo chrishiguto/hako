@@ -411,6 +411,9 @@ pub struct StagedSandbox {
     agent_prompts: Mutex<Vec<String>>,
     guest_files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     specs: SpecRecorder,
+    /// Agent execs past the end of the script begin and never finish
+    /// instead of panicking — see [`Self::hangs_when_dry`].
+    hang_when_dry: bool,
     created: AtomicU32,
     destroyed: AtomicU32,
     work_files: AtomicU32,
@@ -425,10 +428,21 @@ impl StagedSandbox {
             agent_prompts: Mutex::new(Vec::new()),
             guest_files: Mutex::new(BTreeMap::new()),
             specs: SpecRecorder::default(),
+            hang_when_dry: false,
             created: AtomicU32::new(0),
             destroyed: AtomicU32::new(0),
             work_files: AtomicU32::new(0),
         }
+    }
+
+    /// The first agent exec past the scripted steps hangs forever —
+    /// how a test scripts "the stage after these never reports", the
+    /// minutes-long agent exec in miniature for timeout paths. Under
+    /// `start_paused` the runtime's auto-advance then fires the
+    /// iteration deadline.
+    pub fn hangs_when_dry(mut self) -> Self {
+        self.hang_when_dry = true;
+        self
     }
 
     /// Scripts the verify-check exit codes; without this every check
@@ -529,6 +543,9 @@ impl Sandbox for StagedSandbox {
         command: &ExecSpec,
     ) -> Result<ExecStream, SandboxError> {
         let transcript = if command.argv.first().is_some_and(|arg| arg == AGENT_BIN) {
+            if self.hang_when_dry && self.agent_steps.lock().unwrap().is_empty() {
+                return Ok(stream::pending().boxed());
+            }
             self.run_agent(command)
         } else {
             self.run_check()
