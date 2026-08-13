@@ -30,7 +30,11 @@ pub struct FanoutKernel;
 impl Kernel for FanoutKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         let _active = ctx.budget_usage.activate();
-        let (mut iteration, mut child_iterations) = match &ctx.replay {
+        let ResumeState {
+            mut iteration,
+            mut child_iterations,
+            mut notification_summary,
+        } = match &ctx.replay {
             Some(events) => resume_progress(events)?,
             None => {
                 ctx.events
@@ -39,18 +43,19 @@ impl Kernel for FanoutKernel {
                         agent: ctx.agent.name().into(),
                     })
                     .await?;
-                (1, 0)
+                ResumeState::fresh()
             }
         };
         let mut feedback = Vec::new();
         loop {
             if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations) {
-                // No summary: the only report reachable at loop-top
-                // with prior work is a done-claim the skeptic refuted,
-                // and a refuted claim must not be surfaced as what the
-                // run last did. (`Continue` re-checks the budget with
-                // its summary in hand before looping.)
-                return pause_for_budget(&ctx, iteration.saturating_sub(1), budget, None).await;
+                return pause_for_budget(
+                    &ctx,
+                    iteration.saturating_sub(1),
+                    budget,
+                    notification_summary.as_deref(),
+                )
+                .await;
             }
             ctx.events
                 .emit(RunEvent::IterationStarted { iteration })
@@ -64,9 +69,16 @@ impl Kernel for FanoutKernel {
                         })
                         .await?;
                     child_iterations += children;
+                    notification_summary = Some(summary);
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, child_iterations)
                     {
-                        return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
+                        return pause_for_budget(
+                            &ctx,
+                            iteration,
+                            budget,
+                            notification_summary.as_deref(),
+                        )
+                        .await;
                     }
                     feedback.clear();
                     iteration += 1;
@@ -78,6 +90,7 @@ impl Kernel for FanoutKernel {
                             outcome: IterationOutcome::Completed,
                         })
                         .await?;
+                    notification_summary = None;
                     feedback = findings;
                     iteration += 1;
                 }
@@ -366,35 +379,174 @@ async fn watch_batch(ctx: &KernelContext, children: Vec<RunId>) -> Result<u32, K
     }
 }
 
-/// Rebuilds `(next iteration, settled child iterations)` from a
-/// replayed log. Only settled children are counted, which is sound
-/// because every pause this kernel can reach happens after
-/// `watch_batch` drained its batch: a cleanly paused log never holds
-/// a `child_run_started` without its `child_run_finished`. A log
-/// torn by a crash can — but a detached record refuses resume today,
-/// so such a log never replays; the day detached resume lands, this
-/// must learn to re-watch those orphans instead of replanning over
-/// them.
-fn resume_progress(events: &[EventEnvelope]) -> Result<(u32, u32), KernelError> {
-    if !events
-        .iter()
-        .any(|envelope| matches!(envelope.event, RunEvent::RunResumed { .. }))
-    {
-        return Err(KernelError::Resume(
-            "fanout replay has no resume command".into(),
-        ));
+#[derive(Debug)]
+struct ResumeState {
+    iteration: u32,
+    child_iterations: u32,
+    /// Notification state is deliberately separate from planner
+    /// memory: replaying a Report does not put it in a later preamble.
+    notification_summary: Option<String>,
+}
+
+impl ResumeState {
+    /// Where a run with nothing to replay begins.
+    fn fresh() -> Self {
+        Self {
+            iteration: 1,
+            child_iterations: 0,
+            notification_summary: None,
+        }
     }
-    let last_finished = events.iter().filter_map(|envelope| match envelope.event {
-        RunEvent::IterationFinished { iteration, .. } => Some(iteration),
-        _ => None,
-    });
-    let iteration = last_finished.max().unwrap_or(0).saturating_add(1);
-    let child_iterations = events
-        .iter()
-        .filter_map(|envelope| match envelope.event {
-            RunEvent::ChildRunFinished { iterations, .. } => Some(iterations),
-            _ => None,
+}
+
+/// The fold's tally at each event. The eligible Report stays raw so
+/// superseded or refuted history need not be parsed; only the Report
+/// the final snapshot still holds is decoded.
+#[derive(Clone, Copy, Default)]
+struct Fold<'a> {
+    /// The highest finished iteration; the resume re-enters at the
+    /// next.
+    last_finished: u32,
+    child_iterations: u32,
+    eligible_report: Option<(u64, &'a serde_json::Value)>,
+}
+
+/// Rebuilds Fanout's resume state in one forward fold, read at the
+/// last resume command. Only settled children are counted, which is
+/// sound because every pause this kernel can reach happens after
+/// `watch_batch` drained its batch: a cleanly paused log never holds a
+/// `child_run_started` without its `child_run_finished`. A log torn by
+/// a crash can — but a detached record refuses resume today, so such a
+/// log never replays; the day detached resume lands, this must learn
+/// to re-watch those orphans instead of replanning over them.
+fn resume_progress(events: &[EventEnvelope]) -> Result<ResumeState, KernelError> {
+    let mut fold = Fold::default();
+    let mut resumed = None;
+    for envelope in events {
+        match &envelope.event {
+            RunEvent::IterationFinished { iteration, .. } => {
+                fold.last_finished = fold.last_finished.max(*iteration);
+            }
+            RunEvent::ChildRunFinished { iterations, .. } => {
+                fold.child_iterations = fold.child_iterations.saturating_add(*iterations);
+            }
+            RunEvent::StageReported { stage, report, .. } => {
+                if stage != "plan" {
+                    return Err(KernelError::Resume(format!(
+                        "stage event at seq {} names unknown fanout stage `{stage}`",
+                        envelope.seq
+                    )));
+                }
+                fold.eligible_report = Some((envelope.seq, report));
+            }
+            RunEvent::SkepticVerdict { refuted: true, .. } => fold.eligible_report = None,
+            RunEvent::RunResumed { .. } => resumed = Some(fold),
+            _ => {}
+        }
+    }
+    let fold =
+        resumed.ok_or_else(|| KernelError::Resume("fanout replay has no resume command".into()))?;
+    let notification_summary = fold
+        .eligible_report
+        .map(|(seq, report)| {
+            serde_json::from_value::<PlanReport>(report.clone())
+                .map(|report| report.summary)
+                .map_err(|error| {
+                    KernelError::Resume(format!("fanout report at seq {seq} is invalid: {error}"))
+                })
         })
-        .fold(0_u32, u32::saturating_add);
-    Ok((iteration, child_iterations))
+        .transpose()?;
+    Ok(ResumeState {
+        iteration: fold.last_finished.saturating_add(1),
+        child_iterations: fold.child_iterations,
+        notification_summary,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::testkit::event_log;
+
+    fn reported(iteration: u32, report: serde_json::Value) -> RunEvent {
+        RunEvent::StageReported {
+            iteration,
+            stage: "plan".into(),
+            report,
+        }
+    }
+
+    fn finished(iteration: u32) -> RunEvent {
+        RunEvent::IterationFinished {
+            iteration,
+            outcome: IterationOutcome::Completed,
+        }
+    }
+
+    fn resumed() -> RunEvent {
+        RunEvent::RunResumed {
+            note: None,
+            extend: None,
+        }
+    }
+
+    /// Only the snapshot's Report is decoded, so history the resume
+    /// never surfaces — however mangled — cannot block it.
+    #[test]
+    fn a_superseded_report_never_blocks_a_resume() {
+        let state = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            finished(1),
+            RunEvent::IterationStarted { iteration: 2 },
+            reported(
+                2,
+                json!({"status": "continue", "summary": "second batch", "units": ["a"]}),
+            ),
+            finished(2),
+            resumed(),
+        ]))
+        .unwrap();
+        assert_eq!(state.iteration, 3);
+        assert_eq!(state.notification_summary.as_deref(), Some("second batch"));
+    }
+
+    /// A refuting verdict retires its Report before any decode, so a
+    /// mangled refuted claim resumes clean rather than failing.
+    #[test]
+    fn a_refuted_report_is_never_decoded() {
+        let state = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            RunEvent::SkepticVerdict {
+                iteration: 1,
+                refuted: true,
+                findings: vec!["issue remains".into()],
+            },
+            finished(1),
+            resumed(),
+        ]))
+        .unwrap();
+        assert_eq!(state.iteration, 2);
+        assert_eq!(state.notification_summary, None);
+    }
+
+    /// The one Report the resume does surface fails loudly, naming
+    /// the offending line: that is corruption, not something to guess
+    /// around.
+    #[test]
+    fn a_corrupt_eligible_report_fails_naming_its_seq() {
+        let error = resume_progress(&event_log(vec![
+            RunEvent::IterationStarted { iteration: 1 },
+            reported(1, json!({"weird": true})),
+            resumed(),
+        ]))
+        .unwrap_err();
+        assert!(
+            matches!(&error, KernelError::Resume(detail) if detail.contains("seq 1")),
+            "unexpected error: {error}"
+        );
+    }
 }

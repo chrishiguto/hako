@@ -62,9 +62,9 @@ pub struct PipelineKernel;
 impl Kernel for PipelineKernel {
     async fn run(&self, ctx: KernelContext) -> Result<RunOutcome, KernelError> {
         let _active = ctx.budget_usage.activate();
-        let (mut iteration, mut resumed) = match &ctx.replay {
+        let (mut iteration, mut resumed, mut notification_summary) = match &ctx.replay {
             Some(events) => {
-                let point = resume::ResumePoint::from_events(events)
+                let mut point = resume::ResumePoint::from_events(events)
                     .map_err(|error| KernelError::Resume(error.to_string()))?;
                 // Checked here, where the point is born, so the loop
                 // below can trust every entry stage it is handed.
@@ -74,7 +74,8 @@ impl Kernel for PipelineKernel {
                         point.stage.as_str()
                     )));
                 }
-                (point.iteration, Some(point))
+                let notification_summary = point.notification_summary.take();
+                (point.iteration, Some(point), notification_summary)
             }
             None => {
                 ctx.events
@@ -83,11 +84,10 @@ impl Kernel for PipelineKernel {
                         agent: ctx.agent.name().into(),
                     })
                     .await?;
-                (1, None)
+                (1, None, None)
             }
         };
 
-        let mut last_completed_summary = None;
         let mut plan_feedback: Vec<Feedback> = Vec::new();
         // The commit drift detection measures against. Sampled at the
         // loop boundary rather than threaded up from the stages: any
@@ -109,13 +109,8 @@ impl Kernel for PipelineKernel {
                     Some(point) if !point.starts_iteration => iteration,
                     _ => iteration.saturating_sub(1),
                 };
-                return pause_for_budget(
-                    &ctx,
-                    announced,
-                    budget,
-                    last_completed_summary.as_deref(),
-                )
-                .await;
+                return pause_for_budget(&ctx, announced, budget, notification_summary.as_deref())
+                    .await;
             }
             let resume = resumed.take();
             if resume.as_ref().is_none_or(|point| point.starts_iteration) {
@@ -133,7 +128,10 @@ impl Kernel for PipelineKernel {
             )
             .await?
             {
-                IterationEnd::Continue { summary, feedback } => {
+                IterationEnd::Continue {
+                    notification_summary: summary,
+                    feedback,
+                } => {
                     ctx.events
                         .emit(RunEvent::IterationFinished {
                             iteration,
@@ -148,8 +146,15 @@ impl Kernel for PipelineKernel {
                         0
                     };
                     head = new_head;
+                    notification_summary = summary;
                     if let Some(budget) = ctx.budgets.exhausted(&ctx.budget_usage, iteration) {
-                        return pause_for_budget(&ctx, iteration, budget, Some(&summary)).await;
+                        return pause_for_budget(
+                            &ctx,
+                            iteration,
+                            budget,
+                            notification_summary.as_deref(),
+                        )
+                        .await;
                     }
                     if no_commit_iterations >= DRIFT_LIMIT {
                         return conclude(
@@ -157,12 +162,11 @@ impl Kernel for PipelineKernel {
                             Ending::Paused {
                                 iteration,
                                 reason: PauseReason::Drift,
-                                summary: Some(&summary),
+                                summary: notification_summary.as_deref(),
                             },
                         )
                         .await;
                     }
-                    last_completed_summary = Some(summary);
                     plan_feedback = feedback;
                     iteration += 1;
                 }
@@ -240,10 +244,11 @@ impl Kernel for PipelineKernel {
 enum IterationEnd {
     /// The iteration counts as verified progress and the run goes on:
     /// a full pass, or a `done` claim the skeptic refuted. Carries the
-    /// last summary for operator-facing pauses and any explicitly
-    /// scoped feedback the next plan must answer.
+    /// latest eligible summary for operator-facing pauses and any
+    /// explicitly scoped feedback the next plan must answer. A
+    /// refuted done claim carries no notification summary.
     Continue {
-        summary: String,
+        notification_summary: Option<String>,
         feedback: Vec<Feedback>,
     },
     /// A `done` claim cleared its verify gate and survived the skeptic
@@ -312,7 +317,7 @@ async fn run_iteration(
                             // rest of the pass; only the skeptic's
                             // findings reach the next plan.
                             IterationEnd::Continue {
-                                summary: claim.summary().to_owned(),
+                                notification_summary: None,
                                 feedback: vec![Feedback::SkepticRefuted { findings }],
                             }
                         }
@@ -330,12 +335,10 @@ async fn run_iteration(
             StageEnd::Cancelled => return Ok(IterationEnd::Cancelled),
         }
     }
-    // A pass runs at least plan, so a last report always exists; the
-    // empty fallback is a can't-happen guard rather than a panic.
+    // `None` is the refuted-claim case above; on this path every stage
+    // advanced, so `completed` always holds a last report.
     Ok(IterationEnd::Continue {
-        summary: completed
-            .last()
-            .map_or_else(String::new, |report| report.summary().to_owned()),
+        notification_summary: completed.last().map(|report| report.summary().to_owned()),
         feedback: Vec::new(),
     })
 }
